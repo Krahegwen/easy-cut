@@ -115,7 +115,7 @@ export async function connectToApp(port, { timeoutMs = 120_000 } = {}) {
   }
 
   async function key(keyName, { ctrl = false, shift = false } = {}) {
-    const codes = { ' ': ['Space', 32], ArrowLeft: ['ArrowLeft', 37], ArrowRight: ['ArrowRight', 39], z: ['KeyZ', 90], y: ['KeyY', 89], Escape: ['Escape', 27] }
+    const codes = { ' ': ['Space', 32], ArrowLeft: ['ArrowLeft', 37], ArrowUp: ['ArrowUp', 38], ArrowRight: ['ArrowRight', 39], ArrowDown: ['ArrowDown', 40], z: ['KeyZ', 90], y: ['KeyY', 89], Escape: ['Escape', 27] }
     const [code, keyCode] = codes[keyName] ?? [keyName, 0]
     const modifiers = (ctrl ? 2 : 0) | (shift ? 8 : 0)
     const base = { key: keyName, code, windowsVirtualKeyCode: keyCode, modifiers }

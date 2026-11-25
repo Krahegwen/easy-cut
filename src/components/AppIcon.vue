@@ -53,6 +53,16 @@ const ICONS: Record<IconName, string> = {
   star: '<path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>',
   home: '<path d="M4 11 12 4l8 7"/><path d="M6 9.5V20h12V9.5"/>',
   upload: '<path d="M12 16V5M7 9.5l5-5 5 5"/><path d="M5 19.5h14"/>',
+  camera: '<rect x="2.5" y="6.5" width="13" height="11" rx="2"/><path d="m15.5 10.5 6-3.5v10l-6-3.5"/>',
+  record: '<circle cx="12" cy="12" r="7" fill="currentColor" stroke="none"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
+  'text-smaller': '<path d="M3 18 7.5 7 12 18M4.6 14.5h5.8"/><path d="M15 12h6"/>',
+  'text-larger': '<path d="M2.5 19 8 5l5.5 14M4.5 14.5h7"/><path d="M15.5 12h6M18.5 9v6"/>',
+  slower: '<path d="M4.5 17.5a8.5 8.5 0 1 1 15 0"/><path d="m12 13-4-4"/><circle cx="12" cy="13.5" r="1.2" fill="currentColor"/>',
+  faster: '<path d="M4.5 17.5a8.5 8.5 0 1 1 15 0"/><path d="m12 13 4.5-3.5"/><circle cx="12" cy="13.5" r="1.2" fill="currentColor"/>',
+  rewind: '<path d="M12 19V6M6.5 11.5 12 6l5.5 5.5"/><path d="M5 3.5h14"/>',
+  'eye-off': '<path d="M2.5 12S6 5.5 12 5.5c2 0 3.7.7 5.1 1.7M21.5 12S18 18.5 12 18.5c-2 0-3.7-.7-5.1-1.7"/><path d="M4 20 20 4"/>',
+  text: '<path d="M4 6h16M4 10.5h16M4 15h11M4 19.5h7"/>',
   drag: '<circle cx="9" cy="7" r="1.2" fill="currentColor"/><circle cx="15" cy="7" r="1.2" fill="currentColor"/><circle cx="9" cy="12" r="1.2" fill="currentColor"/><circle cx="15" cy="12" r="1.2" fill="currentColor"/><circle cx="9" cy="17" r="1.2" fill="currentColor"/><circle cx="15" cy="17" r="1.2" fill="currentColor"/>',
 }
 

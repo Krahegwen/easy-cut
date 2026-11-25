@@ -203,6 +203,43 @@ describe('store del editor', () => {
     expect(store.mediaSrc(H)).toBe(`asset://${H}.proxy.mp4`)
   })
 
+  it('una grabación entra al final, elegida, con la duración máxima y la oferta de quitar pausas', async () => {
+    const { bridge } = createFakeBridge({ media: mediaSet() })
+    const store = createEditorStore(bridge)
+    await store.addClipsFromPaths([H, V])
+    store.select(store.project.value.clips[0]!.id)
+    expect(await store.addRecording(V2, { targetMs: 300_000 })).toBe(true)
+    const clips = store.project.value.clips
+    expect(clips.map((c) => c.sourcePath)).toEqual([H, V, V2])
+    expect(store.selectedClipId.value).toBe(clips[2]!.id)
+    expect(store.recordingOffer.value).toBe(clips[2]!.id)
+    expect(store.project.value.targetDurationMs).toBe(300_000)
+    // Abrir «Arreglar este trozo» en Quitar pausas consume la oferta.
+    store.openClipEditor(clips[2]!.id, { tab: 'pauses', findPauses: true })
+    expect(store.screen.value).toBe('clip')
+    expect(store.clipEditorStart.value).toEqual({ tab: 'pauses', findPauses: true })
+    expect(store.recordingOffer.value).toBeNull()
+  })
+
+  it('una grabación en un vídeo nuevo descarta el anterior; un fichero ilegible no añade nada', async () => {
+    const { bridge } = createFakeBridge({ media: mediaSet() })
+    const store = createEditorStore(bridge)
+    await store.addClipsFromPaths([H])
+    expect(await store.addRecording(V, { fresh: true })).toBe(true)
+    expect(store.project.value.clips.map((c) => c.sourcePath)).toEqual([V])
+    expect(store.project.value.targetDurationMs).toBeNull()
+    expect(await store.addRecording('C:\\v\\roto.mp4')).toBe(false)
+    expect(store.project.value.clips).toHaveLength(1)
+  })
+
+  it('recuerda de qué pantalla se vino', () => {
+    const { bridge } = createFakeBridge()
+    const store = createEditorStore(bridge)
+    store.go('editor')
+    store.go('teleprompter')
+    expect(store.previousScreen.value).toBe('editor')
+  })
+
   it('miniaturas cacheadas por instante redondeado', async () => {
     const { bridge } = createFakeBridge({ media: mediaSet() })
     const spy = vi.spyOn(bridge, 'thumbnails')

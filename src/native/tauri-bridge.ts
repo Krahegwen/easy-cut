@@ -14,10 +14,14 @@ import { buildProbeArgs, parseProbeOutput, ProbeError } from '../domain/probe'
 import type { MediaInfo, TimeRange } from '../domain/project'
 import { createProgressParser } from '../domain/progress'
 import { buildSilenceDetectArgs, parseSilenceDetectOutput } from '../domain/silence'
+import { recordingExtension, recordingOutputExtension } from '../domain/recording'
 import {
+  buildAudioRecordingTranscodeArgs,
+  buildDurationProbeArgs,
   buildPreviewProxyArgs,
   buildRecordingTranscodeArgs,
   chooseFastEncoder,
+  parseDurationOutput,
   type FastEncoder,
 } from '../domain/transcode'
 import {
@@ -302,43 +306,114 @@ export function createTauriBridge(): NativeBridge {
 
     async saveRecording(data, suggestedName, onProgress) {
       const blob = data instanceof Blob ? data : new Blob([data])
-      const token = await invoke<string>('recording_begin', { suggestedName })
-      let targets: { tempPath: string; outputPath: string }
+      const kind = blob.type.startsWith('audio/') ? 'audio' : 'video'
+      const writer = await bridge.beginRecording(suggestedName, recordingExtension(blob.type), kind)
       try {
+        await writer.append(blob)
+      } catch (error) {
+        await writer.discard().catch(() => {})
+        throw toError(error)
+      }
+      return writer.save(onProgress)
+    },
+
+    deleteRecording: (path) => invoke<void>('delete_partial_output', { path }),
+
+    async beginRecording(suggestedName, extension, kind = 'video') {
+      const started = await invoke<{ token: string; tempPath: string }>('recording_begin', {
+        suggestedName,
+        extension: extension ?? null,
+        outputExtension: recordingOutputExtension(kind),
+      })
+      const token = started.token
+      // Los trozos se escriben en orden: cada append espera al anterior.
+      let queue: Promise<void> = Promise.resolve()
+      let closed = false
+
+      const writeBlob = async (blob: Blob) => {
         // Por trozos y como cuerpo binario: cientos de MB no caben en un array JSON.
         for (let offset = 0; offset < blob.size; offset += RECORDING_CHUNK_BYTES) {
           const chunk = new Uint8Array(await blob.slice(offset, offset + RECORDING_CHUNK_BYTES).arrayBuffer())
           await invoke('recording_append', chunk, { headers: { 'x-recording-token': token } })
         }
-        targets = await invoke<{ tempPath: string; outputPath: string }>('recording_finish', { token })
-      } catch (error) {
-        await invoke('recording_cleanup', { token, success: false }).catch(() => {})
-        throw toError(error)
       }
 
-      const jobId = newJobId('recording')
-      let failure: string
-      try {
-        const encoder = chooseFastEncoder(await probeEncoders())
-        // La duración del WebM no se conoce: el progreso da el tiempo convertido, no la fracción.
-        const output = await runWithFallback(
-          jobId,
-          encoder,
-          (e) => buildRecordingTranscodeArgs(targets.tempPath, targets.outputPath, e),
-          0,
-          onProgress,
-        )
-        if (output.exitCode === 0) {
-          const info = await probe(targets.outputPath)
+      return {
+        tempPath: started.tempPath,
+        append(blob: Blob) {
+          if (closed) return Promise.reject(new Error('La grabación ya está cerrada'))
+          const next = queue.then(() => writeBlob(blob))
+          // Un fallo no bloquea la cola para siempre, pero sí se devuelve a quien llamó.
+          queue = next.catch(() => {})
+          return next
+        },
+        async discard() {
+          if (closed) return
+          closed = true
+          await queue
+          // Sin recording_finish, «success» solo borra el temporal.
           await invoke('recording_cleanup', { token, success: true })
-          return { path: targets.outputPath, durationMs: info.durationMs }
-        }
-        failure = lastLine(output.stderr)
-      } catch (error) {
-        failure = toError(error).message
+        },
+        async save(onProgress, expectedDurationMs) {
+          if (closed) throw new Error('La grabación ya está cerrada')
+          closed = true
+          let targets: { tempPath: string; outputPath: string }
+          try {
+            await queue
+            targets = await invoke<{ tempPath: string; outputPath: string }>('recording_finish', { token })
+          } catch (error) {
+            await invoke('recording_cleanup', { token, success: false }).catch(() => {})
+            throw toError(error)
+          }
+
+          const jobId = newJobId('recording')
+          let failure: string
+          if (kind === 'audio') {
+            try {
+              // Solo la voz: a M4A, sin encoder de vídeo que elegir.
+              const parser = createProgressParser(expectedDurationMs ?? 0, Date.now())
+              const output = await runTool('ffmpeg', buildAudioRecordingTranscodeArgs(targets.tempPath, targets.outputPath), jobId, (stream, line) => {
+                if (stream !== 'stdout' || !onProgress) return
+                for (const update of parser.push(`${line}\n`, Date.now())) onProgress(update)
+              })
+              throwIfCancelled(output)
+              if (output.exitCode === 0) {
+                const probed = await runTool('ffprobe', buildDurationProbeArgs(targets.outputPath), newJobId('probe'))
+                const durationMs = parseDurationOutput(probed.stdout)
+                if (durationMs === null) throw new Error('No se sabe cuánto dura la grabación')
+                await invoke('recording_cleanup', { token, success: true })
+                return { path: targets.outputPath, durationMs, kind }
+              }
+              failure = lastLine(output.stderr)
+            } catch (error) {
+              failure = toError(error).message
+            }
+            const kept = await invoke<string | null>('recording_cleanup', { token, success: false })
+            throw new Error(`No se ha podido convertir la grabación (${failure}). Se ha guardado sin convertir en ${kept}`)
+          }
+          try {
+            const encoder = chooseFastEncoder(await probeEncoders())
+            // Sin duración esperada (el WebM no la lleva), el progreso da el tiempo convertido, no la fracción.
+            const output = await runWithFallback(
+              jobId,
+              encoder,
+              (e) => buildRecordingTranscodeArgs(targets.tempPath, targets.outputPath, e),
+              expectedDurationMs ?? 0,
+              onProgress,
+            )
+            if (output.exitCode === 0) {
+              const info = await probe(targets.outputPath)
+              await invoke('recording_cleanup', { token, success: true })
+              return { path: targets.outputPath, durationMs: info.durationMs, kind }
+            }
+            failure = lastLine(output.stderr)
+          } catch (error) {
+            failure = toError(error).message
+          }
+          const kept = await invoke<string | null>('recording_cleanup', { token, success: false })
+          throw new Error(`No se ha podido convertir la grabación (${failure}). Se ha guardado sin convertir en ${kept}`)
+        },
       }
-      const kept = await invoke<string | null>('recording_cleanup', { token, success: false })
-      throw new Error(`No se ha podido convertir la grabación (${failure}). Se ha guardado sin convertir en ${kept}`)
     },
 
     onFilesDropped(handlers: FileDropHandlers) {

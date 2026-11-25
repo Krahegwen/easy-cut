@@ -2,6 +2,7 @@
 // por CDP (scripts/webview-smoke.mjs y scripts/ui-e2e.mjs); en producción no existe.
 
 import * as domain from '../domain'
+import { liveTracks } from '../lib/camera'
 import { bridge as nativeBridge, type NativeBridge, type PickVideosOptions } from '../native'
 import { createEditorStore } from './editor'
 import { createSaveFlow } from './save-flow'
@@ -38,5 +39,7 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
     queuePickedVideos(paths: string[]) {
       devPickQueue.push(paths)
     },
+    /** Pistas de cámara y micrófono que siguen encendidas (deben ser cero fuera del teleprompter). */
+    liveTracks,
   }
 }

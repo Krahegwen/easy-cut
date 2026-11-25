@@ -193,11 +193,10 @@ try {
   check('Inicio sin vídeo a medias no ofrece seguir', !(await app.text('[data-testid=resume-card]')))
   await shot('01-inicio.png')
 
-  // --- Teleprompter (hueco)
+  // --- Teleprompter (su prueba completa es scripts/teleprompter-e2e.mjs)
   await app.click('[data-testid=teleprompter]')
   await waitScreen('teleprompter-view')
-  check('«Grabarme leyendo un texto» lleva a «Próximamente»', (await app.text('[data-testid=teleprompter-view]')).includes('Próximamente'))
-  await shot('02-grabarme-proximamente.png')
+  check('«Grabarme leyendo un texto» lleva a escribir el texto', !!(await app.center('[data-testid=script-input]')))
   await app.click('[data-testid=back-home]')
   await waitScreen('new-video')
 

@@ -8,7 +8,7 @@ import DurationBar from '../components/DurationBar.vue'
 import PreviewPlayer from '../components/PreviewPlayer.vue'
 import TargetPicker from '../components/TargetPicker.vue'
 import UndoRedo from '../components/UndoRedo.vue'
-import { clipStartTimes, setAspect, type AspectRatio } from '../domain'
+import { clipDurationMs, clipStartTimes, formatDuration, setAspect, type AspectRatio } from '../domain'
 import { pickAndAddVideos } from '../lib/add-videos'
 import { setKeyHandler } from '../lib/keys'
 import { store } from '../store'
@@ -38,6 +38,24 @@ function save() {
   }
   player.value?.pause()
   store.go('save')
+}
+
+const offerClip = computed(() => {
+  const id = store.recordingOffer.value
+  return id ? store.project.value.clips.find((c) => c.id === id) ?? null : null
+})
+const offerIndex = computed(() => (offerClip.value ? store.project.value.clips.indexOf(offerClip.value) : -1))
+
+function removeRecordingPauses() {
+  const c = offerClip.value
+  if (!c) return
+  player.value?.pause()
+  store.openClipEditor(c.id, { tab: 'pauses', findPauses: true })
+}
+
+function record() {
+  player.value?.pause()
+  store.go('teleprompter')
 }
 
 function fix() {
@@ -108,6 +126,18 @@ onBeforeUnmount(() => setKeyHandler(null))
       </section>
 
       <aside class="side">
+        <section v-if="offerClip" class="panel offer" data-testid="recording-offer">
+          <h2><AppIcon name="check" :size="22" /> Grabación añadida</h2>
+          <p>Es el trozo {{ offerIndex + 1 }} y dura {{ formatDuration(clipDurationMs(offerClip)) }}. ¿Quito los silencios entre frase y frase?</p>
+          <button class="btn primary offer-main" type="button" data-testid="offer-remove-pauses" @click="removeRecordingPauses">
+            <AppIcon name="pauses" />
+            Quitar las pausas de esta grabación
+          </button>
+          <button class="btn quiet" type="button" data-testid="offer-dismiss" @click="store.dismissRecordingOffer()">
+            <AppIcon name="close" />
+            Ahora no
+          </button>
+        </section>
         <section class="panel">
           <h2>Forma del vídeo</h2>
           <div class="shapes" role="radiogroup" aria-label="Forma del vídeo">
@@ -169,7 +199,7 @@ onBeforeUnmount(() => setKeyHandler(null))
           </button>
         </template>
       </div>
-      <ClipStrip @add="pickAndAddVideos" />
+      <ClipStrip @add="pickAndAddVideos" @record="record" />
     </footer>
   </main>
 </template>
@@ -212,6 +242,26 @@ onBeforeUnmount(() => setKeyHandler(null))
 }
 .panel h2 .muted {
   font-weight: 400;
+}
+.offer {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.offer h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent-hover);
+}
+.offer p {
+  font-size: 16px;
+}
+.offer-main {
+  white-space: normal;
+  line-height: 1.2;
+  min-height: 56px;
+  padding: 6px 12px;
+  text-align: left;
 }
 .shapes {
   display: flex;

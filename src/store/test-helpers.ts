@@ -91,7 +91,16 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     },
     saveProject: async () => null,
     loadProject: async () => null,
-    saveRecording: async () => ({ path: '', durationMs: 0 }),
+    saveRecording: async () => ({ path: '', durationMs: 0, kind: 'video' }),
+    beginRecording: async (_name, _ext, kind = 'video') => ({
+      tempPath: 'C:\\tmp\\rec.mp4',
+      append: async () => {},
+      save: async () => ({ path: '', durationMs: 0, kind }),
+      discard: async () => {},
+    }),
+    deleteRecording: async (path) => {
+      state.deleted.push(path)
+    },
     onFilesDropped: () => () => {},
   }
   return { bridge, state }

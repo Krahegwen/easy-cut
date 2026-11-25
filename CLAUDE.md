@@ -83,7 +83,13 @@ Prueba de extremo a extremo de la interfaz (arranca y cierra ella misma la app, 
 node scripts/ui-e2e.mjs
 ```
 
-En desarrollo, `window.__easyCut` expone `bridge`, `domain`, `store` y `queuePickedVideos(rutas)` (sustituye al diálogo de elegir vídeos); la pantalla de diagnóstico se abre con `?diagnostics`. En producción no existe ninguna de las dos cosas.
+Prueba de extremo a extremo del teleprompter (texto, ritmo, ensayo midiendo el avance, cámara, grabar con pausa, revisar, usar la grabación y comprobarla con ffprobe, «Repetir», solo la voz a M4A, cámara ocupada o ausente). Sin opciones usa la cámara y el micrófono de verdad y **no hace capturas**; con `--fake-media` usa los dispositivos falsos de WebView2 y deja las capturas `tp-*.png`. Borra lo que graba:
+
+```powershell
+node scripts/teleprompter-e2e.mjs --fake-media
+```
+
+En desarrollo, `window.__easyCut` expone `bridge`, `domain`, `store`, `liveTracks()` (pistas de cámara o micrófono encendidas) y `queuePickedVideos(rutas)` (sustituye al diálogo de elegir vídeos); la pantalla de diagnóstico se abre con `?diagnostics`. En producción no existe ninguna de las dos cosas.
 
 ## Pendientes
 
@@ -103,9 +109,12 @@ src/
     ffmpeg-args.ts   filter_complex y args de exportación
     progress.ts      parser de -progress y tiempo restante
     silence.ts       silencedetect y rangos conservados («quitar pausas»)
-    teleprompter.ts  palabras, duración, ritmo y scroll
+    teleprompter.ts  guion (párrafos = pausa corta), ritmo y «¿cabe en la duración máxima?», scroll por palabras
+                     (líneas medidas → posición), «vas bien / vas tarde»
+    recording.ts     reloj sin pausas, formato del grabador, vídeo o solo voz, calidad pedida, nivel del micrófono,
+                     errores de la cámara en llano, nombre de la grabación
     file-name.ts     «Vídeo del 25 de noviembre de 2026 (para WhatsApp).mp4», extensiones de vídeo
-    transcode.ts     proxy de vista previa (540p) y grabaciones WebM → MP4
+    transcode.ts     proxy de vista previa (540p), grabaciones → MP4 (vídeo) o M4A (solo voz), duración por ffprobe
     playback.ts      plan de la vista previa: tiempo del vídeo ↔ trozo / rango / tiempo del original
     layout.ts        formas (horizontal/vertical/cuadrado) y encuadre del trozo en el marco de la vista previa
   store/
@@ -113,10 +122,13 @@ src/
     exporter.ts      guardar: comprobación de originales, filtro en fichero, reintento con libx264, borrar a medias
     save-flow.ts     pantallas Guardar / Guardando / ¡Listo!
     index.ts         instancia única (y `window.__easyCut` solo en desarrollo)
-  lib/               confirmaciones, portapapeles, atajos, añadir vídeos, estado de «quitar pausas»
+  lib/               confirmaciones, portapapeles, atajos, añadir vídeos, estado de «quitar pausas»,
+                     camera.ts (getUserMedia, dispositivos, medidor), recorder.ts (MediaRecorder → disco por partes),
+                     teleprompter-settings.ts (texto y ajustes en localStorage)
   components/        PreviewPlayer, ClipStrip, Filmstrip, DurationBar, TargetPicker, AppIcon (iconos SVG propios)…
+    teleprompter/    PrompterRun (pantalla de ensayar/grabar: texto con translateY desde rAF), CameraSetup
   views/             Home, Pick, Editor («Tu vídeo»), ClipEditor («Arreglar este trozo»), Save, Saving, Done,
-                     Teleprompter (hueco: «Próximamente»), Diagnostics (solo desarrollo)
+                     Teleprompter (texto → cámara → grabar → revisar → trozo), Diagnostics (solo desarrollo)
   native/
     bridge.ts        interfaz NativeBridge (independiente de la plataforma)
     tauri-bridge.ts  implementación sobre Tauri (invoke + canales)
@@ -135,6 +147,7 @@ scripts/
   fetch-ffmpeg.ps1   copia ffmpeg/ffprobe del PATH a src-tauri/binaries/
   webview-smoke.mjs  prueba de humo de la app por CDP
   ui-e2e.mjs         prueba de extremo a extremo de la interfaz por CDP (cdp.mjs: cliente mínimo)
+  teleprompter-e2e.mjs  prueba de extremo a extremo del teleprompter (--fake-media para las capturas)
 tests/integration/   prueba con ffmpeg real (pnpm test:ffmpeg)
 ```
 
@@ -146,6 +159,8 @@ tests/integration/   prueba con ffmpeg real (pnpm test:ffmpeg)
 - CSP: `media-src`/`img-src` admiten `asset:`, `http://asset.localhost`, `blob:` y `mediastream:`. Nada de `<script>` en línea; estilos en línea sí (`style-src 'unsafe-inline'`).
 - Arrastrar ficheros: con `dragDropEnabled` (por defecto) el webview **no** recibe los eventos HTML5 de soltar ficheros; usar `bridge.onFilesDropped`.
 - Al cancelar una exportación, el MP4 a medias se queda en la carpeta del usuario: lo borra la UI con `deletePartialOutput` (solo .mp4 dentro de «Mis montajes»).
+- Grabar: MediaRecorder de WebView2 (Chromium 158) admite `video/mp4;codecs=avc1.640028,mp4a.40.2`, que sabe su duración (el WebM no) y se revisa con seek; es el primero que se prueba. Para solo la voz, `audio/mp4` (AAC). Los datos se escriben al disco cada segundo (`beginRecording` → `recording_append`). `MediaRecorder.pause()` no deja hueco: tras pausar y seguir, el MP4 final dura lo grabado sin la pausa y audio y vídeo coinciden (±0,1 s, comprobado con cámara real y falsa).
+- La cámara falsa de WebView2 (`--use-fake-device-for-media-stream`) da 1080p a 20 fps; la conversión la deja a 30 CFR.
 - La tira de trozos se reordena con eventos de puntero, no con el arrastre HTML5 de elementos (con `dragDropEnabled` en Windows no es fiable, según los avisos de Tauri; no se ha comprobado aquí).
 
 ## Notas de ffmpeg comprobadas

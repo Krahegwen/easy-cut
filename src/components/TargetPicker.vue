@@ -5,16 +5,22 @@ import { describeTargetOption, setTargetDuration, TARGET_DURATION_OPTIONS } from
 import { store } from '../store'
 import AppIcon from './AppIcon.vue'
 
+// Sin v-model cambia la del vídeo (con deshacer); con v-model (teleprompter), solo devuelve el valor.
+const props = defineProps<{ modelValue?: number | null }>()
+const emit = defineEmits<{ 'update:modelValue': [value: number | null] }>()
+const controlled = computed(() => props.modelValue !== undefined)
+
 const open = ref(false)
 const custom = ref(false)
 const minutes = ref(4)
 const seconds = ref(0)
 
-const current = computed(() => store.project.value.targetDurationMs)
+const current = computed(() => (controlled.value ? props.modelValue ?? null : store.project.value.targetDurationMs))
 const label = computed(() => describeTargetOption(current.value))
 
 function choose(value: number | null) {
-  store.apply((p) => setTargetDuration(p, value))
+  if (controlled.value) emit('update:modelValue', value)
+  else store.apply((p) => setTargetDuration(p, value))
   open.value = false
   custom.value = false
 }

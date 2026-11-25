@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { BT709_SETPARAMS } from './ffmpeg-args'
 import { fakeMedia } from './test-helpers'
 import {
+  buildAudioRecordingTranscodeArgs,
+  buildDurationProbeArgs,
   buildPreviewProxyArgs,
   buildRecordingTranscodeArgs,
+  parseDurationOutput,
   chooseFastEncoder,
   proxyFps,
   proxyScaleFilter,
@@ -66,6 +69,25 @@ describe('grabaciones', () => {
     expect(valueAfter(args, '-c:a')).toBe('aac')
     expect(valueAfter(args, '-movflags')).toBe('+faststart')
     expect(args.at(-1)).toBe('out.mp4')
+  })
+
+  it('solo la voz: M4A con AAC a 48 kHz y sin vídeo', () => {
+    const args = buildAudioRecordingTranscodeArgs('in.webm', 'out.m4a')
+    expect(valueAfter(args, '-map')).toBe('0:a:0')
+    expect(args).toContain('-vn')
+    expect(args).not.toContain('-c:v')
+    expect(valueAfter(args, '-c:a')).toBe('aac')
+    expect(valueAfter(args, '-ar')).toBe('48000')
+    expect(valueAfter(args, '-af')).toContain('aresample=async=1')
+    expect(valueAfter(args, '-f')).toBe('ipod')
+    expect(args.at(-1)).toBe('out.m4a')
+  })
+
+  it('duración con ffprobe', () => {
+    expect(buildDurationProbeArgs('a.m4a').at(-1)).toBe('a.m4a')
+    expect(parseDurationOutput('6.021333\r\n')).toBe(6021)
+    expect(parseDurationOutput('N/A')).toBeNull()
+    expect(parseDurationOutput('')).toBeNull()
   })
 
   it('elige NVENC solo si pasó la prueba', () => {

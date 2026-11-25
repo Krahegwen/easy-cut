@@ -93,6 +93,47 @@ export function buildPreviewProxyArgs(media: MediaInfo, outputPath: string, enco
   ]
 }
 
+/** Frecuencia del audio de las grabaciones (también las de solo la voz). */
+export const RECORDING_SAMPLE_RATE = 48_000
+
+/**
+ * Grabación de solo la voz (MediaRecorder de audio) a M4A: AAC a 48 kHz, sin pista de vídeo.
+ * aresample=async corrige las marcas de tiempo irregulares (y los saltos tras pausar y seguir).
+ */
+export function buildAudioRecordingTranscodeArgs(inputPath: string, outputPath: string): string[] {
+  return [
+    '-hide_banner',
+    '-y',
+    '-nostdin',
+    '-nostats',
+    '-loglevel', 'error',
+    '-progress', 'pipe:1',
+    '-fflags', '+genpts',
+    '-i', inputPath,
+    '-map', '0:a:0',
+    '-vn', '-sn', '-dn',
+    '-af', 'aresample=async=1:first_pts=0',
+    '-c:a', 'aac',
+    '-b:a', '160k',
+    '-ac', '2',
+    '-ar', String(RECORDING_SAMPLE_RATE),
+    '-movflags', '+faststart',
+    '-f', 'ipod',
+    outputPath,
+  ]
+}
+
+/** ffprobe que solo pide la duración del fichero (para lo que no es vídeo, como un M4A). */
+export function buildDurationProbeArgs(path: string): string[] {
+  return ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', path]
+}
+
+/** Duración (ms) de la salida de buildDurationProbeArgs, o null si no se sabe. */
+export function parseDurationOutput(stdout: string): number | null {
+  const n = Number(stdout.trim().split(/\r?\n/)[0])
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 1000) : null
+}
+
 /**
  * Grabación de MediaRecorder (WebM sin duración ni índice) a MP4 H.264 + AAC a 30 fps CFR.
  * genpts y aresample=async reparan las marcas de tiempo irregulares que deja el grabador.

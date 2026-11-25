@@ -38,6 +38,10 @@ struct Recording {
     file: Option<fs::File>,
     temp_path: PathBuf,
     stem: String,
+    /// Extensión del formato del grabador (mp4, webm o mkv), para el temporal y si hay que conservarlo.
+    extension: &'static str,
+    /// Formato final: mp4 (vídeo y sonido) o m4a (solo la voz).
+    output_extension: &'static str,
     output_path: Option<PathBuf>,
 }
 
@@ -360,9 +364,13 @@ pub fn list_file_names(folder: String) -> Result<Vec<String>, String> {
 #[tauri::command]
 pub async fn delete_partial_output(app: AppHandle, path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
-    let is_mp4 = p.extension().map(|e| e.eq_ignore_ascii_case("mp4")).unwrap_or(false);
+    // .mp4 (vídeos a medias y grabaciones) y .m4a (grabaciones de solo la voz que se repiten).
+    let is_ours = p
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("mp4") || e.eq_ignore_ascii_case("m4a"))
+        .unwrap_or(false);
     let root = output_folder(&app)?;
-    if !is_mp4 || !is_inside(&p, &root) {
+    if !is_ours || !is_inside(&p, &root) {
         return Err("Solo se pueden borrar vídeos a medias de la carpeta de los montajes.".into());
     }
     let mut last_error = None;
@@ -539,18 +547,60 @@ fn recording_stem(suggested: &str) -> String {
     sanitize_file_stem(trimmed, "Grabación")
 }
 
+/// Extensión admitida para el temporal de una grabación (lo que dé MediaRecorder); webm si no se sabe.
+fn recording_extension(requested: Option<&str>) -> &'static str {
+    match requested.map(|e| e.trim_start_matches('.').to_ascii_lowercase()).as_deref() {
+        Some("mp4") => "mp4",
+        Some("m4a") => "m4a",
+        Some("mkv") => "mkv",
+        _ => "webm",
+    }
+}
+
+/// Formato final de la grabación: MP4 (vídeo y sonido) o M4A (solo la voz). MP4 si no se sabe.
+fn recording_output_extension(requested: Option<&str>) -> &'static str {
+    match requested.map(|e| e.trim_start_matches('.').to_ascii_lowercase()).as_deref() {
+        Some("m4a") => "m4a",
+        _ => "mp4",
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingStarted {
+    token: String,
+    /// Fichero temporal donde se van escribiendo los datos (se puede reproducir para revisarlo).
+    temp_path: String,
+}
+
 /// Empieza a recibir una grabación. Los datos llegan por trozos con recording_append.
 #[tauri::command]
-pub fn recording_begin(app: AppHandle, state: State<'_, AppState>, suggested_name: String) -> Result<String, String> {
+pub fn recording_begin(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    suggested_name: String,
+    extension: Option<String>,
+    output_extension: Option<String>,
+) -> Result<RecordingStarted, String> {
     let dir = cache_dir(&app, "recordings")?;
     let token = format!("rec-{}-{}", std::process::id(), state.next_id());
-    let temp_path = dir.join(format!("{token}.webm"));
+    let extension = recording_extension(extension.as_deref());
+    let output_extension = recording_output_extension(output_extension.as_deref());
+    let temp_path = dir.join(format!("{token}.{extension}"));
     let file = fs::File::create(&temp_path).map_err(io_err("No se ha podido empezar a guardar la grabación"))?;
+    let started = RecordingStarted { token: token.clone(), temp_path: path_string(&temp_path) };
     state.recordings.lock().unwrap().insert(
-        token.clone(),
-        Recording { file: Some(file), temp_path, stem: recording_stem(&suggested_name), output_path: None },
+        token,
+        Recording {
+            file: Some(file),
+            temp_path,
+            stem: recording_stem(&suggested_name),
+            extension,
+            output_extension,
+            output_path: None,
+        },
     );
-    Ok(token)
+    Ok(started)
 }
 
 /// Un trozo de la grabación, en el cuerpo binario de invoke (cabecera `x-recording-token`).
@@ -578,7 +628,8 @@ pub struct RecordingTargets {
     output_path: String,
 }
 
-/// Cierra la grabación y reserva el MP4 de destino en Vídeos\Mis montajes\Grabaciones, sin sobrescribir.
+/// Cierra la grabación y reserva el fichero de destino (MP4, o M4A si es solo la voz) en
+/// Vídeos\Mis montajes\Grabaciones, sin sobrescribir.
 #[tauri::command]
 pub fn recording_finish(app: AppHandle, state: State<'_, AppState>, token: String) -> Result<RecordingTargets, String> {
     let folder = output_folder(&app)?.join(RECORDINGS_FOLDER_NAME);
@@ -588,15 +639,16 @@ pub fn recording_finish(app: AppHandle, state: State<'_, AppState>, token: Strin
     if let Some(mut file) = rec.file.take() {
         file.flush().map_err(io_err("No se ha podido cerrar la grabación"))?;
     }
-    let output = unique_path(&folder, &rec.stem, "mp4").map_err(io_err("No se puede leer la carpeta de grabaciones"))?;
+    let output = unique_path(&folder, &rec.stem, rec.output_extension).map_err(io_err("No se puede leer la carpeta de grabaciones"))?;
     // Fichero vacío que reserva el nombre; ffmpeg lo sobrescribe con -y.
     fs::File::create(&output).map_err(io_err("No se puede crear el vídeo de la grabación"))?;
     rec.output_path = Some(output.clone());
     Ok(RecordingTargets { temp_path: path_string(&rec.temp_path), output_path: path_string(&output) })
 }
 
-/// Tras convertir: si salió bien, borra el WebM temporal; si no, lo deja en Grabaciones (no se pierde
-/// nada) y devuelve su ruta.
+/// Tras convertir: si salió bien, borra el temporal; si no, lo deja en Grabaciones (no se pierde
+/// nada) y devuelve su ruta. Con `success` y sin haber llamado a recording_finish, descarta la grabación
+/// («Repetir»): borra el temporal y no deja nada.
 #[tauri::command]
 pub fn recording_cleanup(app: AppHandle, state: State<'_, AppState>, token: String, success: bool) -> Result<Option<String>, String> {
     let rec = state.recordings.lock().unwrap().remove(&token).ok_or("Grabación desconocida")?;
@@ -610,7 +662,7 @@ pub fn recording_cleanup(app: AppHandle, state: State<'_, AppState>, token: Stri
     }
     let folder = output_folder(&app)?.join(RECORDINGS_FOLDER_NAME);
     fs::create_dir_all(&folder).map_err(io_err("No se puede crear la carpeta de grabaciones"))?;
-    let kept = unique_path(&folder, &rec.stem, "webm").map_err(io_err("No se puede leer la carpeta de grabaciones"))?;
+    let kept = unique_path(&folder, &rec.stem, rec.extension).map_err(io_err("No se puede leer la carpeta de grabaciones"))?;
     // rename falla entre unidades distintas: entonces, copiar y borrar.
     if fs::rename(&rec.temp_path, &kept).is_err() {
         fs::copy(&rec.temp_path, &kept).map_err(io_err("No se ha podido conservar la grabación"))?;
@@ -621,7 +673,25 @@ pub fn recording_cleanup(app: AppHandle, state: State<'_, AppState>, token: Stri
 
 #[cfg(test)]
 mod tests {
-    use super::recording_stem;
+    use super::{recording_extension, recording_output_extension, recording_stem};
+
+    #[test]
+    fn recording_output_is_mp4_or_m4a() {
+        assert_eq!(recording_output_extension(Some("m4a")), "m4a");
+        assert_eq!(recording_output_extension(Some(".M4A")), "m4a");
+        assert_eq!(recording_output_extension(Some("mp4")), "mp4");
+        assert_eq!(recording_output_extension(Some("exe")), "mp4");
+        assert_eq!(recording_output_extension(None), "mp4");
+    }
+
+    #[test]
+    fn recording_extension_only_known_formats() {
+        assert_eq!(recording_extension(Some("m4a")), "m4a");
+        assert_eq!(recording_extension(Some("mp4")), "mp4");
+        assert_eq!(recording_extension(Some(".MKV")), "mkv");
+        assert_eq!(recording_extension(Some("exe")), "webm");
+        assert_eq!(recording_extension(None), "webm");
+    }
 
     #[test]
     fn recording_stem_drops_video_extensions() {

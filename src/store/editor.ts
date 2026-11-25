@@ -20,6 +20,7 @@ import {
   redo as historyRedo,
   removeClip as removeClipFromProject,
   serializeProject,
+  setTargetDuration,
   undo as historyUndo,
   type History,
   type MediaInfo,
@@ -58,6 +59,12 @@ export interface AutosaveSummary {
 
 export type ProxyStatus = 'working' | 'ready' | 'error'
 
+export interface ClipEditorStart {
+  tab: 'pauses'
+  /** Lanzar ya la búsqueda de pausas. */
+  findPauses: boolean
+}
+
 export interface EditorStoreOptions {
   /** Espera del autoguardado tras el último cambio (ms). */
   autosaveDelayMs?: number
@@ -94,6 +101,12 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
   const autosave = shallowRef<AutosaveSummary | null>(null)
   /** Fichero guardado en la última exportación. */
   const lastExport = shallowRef<{ path: string; folder: string; durationMs: number } | null>(null)
+  /** Pantalla de la que se vino (para que «Volver» del teleprompter regrese a Inicio o a «Tu vídeo»). */
+  const previousScreen = ref<Screen>('home')
+  /** Con qué abrir «Arreglar este trozo» (lo lee la pantalla al montarse y lo borra). */
+  const clipEditorStart = shallowRef<ClipEditorStart | null>(null)
+  /** Trozo recién grabado al que se le ofrece «Quitar las pausas de esta grabación». */
+  const recordingOffer = ref<string | null>(null)
 
   const project = computed<Project>(() => transient.value ?? history.value.present)
   const durationMs = computed(() => projectDurationMs(project.value))
@@ -312,6 +325,7 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     editingClipId.value = null
     editingEntry.value = null
     lastExport.value = null
+    recordingOffer.value = null
     autosave.value = null
     void bridge.clearAutosave().catch((e) => console.warn('[easy-cut] no se pudo borrar el autoguardado', e))
   }
@@ -375,9 +389,11 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     showToast('Trozo quitado. El original sigue en tu ordenador.', { label: 'Deshacer', run: undo })
   }
 
-  function openClipEditor(clipId: string) {
+  function openClipEditor(clipId: string, start: ClipEditorStart | null = null) {
     const clip = findClip(history.value.present, clipId)
     if (!clip || missing.value[clip.sourcePath] || !media.value[clip.sourcePath]) return
+    clipEditorStart.value = start
+    if (recordingOffer.value === clipId) recordingOffer.value = null
     selectedClipId.value = clipId
     editingClipId.value = clipId
     editingEntry.value = history.value.present
@@ -450,8 +466,34 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
   /** Cambia de pantalla. Los avisos de la anterior (p. ej. «Deshacer») ya no vienen a cuento. */
   function go(next: Screen) {
     commitPreview()
-    if (screen.value !== next) hideToast()
+    if (screen.value !== next) {
+      hideToast()
+      previousScreen.value = screen.value
+    }
     screen.value = next
+  }
+
+  // ------------------------------------------------------------------ grabaciones (teleprompter)
+
+  /**
+   * Añade una grabación como trozo nuevo al final, lo deja elegido, ofrece quitarle las pausas y pasa
+   * la duración máxima elegida al vídeo (si se ha elegido una). Con `fresh`, empieza antes un vídeo nuevo.
+   * Devuelve false si el fichero no se ha podido leer (el aviso queda en `preparing`).
+   */
+  async function addRecording(path: string, options: { targetMs?: number | null; fresh?: boolean } = {}): Promise<boolean> {
+    if (options.fresh) startNewProject()
+    const before = new Set(history.value.present.clips.map((c) => c.id))
+    const res = await addClipsFromPaths([path])
+    const added = history.value.present.clips.find((c) => !before.has(c.id))
+    if (res.added === 0 || !added) return false
+    if (options.targetMs !== undefined) apply((p) => setTargetDuration(p, options.targetMs ?? null))
+    selectedClipId.value = added.id
+    recordingOffer.value = media.value[path]?.hasAudio ? added.id : null
+    return true
+  }
+
+  function dismissRecordingOffer() {
+    recordingOffer.value = null
   }
 
   return {
@@ -475,6 +517,9 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     error,
     autosave,
     lastExport,
+    previousScreen,
+    clipEditorStart,
+    recordingOffer,
     undoable,
     redoable,
     playableProject,
@@ -510,6 +555,8 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     thumbnail,
     thumbnails,
     go,
+    addRecording,
+    dismissRecordingOffer,
   }
 }
 

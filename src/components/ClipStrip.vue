@@ -7,7 +7,7 @@ import { store } from '../store'
 import AppIcon from './AppIcon.vue'
 import ThumbImage from './ThumbImage.vue'
 
-const emit = defineEmits<{ add: [] }>()
+const emit = defineEmits<{ add: []; record: [] }>()
 
 const clips = computed(() => store.project.value.clips)
 const scroller = ref<HTMLDivElement | null>(null)
@@ -181,6 +181,12 @@ const slotBefore = computed<string | null>(() => {
         Añadir más vídeos
       </span>
     </button>
+    <button class="clip-card add record" type="button" data-testid="record-more" @click="emit('record')">
+      <span class="add-inner">
+        <AppIcon name="camera" :size="34" />
+        Grabarme
+      </span>
+    </button>
     <Teleport to="body">
       <div v-if="draggedClip" class="clip-card ghost selected" :style="ghostStyle">
         <span class="picture">
@@ -310,6 +316,9 @@ const slotBefore = computed<string | null>(() => {
   background: transparent;
   color: var(--accent);
   justify-content: center;
+}
+.add.record {
+  width: 150px;
 }
 .add:hover {
   background: var(--accent-soft);

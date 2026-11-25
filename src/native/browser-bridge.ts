@@ -68,6 +68,8 @@ export function createBrowserBridge(): NativeBridge {
     saveProject: () => unavailable('Guardar el proyecto'),
     loadProject: () => unavailable('Abrir un proyecto'),
     saveRecording: () => unavailable('Guardar la grabación'),
+    beginRecording: () => unavailable('Grabar'),
+    deleteRecording: () => unavailable('Borrar la grabación'),
     onFilesDropped: () => () => {},
   }
 }

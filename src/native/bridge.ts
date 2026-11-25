@@ -5,6 +5,7 @@
 import type { EncoderProbeResults } from '../domain/encoders'
 import type { MediaInfo, TimeRange } from '../domain/project'
 import type { ProgressUpdate } from '../domain/progress'
+import type { RecordingKind } from '../domain/recording'
 
 export interface CancelToken {
   readonly cancelled: boolean
@@ -48,9 +49,33 @@ export interface Thumbnail {
 export interface SavedRecording {
   path: string
   durationMs: number
+  /**
+   * 'video' = MP4 H.264 + AAC; 'audio' = M4A (AAC, 48 kHz) de solo la voz. De momento la de solo voz no
+   * entra en el montaje (para añadirla como trozo hará falta un trozo sin imagen en domain/project.ts).
+   */
+  kind: RecordingKind
 }
 
 export type ProgressCallback = (update: ProgressUpdate) => void
+
+/**
+ * Grabación que se va escribiendo al disco por partes mientras se graba (no se acumula en memoria).
+ * Hay que terminarla con save() o discard().
+ */
+export interface RecordingWriter {
+  /** Fichero temporal con lo grabado hasta ahora (se puede reproducir con mediaUrl para revisarlo). */
+  readonly tempPath: string
+  /** Añade un trozo de datos del grabador. Los trozos se escriben en el orden en que se llaman. */
+  append(data: Blob): Promise<void>
+  /**
+   * Convierte lo grabado a MP4 H.264 + AAC CFR (o, si es solo la voz, a M4A AAC 48 kHz) en
+   * Vídeos\Mis montajes\Grabaciones, sin sobrescribir, y borra el temporal. `expectedDurationMs` sirve
+   * para el porcentaje del progreso.
+   */
+  save(onProgress?: ProgressCallback, expectedDurationMs?: number): Promise<SavedRecording>
+  /** Descarta la grabación: borra el temporal y no deja nada. */
+  discard(): Promise<void>
+}
 
 export interface FileDropHandlers {
   /** Rutas soltadas en la ventana (ficheros de cualquier tipo: filtrar en la interfaz). */
@@ -135,9 +160,23 @@ export interface NativeBridge {
 
   /**
    * Guarda una grabación de MediaRecorder (teleprompter) en Vídeos\Mis montajes\Grabaciones, sin sobrescribir,
-   * convertida a MP4 H.264 + AAC CFR. Devuelve la ruta del MP4 y su duración.
+   * convertida a MP4 H.264 + AAC CFR; si el Blob es de audio (`audio/…`), a M4A de solo la voz.
+   * Devuelve la ruta, su duración y qué es.
    */
   saveRecording(data: Blob | ArrayBuffer, suggestedName: string, onProgress?: ProgressCallback): Promise<SavedRecording>
+
+  /**
+   * Empieza una grabación que se escribe por partes (teleprompter). `extension` es la del formato del
+   * grabador (mp4, m4a, webm o mkv); `kind`, si es con vídeo o solo la voz. El resultado final es el
+   * mismo que el de saveRecording.
+   */
+  beginRecording(suggestedName: string, extension?: string, kind?: RecordingKind): Promise<RecordingWriter>
+
+  /**
+   * Borra una grabación ya guardada («Repetir» una de solo la voz). Solo admite .mp4 y .m4a dentro de
+   * la carpeta de getOutputFolder(). No falla si ya no existe.
+   */
+  deleteRecording(path: string): Promise<void>
 
   /** Ficheros arrastrados a la ventana. Devuelve la función para dejar de escuchar. */
   onFilesDropped(handlers: FileDropHandlers): () => void

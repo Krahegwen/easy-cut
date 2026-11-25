@@ -116,6 +116,13 @@ function showAt(ms: number) {
 
 onMounted(() => {
   showAt(io.value.startMs)
+  // Viene de «Quitar las pausas de esta grabación»: directo a la pestaña, con la búsqueda lanzada.
+  const start = store.clipEditorStart.value
+  store.clipEditorStart.value = null
+  if (start?.tab === 'pauses') {
+    tab.value = 'pauses'
+    if (start.findPauses && hasAudio.value && pauses.value?.status !== 'searching') findPauses()
+  }
   setKeyHandler((e) => {
     if (e.key === ' ') {
       player.value?.toggle()
