@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "test:ffmpeg": "vitest run --config vitest.integration.config.ts",
     "tauri": "tauri",
-    "fetch-ffmpeg": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1"
+    "fetch-ffmpeg": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1",
+    "build-release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.5",
