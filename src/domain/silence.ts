@@ -156,3 +156,17 @@ export function removedMs(keep: readonly TimeRange[], range: TimeRange): number 
   const kept = keep.reduce((sum, r) => sum + (r.endMs - r.startMs), 0)
   return Math.max(0, range.endMs - range.startMs - kept)
 }
+
+/** Huecos que se quitan del rango con estos rangos conservados (lo que no se conserva). */
+export function removedRanges(keep: readonly TimeRange[], range: TimeRange): TimeRange[] {
+  const out: TimeRange[] = []
+  let cursor = range.startMs
+  const sorted = [...keep].sort((a, b) => a.startMs - b.startMs)
+  for (const k of sorted) {
+    const start = Math.max(k.startMs, range.startMs)
+    if (start > cursor) out.push({ startMs: cursor, endMs: Math.min(start, range.endMs) })
+    cursor = Math.max(cursor, Math.min(k.endMs, range.endMs))
+  }
+  if (cursor < range.endMs) out.push({ startMs: cursor, endMs: range.endMs })
+  return out.filter((r) => r.endMs > r.startMs)
+}

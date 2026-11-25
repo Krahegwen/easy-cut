@@ -200,3 +200,38 @@ export function describeFileSize(bytes: number): SizeDescription {
   const amount = formatted.startsWith('menos') ? formatted : `unos ${formatted}`
   return { category, label, amount, text: `${label.charAt(0).toUpperCase()}${label.slice(1)} (${amount})` }
 }
+
+/**
+ * Estimación aproximada de lo que tarda en guardarse (ms), según los píxeles por segundo de la salida
+ * y el encoder. Las cifras son de un PC de sobremesa normal: es una orientación, no una promesa.
+ * `measuredFactor` (de normalizedExportFactor, medido en un guardado anterior con el mismo tipo de
+ * encoder) sustituye al de serie si se conoce.
+ */
+export function estimateExportTimeMs(
+  spec: Pick<OutputSpec, 'width' | 'height' | 'fps' | 'preset'>,
+  durationMs: number,
+  hardware: boolean,
+  measuredFactor?: number | null,
+): number {
+  const pixelScale = (spec.width * spec.height * spec.fps) / (1920 * 1080 * 30)
+  const perPixel = hardware ? 0.18 : spec.preset === 'high' ? 1.2 : 0.6
+  const factor = measuredFactor && measuredFactor > 0 ? measuredFactor * pixelScale : 0.05 + perPixel * pixelScale
+  return Math.round(2_000 + durationMs * factor)
+}
+
+/** Factor medido (tiempo de proceso ÷ duración) normalizado a 1080p30, para reutilizarlo en otra salida. */
+export function normalizedExportFactor(spec: Pick<OutputSpec, 'width' | 'height' | 'fps'>, durationMs: number, elapsedMs: number): number {
+  const pixelScale = (spec.width * spec.height * spec.fps) / (1920 * 1080 * 30)
+  if (durationMs <= 0 || pixelScale <= 0) return 0
+  return elapsedMs / durationMs / pixelScale
+}
+
+/** «tardará menos de un minuto», «tardará unos 3 minutos». */
+export function describeExportTime(ms: number): string {
+  if (ms < 60_000) return 'tardará menos de un minuto'
+  if (ms < 90_000) return 'tardará alrededor de un minuto'
+  const minutes = Math.round(ms / 60_000)
+  if (minutes < 60) return `tardará unos ${minutes} minutos`
+  const hours = Math.round(ms / 3_600_000)
+  return hours <= 1 ? 'tardará alrededor de una hora' : `tardará unas ${hours} horas`
+}

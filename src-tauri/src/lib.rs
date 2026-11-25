@@ -35,6 +35,7 @@ pub fn run() {
             commands::get_output_folder,
             commands::list_file_names,
             commands::path_exists,
+            commands::delete_partial_output,
             commands::open_file,
             commands::reveal_in_folder,
             commands::copy_file_to_clipboard,

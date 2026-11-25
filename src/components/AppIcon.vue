@@ -1,0 +1,84 @@
+<script setup lang="ts">
+// Iconos propios en SVG (trazo de 2 px sobre 24 × 24), sencillos y siempre acompañados de texto.
+import { computed } from 'vue'
+import type { IconName } from './icons'
+
+const props = withDefaults(defineProps<{ name: IconName; size?: number }>(), { size: 24 })
+
+// Cada icono: lista de elementos SVG (path d o figuras simples).
+const ICONS: Record<IconName, string> = {
+  play: '<path d="M8 5.5v13l10.5-6.5z" fill="currentColor" stroke="none"/>',
+  pause: '<rect x="6.5" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none"/><rect x="13.5" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+  redo: '<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
+  scissors: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/>',
+  split: '<path d="M12 3v18"/><path d="M8 7H4v10h4M16 7h4v10h-4"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  'arrow-left': '<path d="M19 12H5M11 6l-6 6 6 6"/>',
+  'arrow-right': '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  back: '<path d="M15 6l-6 6 6 6"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  save: '<path d="M12 4v11M7 10.5l5 5 5-5"/><path d="M5 19.5h14"/>',
+  film: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 9.5h4M3 14.5h4M17 9.5h4M17 14.5h4"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  'rotate-left': '<path d="M4 4v5h5"/><path d="M4.6 9A8 8 0 1 1 6 16.9"/>',
+  'rotate-right': '<path d="M20 4v5h-5"/><path d="M19.4 9A8 8 0 1 0 18 16.9"/>',
+  'zoom-in': '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7.5v6M7.5 10.5h6"/>',
+  'zoom-out': '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7.5 10.5h6"/>',
+  center: '<circle cx="12" cy="12" r="3"/><path d="M12 2.5V6M12 18v3.5M2.5 12H6M18 12h3.5"/>',
+  speed: '<path d="M4.5 17.5a8.5 8.5 0 1 1 15 0"/><path d="m12 13 4-5"/><circle cx="12" cy="13.5" r="1.2" fill="currentColor"/>',
+  sound: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>',
+  mute: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="m16 9.5 5 5M21 9.5l-5 5"/>',
+  folder: '<path d="M3.5 6.5a1.5 1.5 0 0 1 1.5-1.5h4.5l2 2.5H19a1.5 1.5 0 0 1 1.5 1.5v8.5A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/>',
+  copy: '<rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2"/><path d="M15.5 8.5V5.5a1.5 1.5 0 0 0-1.5-1.5H5.5A1.5 1.5 0 0 0 4 5.5V14a1.5 1.5 0 0 0 1.5 1.5h3"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+  warning: '<path d="M12 4 2.8 19.5h18.4z"/><path d="M12 10v4.5"/><circle cx="12" cy="17" r=".6" fill="currentColor"/>',
+  pauses: '<path d="M3 12h3l2-5 3 10 2-5h1.5"/><path d="M17 8v8M20.5 8v8"/>',
+  frame: '<path d="M7 3v14h14"/><path d="M3 7h14v14"/>',
+  horizontal: '<rect x="2.5" y="6.5" width="19" height="11" rx="1.5"/>',
+  vertical: '<rect x="7" y="2.5" width="10" height="19" rx="1.5"/>',
+  square: '<rect x="4.5" y="4.5" width="15" height="15" rx="1.5"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  'step-back': '<path d="M11 7 6 12l5 5"/><path d="M18 7l-5 5 5 5"/>',
+  'step-forward': '<path d="m13 7 5 5-5 5"/><path d="m6 7 5 5-5 5"/>',
+  'start-here': '<path d="M6 4v16"/><path d="M10 12h10M15 7l5 5-5 5"/>',
+  'end-here': '<path d="M18 4v16"/><path d="M4 12h10M9 7l5 5-5 5"/>',
+  reset: '<path d="M4 4v5h5"/><path d="M4.6 9A8 8 0 1 1 4 13"/>',
+  wrench: '<path d="M14.5 5.5a4 4 0 0 0 4.9 4.9L20 11l-9.5 9.5a2.1 2.1 0 0 1-3-3L17 8l.6.6"/><path d="M14.5 5.5 17 3l1.5 1.5"/>',
+  search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/>',
+  phone: '<rect x="6.5" y="2.5" width="11" height="19" rx="2"/><path d="M10.5 18h3"/>',
+  globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.5 3.5 5.5 3.5 8.5s-1 6-3.5 8.5c-2.5-2.5-3.5-5.5-3.5-8.5s1-6 3.5-8.5z"/>',
+  star: '<path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>',
+  home: '<path d="M4 11 12 4l8 7"/><path d="M6 9.5V20h12V9.5"/>',
+  upload: '<path d="M12 16V5M7 9.5l5-5 5 5"/><path d="M5 19.5h14"/>',
+  drag: '<circle cx="9" cy="7" r="1.2" fill="currentColor"/><circle cx="15" cy="7" r="1.2" fill="currentColor"/><circle cx="9" cy="12" r="1.2" fill="currentColor"/><circle cx="15" cy="12" r="1.2" fill="currentColor"/><circle cx="9" cy="17" r="1.2" fill="currentColor"/><circle cx="15" cy="17" r="1.2" fill="currentColor"/>',
+}
+
+const svg = computed(() => ICONS[props.name])
+</script>
+
+<template>
+  <svg
+    class="app-icon"
+    :width="size"
+    :height="size"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+    focusable="false"
+    v-html="svg"
+  />
+</template>
+
+<style scoped>
+.app-icon {
+  flex: none;
+  display: block;
+}
+</style>

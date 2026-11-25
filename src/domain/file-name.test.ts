@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildOutputFileName, formatSpanishDate } from './file-name'
+import { baseName, buildOutputFileName, formatSpanishDate, isVideoPath } from './file-name'
 
 const date = new Date(2026, 10, 25, 18, 30)
 
@@ -28,5 +28,19 @@ describe('nombre del fichero de salida', () => {
   it('tilde compuesta (NFD) cuenta como la misma', () => {
     const nfd = 'Vídeo del 25 de noviembre de 2026 (calidad alta).mp4'.normalize('NFD')
     expect(buildOutputFileName(date, 'high', [nfd])).toBe('Vídeo del 25 de noviembre de 2026 (calidad alta) 2.mp4')
+  })
+})
+
+describe('vídeos por extensión y nombre del fichero', () => {
+  it('isVideoPath', () => {
+    expect(isVideoPath('C:\\a\\Toma 1.MP4')).toBe(true)
+    expect(isVideoPath('C:\\a\\b.mov')).toBe(true)
+    expect(isVideoPath('C:\\a\\foto.jpg')).toBe(false)
+    expect(isVideoPath('C:\\a.b\\sin-extension')).toBe(false)
+  })
+  it('baseName', () => {
+    expect(baseName('C:\\Users\\Ana\\Vídeos\\toma 1.mp4')).toBe('toma 1.mp4')
+    expect(baseName('/tmp/x.mp4')).toBe('x.mp4')
+    expect(baseName('x.mp4')).toBe('x.mp4')
   })
 })

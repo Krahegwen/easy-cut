@@ -122,3 +122,46 @@ export function summarizeEdit(input: {
 function lowerFirst(s: string): string {
   return s.charAt(0).toLowerCase() + s.slice(1)
 }
+
+/**
+ * Formato de la interfaz: «32 s», «4 min 35 s», «4 min», «1 h 5 min», «menos de 1 s».
+ * Es el que se usa en la barra de duración y en las tarjetas de los trozos.
+ */
+export function formatDuration(ms: number): string {
+  if (Math.abs(ms) > 0 && Math.abs(ms) < 500) return 'menos de 1 s'
+  const { hours, minutes, seconds } = splitSeconds(roundSeconds(ms))
+  if (hours > 0) return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`
+  if (minutes > 0) return seconds > 0 ? `${minutes} min ${seconds} s` : `${minutes} min`
+  return `${seconds} s`
+}
+
+/** «32 s → 14 s», o solo «32 s» si, redondeado, no cambia. */
+export function formatDurationChange(beforeMs: number, afterMs: number): string {
+  const before = formatDuration(beforeMs)
+  const after = formatDuration(afterMs)
+  return before === after ? after : `${before} → ${after}`
+}
+
+/** Reloj de la barra de posición: «0:07», «4:35», «1:02:03». */
+export function formatClock(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const { hours, minutes, seconds } = splitSeconds(total)
+  const ss = String(seconds).padStart(2, '0')
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${ss}`
+  return `${minutes}:${ss}`
+}
+
+/** Fracción (0..1, o más si se pasa) del vídeo respecto a la duración máxima. */
+export function targetFraction(totalMs: number, targetMs: number): number {
+  if (targetMs <= 0) return 0
+  return Math.max(0, totalMs / targetMs)
+}
+
+/** Opciones del control «Duración máxima» (null = sin límite). */
+export const TARGET_DURATION_OPTIONS: readonly (number | null)[] = [null, 60_000, 120_000, 180_000, 300_000, 600_000]
+
+/** «Sin límite», «1 minuto», «5 minutos», «2 minutos y 30 segundos». */
+export function describeTargetOption(targetMs: number | null): string {
+  if (targetMs === null || targetMs <= 0) return 'Sin límite'
+  return formatDurationLong(targetMs)
+}

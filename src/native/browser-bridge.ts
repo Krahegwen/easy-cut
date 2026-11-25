@@ -38,6 +38,7 @@ export function createBrowserBridge(): NativeBridge {
     pickOutputFolder: () => unavailable('Elegir carpeta'),
     listFileNames: () => Promise.resolve([]),
     joinPath: (...parts) => joinWindowsPath(...parts),
+    deletePartialOutput: () => Promise.resolve(),
     openFile: () => unavailable('Abrir el vídeo'),
     revealInFolder: () => unavailable('Mostrar en la carpeta'),
     copyFileToClipboard: () => unavailable('Copiar al portapapeles'),

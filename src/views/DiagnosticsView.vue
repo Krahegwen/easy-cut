@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Pantalla de diagnóstico de la shell de escritorio: un botón por función del bridge.
-// Provisional: la interfaz de verdad la sustituirá. No es para el usuario final.
+// Solo en desarrollo (abrir con ?diagnostics). No es para el usuario final.
 
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
 import * as domain from '../domain'
@@ -256,7 +256,9 @@ onMounted(() => {
     onHover: (h) => (hovering.value = h),
   })
   // Acceso para las pruebas automáticas por CDP (scripts/webview-smoke.mjs).
-  ;(window as unknown as Record<string, unknown>).__easyCut = { bridge, domain, select, videoEl, videoState, log }
+  if (import.meta.env.DEV) {
+    ;(window as unknown as Record<string, unknown>).__easyCut = { bridge, domain, select, videoEl, videoState, log }
+  }
 })
 onBeforeUnmount(() => {
   stopDrop?.()

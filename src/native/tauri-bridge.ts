@@ -287,6 +287,8 @@ export function createTauriBridge(): NativeBridge {
     listFileNames: (folder) => invoke<string[]>('list_file_names', { folder }),
     joinPath: (...parts) => joinWindowsPath(...parts),
 
+    deletePartialOutput: (path) => invoke<void>('delete_partial_output', { path }),
+
     openFile: (path) => invoke<void>('open_file', { path }),
     revealInFolder: (path) => invoke<void>('reveal_in_folder', { path }),
     copyFileToClipboard: (path) => invoke<void>('copy_file_to_clipboard', { path }),

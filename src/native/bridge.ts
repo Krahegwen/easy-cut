@@ -110,6 +110,12 @@ export interface NativeBridge {
   listFileNames(folder: string): Promise<string[]>
   joinPath(...parts: string[]): string
 
+  /**
+   * Borra un vídeo a medias (exportación cancelada o fallida). Solo admite .mp4 dentro de la carpeta
+   * de getOutputFolder(): nunca toca un original. No falla si el fichero ya no existe.
+   */
+  deletePartialOutput(path: string): Promise<void>
+
   /** Abre el fichero con la aplicación predeterminada. */
   openFile(path: string): Promise<void>
   /** Abre el Explorador con el fichero seleccionado (o la carpeta, si se da una carpeta). */

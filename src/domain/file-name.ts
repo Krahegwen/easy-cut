@@ -30,3 +30,18 @@ export function buildOutputFileName(date: Date, preset: PresetId, existingNames:
   for (let n = 2; !isFree(candidate); n++) candidate = `${base} ${n}.mp4`
   return candidate
 }
+
+/** Extensiones que se aceptan como vídeo (las mismas que el diálogo de elegir vídeos, commands.rs). */
+export const VIDEO_EXTENSIONS: readonly string[] = ['mp4', 'mov', 'mkv', 'avi', 'webm', 'm4v', '3gp', 'mts', 'm2ts', 'mpg', 'wmv']
+
+/** ¿Parece un vídeo por la extensión? (para filtrar lo que se suelta en la ventana). */
+export function isVideoPath(path: string): boolean {
+  const m = /\.([^.\\/]+)$/.exec(path)
+  return !!m && VIDEO_EXTENSIONS.includes(m[1]!.toLowerCase())
+}
+
+/** Nombre del fichero de una ruta de Windows o POSIX: «C:\a\b\toma 1.mp4» → «toma 1.mp4». */
+export function baseName(path: string): string {
+  const parts = path.split(/[\\/]/)
+  return parts[parts.length - 1] || path
+}

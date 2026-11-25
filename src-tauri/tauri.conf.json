@@ -18,8 +18,8 @@
         "title": "Editor de vídeos",
         "width": 1280,
         "height": 800,
-        "minWidth": 800,
-        "minHeight": 560,
+        "minWidth": 1100,
+        "minHeight": 700,
         "resizable": true,
         "center": true,
         "dragDropEnabled": true

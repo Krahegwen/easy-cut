@@ -18,6 +18,7 @@
     "allow-get-output-folder",
     "allow-list-file-names",
     "allow-path-exists",
+    "allow-delete-partial-output",
     "allow-open-file",
     "allow-reveal-in-folder",
     "allow-copy-file-to-clipboard",

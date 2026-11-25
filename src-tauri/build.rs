@@ -13,6 +13,7 @@ const COMMANDS: &[&str] = &[
     "get_output_folder",
     "list_file_names",
     "path_exists",
+    "delete_partial_output",
     "open_file",
     "reveal_in_folder",
     "copy_file_to_clipboard",

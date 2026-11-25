@@ -354,6 +354,34 @@ pub fn list_file_names(folder: String) -> Result<Vec<String>, String> {
     }
 }
 
+/// Borra un vídeo a medias de la carpeta de los montajes (exportación cancelada o fallida).
+/// Solo .mp4 dentro de Vídeos\Mis montajes: nunca un original. Reintenta unas veces porque ffmpeg
+/// puede tardar un instante en soltar el fichero tras matarlo.
+#[tauri::command]
+pub async fn delete_partial_output(app: AppHandle, path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    let is_mp4 = p.extension().map(|e| e.eq_ignore_ascii_case("mp4")).unwrap_or(false);
+    let root = output_folder(&app)?;
+    if !is_mp4 || !is_inside(&p, &root) {
+        return Err("Solo se pueden borrar vídeos a medias de la carpeta de los montajes.".into());
+    }
+    let mut last_error = None;
+    for _ in 0..20 {
+        if !p.exists() {
+            return Ok(());
+        }
+        match fs::remove_file(&p) {
+            Ok(()) => return Ok(()),
+            Err(e) => last_error = Some(e),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    Err(format!(
+        "No se ha podido borrar el vídeo a medias {path}: {}",
+        last_error.map(|e| e.to_string()).unwrap_or_default()
+    ))
+}
+
 #[tauri::command]
 pub fn path_exists(path: String) -> bool {
     Path::new(&path).is_file()
