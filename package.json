@@ -11,12 +11,16 @@
     "typecheck": "vue-tsc --build --force",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:ffmpeg": "vitest run --config vitest.integration.config.ts"
+    "test:ffmpeg": "vitest run --config vitest.integration.config.ts",
+    "tauri": "tauri",
+    "fetch-ffmpeg": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.12.5",
     "vue": "^3.5.0"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.12.6",
     "@tsconfig/node22": "^22.0.0",
     "@types/node": "^22.0.0",
     "@vitejs/plugin-vue": "^6.0.0",

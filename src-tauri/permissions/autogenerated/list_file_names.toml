@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-file-names"
+description = "Enables the list_file_names command without any pre-configured scope."
+commands.allow = ["list_file_names"]
+
+[[permission]]
+identifier = "deny-list-file-names"
+description = "Denies the list_file_names command without any pre-configured scope."
+commands.deny = ["list_file_names"]

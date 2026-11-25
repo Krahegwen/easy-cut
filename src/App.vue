@@ -1,10 +1,8 @@
 <script setup lang="ts">
-// Marcador de posición: la interfaz se construye en una fase posterior.
+// Por ahora, la pantalla de diagnóstico de la shell; la interfaz de verdad llegará después.
+import DiagnosticsView from './views/DiagnosticsView.vue'
 </script>
 
 <template>
-  <main>
-    <h1>easy-cut</h1>
-    <p>Editor de vídeo en preparación.</p>
-  </main>
+  <DiagnosticsView />
 </template>

@@ -1,6 +1,6 @@
 # easy-cut
 
-Editor de vídeo doméstico para Windows, pensado para alguien no técnico: una tira de trozos que se cortan, parten, encuadran, aceleran o silencian, con «quitar pausas», teleprompter y exportación para WhatsApp, YouTube o calidad alta. ffmpeg/ffprobe (binarios externos) hacen todo el trabajo de vídeo; la shell de escritorio (Tauri 2 o Electron, **sin decidir**) los lanza. La UI es Vue 3.
+Editor de vídeo doméstico para Windows, pensado para alguien no técnico: una tira de trozos que se cortan, parten, encuadran, aceleran o silencian, con «quitar pausas», teleprompter y exportación para WhatsApp, YouTube o calidad alta. ffmpeg/ffprobe (binarios externos, empaquetados como sidecar) hacen todo el trabajo de vídeo; la shell de escritorio es **Tauri 2** (`src-tauri/`), que los lanza. La UI es Vue 3.
 
 ## Reglas
 
@@ -43,6 +43,40 @@ Prueba de integración con el ffmpeg real del PATH (genera `test-output/`, tarda
 pnpm test:ffmpeg
 ```
 
+### App de escritorio (Tauri 2)
+
+Requiere Rust (rustup, MSVC). Antes del primer build, copiar ffmpeg y ffprobe del PATH a `src-tauri/binaries/` (sidecar; no se commitean):
+
+```powershell
+pnpm fetch-ffmpeg
+```
+
+```powershell
+pnpm tauri dev
+```
+
+```powershell
+pnpm tauri build
+```
+
+El instalador NSIS queda en `src-tauri/target/release/bundle/nsis/`. Tests de Rust: `cargo test` dentro de `src-tauri`.
+
+Prueba de humo de la app por CDP (WebView2 con depuración remota en el 4853). En una consola:
+
+```powershell
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=4853'
+```
+
+```powershell
+pnpm tauri dev
+```
+
+Y en otra, con los clips de `test-output/`:
+
+```powershell
+node scripts/webview-smoke.mjs
+```
+
 ## Pendientes
 
 Viven en el vault: `proyectos/easy-cut/Pendientes.md`. No crear `TODO.md` en el repo.
@@ -63,10 +97,36 @@ src/
     silence.ts       silencedetect y rangos conservados («quitar pausas»)
     teleprompter.ts  palabras, duración, ritmo y scroll
     file-name.ts     «Vídeo del 25 de noviembre de 2026 (para WhatsApp).mp4»
-  native/bridge.ts   interfaz que implementará la shell (sin implementación)
-  App.vue, main.ts   marcador de posición de la UI
+    transcode.ts     proxy de vista previa (540p) y grabaciones WebM → MP4
+  native/
+    bridge.ts        interfaz NativeBridge (independiente de la plataforma)
+    tauri-bridge.ts  implementación sobre Tauri (invoke + canales)
+    browser-bridge.ts  versión mínima para abrir la UI en el navegador (errores claros)
+    index.ts         exporta `bridge` (Tauri si hay __TAURI_INTERNALS__, si no el del navegador)
+  views/DiagnosticsView.vue  pantalla de diagnóstico provisional (un botón por función)
+  App.vue, main.ts
+src-tauri/           shell Tauri 2 (Rust)
+  src/binaries.rs    resolución de ffmpeg/ffprobe: sidecar junto al .exe y, si no, PATH
+  src/process.rs     procesos con array de args, sin consola, línea a línea, cancelación por trabajo
+  src/job_object.rs  Job Object: si la app muere, mueren sus ffmpeg
+  src/commands.rs    comandos invoke (miniaturas, caché, diálogos, autoguardado, grabaciones…)
+  src/files.rs       nombres sin sobrescribir, clave de caché, tamaño de JPEG
+  src/media_permissions.rs  cámara y micrófono concedidos sin diálogo (WebView2)
+  capabilities/      permisos mínimos (solo los comandos propios y escuchar eventos)
+scripts/
+  fetch-ffmpeg.ps1   copia ffmpeg/ffprobe del PATH a src-tauri/binaries/
+  webview-smoke.mjs  prueba de humo de la app por CDP
 tests/integration/   prueba con ffmpeg real (pnpm test:ffmpeg)
 ```
+
+## Notas de Tauri / WebView2 comprobadas
+
+- Vídeo: `<video :src="bridge.mediaUrl(path)">` (protocolo asset, `http://asset.localhost/…`). Seek y range requests funcionan, también con rutas con espacios y tildes y con un MP4 de 750 MB. El scope del protocolo asset es `**` (todo el disco): ffmpeg ya puede leer cualquier ruta, así que restringirlo no añadía seguridad.
+- Un original que WebView2 no decodifica **no siempre da error**: un ProRes con audio PCM carga «bien» con `videoWidth === 0` (solo suena). Comprobar `error` **y** `videoWidth > 0` tras `loadedmetadata`; si falla, `makePreviewProxy`.
+- HEVC se reproduce en este PC (tiene la extensión); en otro puede que no.
+- CSP: `media-src`/`img-src` admiten `asset:`, `http://asset.localhost`, `blob:` y `mediastream:`. Nada de `<script>` en línea; estilos en línea sí (`style-src 'unsafe-inline'`).
+- Arrastrar ficheros: con `dragDropEnabled` (por defecto) el webview **no** recibe los eventos HTML5 de soltar ficheros; usar `bridge.onFilesDropped`.
+- Al cancelar una exportación, el MP4 a medias se queda en la carpeta del usuario: lo borra la UI.
 
 ## Notas de ffmpeg comprobadas
 

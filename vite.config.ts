@@ -10,6 +10,8 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
-  server: { port: 4850, strictPort: true },
+  // Que Vite no tape los mensajes de Tauri ni vigile src-tauri (target/ tiene miles de ficheros).
+  clearScreen: false,
+  server: { port: 4850, strictPort: true, watch: { ignored: ['**/src-tauri/**'] } },
   preview: { port: 4852, strictPort: true },
 })

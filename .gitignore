@@ -11,3 +11,9 @@ coverage/
 !.vscode/extensions.json
 .idea/
 *.local
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+# ffmpeg/ffprobe como sidecar: se copian con scripts/fetch-ffmpeg.ps1, no se commitean
+src-tauri/binaries/

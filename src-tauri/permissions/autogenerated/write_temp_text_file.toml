@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-write-temp-text-file"
+description = "Enables the write_temp_text_file command without any pre-configured scope."
+commands.allow = ["write_temp_text_file"]
+
+[[permission]]
+identifier = "deny-write-temp-text-file"
+description = "Denies the write_temp_text_file command without any pre-configured scope."
+commands.deny = ["write_temp_text_file"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-promote-cache-file"
+description = "Enables the promote_cache_file command without any pre-configured scope."
+commands.allow = ["promote_cache_file"]
+
+[[permission]]
+identifier = "deny-promote-cache-file"
+description = "Denies the promote_cache_file command without any pre-configured scope."
+commands.deny = ["promote_cache_file"]
