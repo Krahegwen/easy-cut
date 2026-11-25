@@ -5,13 +5,15 @@
 import {
   buildExportCommand,
   buildOutputFileName,
+  buildSoundExportCommand,
   chooseEncoder,
+  clipPaths,
   createProgressParser,
   SOFTWARE_ENCODER,
   type MediaInfo,
-  type PresetId,
   type ProgressUpdate,
   type Project,
+  type SaveTarget,
   type VideoEncoder,
 } from '../domain'
 import { CancelledError, type NativeBridge, type RunningProcess } from '../native/bridge'
@@ -30,9 +32,11 @@ export class ExportError extends Error {
 export interface ExportResult {
   path: string
   folder: string
-  encoder: VideoEncoder
+  /** null en «Solo el sonido» (no hay vídeo que codificar). */
+  encoder: VideoEncoder | null
   expectedDurationMs: number
   elapsedMs: number
+  /** 0 en «Solo el sonido». */
   width: number
   height: number
   fps: number
@@ -47,7 +51,8 @@ export interface ExportJob {
 export interface ExportRequest {
   project: Project
   media: Record<string, MediaInfo>
-  preset: PresetId
+  /** Un vídeo con uno de los presets, o 'sound' para «Solo el sonido» (M4A). */
+  preset: SaveTarget
   onProgress?: (update: ProgressUpdate) => void
   /** Se avisa al pasar a otro encoder tras un fallo (para el registro). */
   onRetry?: (failed: VideoEncoder, next: VideoEncoder, stderr: string) => void
@@ -85,8 +90,8 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
     const { project, media, preset } = request
     if (project.clips.length === 0) throw new ExportError('El vídeo no tiene ningún trozo.', 'proyecto vacío')
 
-    // Todos los originales tienen que seguir ahí.
-    const paths = [...new Set(project.clips.map((c) => c.sourcePath))]
+    // Todos los originales tienen que seguir ahí (los vídeos de encima solo si se guarda un vídeo).
+    const paths = [...new Set(project.clips.flatMap((c) => (preset === 'sound' ? [c.sourcePath] : clipPaths(c))))]
     const exists = await Promise.all(paths.map((p) => bridge.exists(p).catch(() => false)))
     const lost = paths.filter((_, i) => !exists[i] || !media[paths[i]!])
     if (lost.length > 0) {
@@ -98,6 +103,43 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
       )
     }
     throwIfCancelled()
+
+    if (preset === 'sound') {
+      // «Solo el sonido»: sin encoder de vídeo que elegir ni reintento.
+      const folder = await bridge.getOutputFolder()
+      const out = bridge.joinPath(folder, buildOutputFileName(request.now?.() ?? new Date(), 'sound', await bridge.listFileNames(folder)))
+      throwIfCancelled()
+      const draft = buildSoundExportCommand(project, media, out)
+      const filterScriptPath = await bridge.writeTempTextFile('filtro-sonido.txt', draft.filterComplex)
+      throwIfCancelled()
+      const cmd = buildSoundExportCommand(project, media, out, { filterScriptPath })
+      const startedAt = Date.now()
+      const parser = createProgressParser(cmd.expectedDurationMs, startedAt)
+      outputPath = out
+      const job = bridge.runFfmpeg(cmd.args, (line) => {
+        for (const update of parser.push(`${line}\n`, Date.now())) request.onProgress?.(update)
+      })
+      running = job
+      let res: { exitCode: number; stderr: string }
+      try {
+        res = await job.result
+      } catch (e) {
+        running = null
+        await removePartial()
+        if (e instanceof CancelledError || cancelled) throw new CancelledError()
+        throw e
+      }
+      running = null
+      if (cancelled) {
+        await removePartial()
+        throw new CancelledError()
+      }
+      if (res.exitCode !== 0) {
+        await removePartial()
+        throw new ExportError('No se ha podido guardar el sonido.', `código ${res.exitCode}\n${tail(res.stderr)}`)
+      }
+      return { path: out, folder, encoder: null, expectedDurationMs: cmd.expectedDurationMs, elapsedMs: Date.now() - startedAt, width: 0, height: 0, fps: 0 }
+    }
 
     const encoders = await bridge.probeEncoders()
     const chain = exportEncoderChain(chooseEncoder(encoders))

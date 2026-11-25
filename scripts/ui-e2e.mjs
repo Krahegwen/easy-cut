@@ -9,7 +9,8 @@
 //   node scripts/ui-e2e.mjs --no-launch
 //
 // Requiere Node ≥ 22. Sale con código 1 si falla alguna comprobación. Borra al acabar los vídeos que
-// ha guardado en Vídeos\Mis montajes y cierra la app que haya arrancado.
+// ha guardado en Vídeos\Mis montajes (pruebas) (la carpeta de la app de desarrollo) y cierra la app que
+// haya arrancado.
 
 import { execFileSync, spawn } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs'
@@ -59,7 +60,8 @@ if (!existsSync(prores)) {
 // Copia de un clip que se borra con la app cerrada, para ver que la tarjeta dice «No encuentro este vídeo».
 const doomed = resolve(opts.media, 'e2e-se-borrara.mp4')
 
-const outputFolder = join(homedir(), 'Videos', 'Mis montajes')
+// La app de desarrollo guarda en su propia carpeta (commands.rs), no en la de la app instalada.
+const outputFolder = join(homedir(), 'Videos', 'Mis montajes (pruebas)')
 const filesBefore = new Set(existsSync(outputFolder) ? readdirSync(outputFolder) : [])
 
 function ffmpegCount() {
@@ -290,7 +292,7 @@ try {
     await app.click('[data-testid=find-pauses]')
     await app.waitFor('return document.querySelector("[data-testid=pauses-found]") || document.querySelector("[data-testid=pauses-none]")', { timeoutMs: 30_000 })
     const found = await app.text('[data-testid=pauses-found]')
-    check('Buscar pausas: «He encontrado 1 pausa» y la duración antes → después', !!found && found.startsWith('He encontrado 1 pausa') && found.includes('→'), found ?? 'sin pausas')
+    check('Buscar pausas: «He encontrado 1 pausa» y lo que ahorra (el antes → después va arriba)', !!found && found.startsWith('He encontrado 1 pausa') && found.includes('Quitarlas ahorra'), found ?? 'sin pausas')
     const marks = await app.evaluate('return document.querySelectorAll("[data-testid=pause-mark]").length')
     check('Las pausas se pintan sobre la tira', marks >= 1, `${marks}`)
     const previewDur = (await playerData()).dur
@@ -457,7 +459,7 @@ try {
     exportedPath = await S('return store.lastExport.value.path')
     const probed = ffprobeDurationMs(exportedPath)
     check('El vídeo guardado existe y dura lo que decía la interfaz (±0,3 s)', existsSync(exportedPath) && Math.abs(probed - shownMs) <= 300, `${exportedPath}: ${probed} ms (interfaz ${shownMs} ms)`)
-    check('Nombre «Vídeo del … (para WhatsApp).mp4» en Mis montajes', /\\Mis montajes\\Vídeo del .+ \(para WhatsApp\)( \d+)?\.mp4$/.test(exportedPath), exportedPath)
+    check('Nombre «Vídeo del … (para WhatsApp).mp4» en Mis montajes (pruebas)', /\\Mis montajes \(pruebas\)\\Vídeo del .+ \(para WhatsApp\)( \d+)?\.mp4$/.test(exportedPath), exportedPath)
     await shot('15-listo.png')
     await app.click('[data-testid=copy-whatsapp]')
     await sleep(300)

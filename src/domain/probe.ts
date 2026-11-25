@@ -86,30 +86,62 @@ export function parseProbeOutput(output: string | object, path: string): MediaIn
     raw = output as RawProbe
   }
   const streams = raw.streams ?? []
-  const video = streams.find((s) => s.codec_type === 'video' && s.disposition?.attached_pic !== 1)
-  if (!video || !video.width || !video.height) {
-    throw new ProbeError('Este fichero no tiene imagen de vídeo.')
-  }
+  // La carátula de un MP3 o M4A es una «pista de vídeo» de una sola imagen: no cuenta como imagen.
+  const found = streams.find((s) => s.codec_type === 'video' && s.disposition?.attached_pic !== 1)
+  const video = found && found.width && found.height ? found : undefined
   const audio = streams.find((s) => s.codec_type === 'audio')
+  if (!video && !audio) {
+    throw new ProbeError('Este fichero no tiene ni imagen ni sonido.')
+  }
 
-  const durationSec = Number(raw.format?.duration ?? video.duration ?? audio?.duration)
+  const durationSec = Number(raw.format?.duration ?? video?.duration ?? audio?.duration)
   if (!Number.isFinite(durationSec) || durationSec <= 0) {
-    throw new ProbeError('No se sabe cuánto dura este vídeo.')
+    throw new ProbeError(video ? 'No se sabe cuánto dura este vídeo.' : 'No se sabe cuánto dura este sonido.')
+  }
+  const size = Number(raw.format?.size)
+
+  if (!video) {
+    // Solo sonido: sin dimensiones (ver MediaInfo.hasVideo).
+    return {
+      path,
+      durationMs: Math.round(durationSec * 1000),
+      hasVideo: false,
+      width: 0,
+      height: 0,
+      codedWidth: 0,
+      codedHeight: 0,
+      rotation: 0,
+      fps: 0,
+      hasAudio: true,
+      isHdr: false,
+      videoCodec: 'ninguno',
+      pixelFormat: null,
+      colorTransfer: null,
+      colorPrimaries: null,
+      colorSpace: null,
+      audioCodec: audio!.codec_name ?? null,
+      audioSampleRate: audio!.sample_rate ? Number(audio!.sample_rate) : null,
+      audioChannels: audio!.channels ?? null,
+      sizeBytes: Number.isFinite(size) && size > 0 ? size : null,
+    }
   }
 
   const rotation = readRotation(video)
   const swap = rotation === 90 || rotation === 270
   const fps = parseFrameRate(video.avg_frame_rate) ?? parseFrameRate(video.r_frame_rate) ?? 30
   const transfer = video.color_transfer ?? null
-  const size = Number(raw.format?.size)
+  // Ya comprobado arriba: la pista de vídeo tiene ancho y alto.
+  const vw = video.width!
+  const vh = video.height!
 
   return {
     path,
     durationMs: Math.round(durationSec * 1000),
-    width: swap ? video.height : video.width,
-    height: swap ? video.width : video.height,
-    codedWidth: video.width,
-    codedHeight: video.height,
+    hasVideo: true,
+    width: swap ? vh : vw,
+    height: swap ? vw : vh,
+    codedWidth: vw,
+    codedHeight: vh,
     rotation,
     fps,
     hasAudio: audio !== undefined,

@@ -63,6 +63,10 @@ const ICONS: Record<IconName, string> = {
   rewind: '<path d="M12 19V6M6.5 11.5 12 6l5.5 5.5"/><path d="M5 3.5h14"/>',
   'eye-off': '<path d="M2.5 12S6 5.5 12 5.5c2 0 3.7.7 5.1 1.7M21.5 12S18 18.5 12 18.5c-2 0-3.7-.7-5.1-1.7"/><path d="M4 20 20 4"/>',
   text: '<path d="M4 6h16M4 10.5h16M4 15h11M4 19.5h7"/>',
+  image: '<rect x="3" y="4.5" width="18" height="15" rx="2"/><circle cx="8.5" cy="9.5" r="1.8"/><path d="m21 16-5-5-8.5 8.5"/>',
+  wave: '<path d="M3 12h1.5M6.5 9v6M10 5.5v13M13.5 8v8M17 10v4M20.5 12H21"/>',
+  'cover-video': '<rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z" fill="currentColor"/>',
+  corner: '<rect x="2.5" y="5" width="19" height="14" rx="2"/><rect x="13" y="12.5" width="6" height="4.5" rx="1" fill="currentColor" stroke="none"/>',
   drag: '<circle cx="9" cy="7" r="1.2" fill="currentColor"/><circle cx="15" cy="7" r="1.2" fill="currentColor"/><circle cx="9" cy="12" r="1.2" fill="currentColor"/><circle cx="15" cy="12" r="1.2" fill="currentColor"/><circle cx="9" cy="17" r="1.2" fill="currentColor"/><circle cx="15" cy="17" r="1.2" fill="currentColor"/>',
 }
 

@@ -26,6 +26,7 @@ pub fn run() {
             commands::run_tool,
             commands::cancel_job,
             commands::make_thumbnail,
+            commands::make_waveform,
             commands::cache_entry,
             commands::promote_cache_file,
             commands::discard_cache_file,

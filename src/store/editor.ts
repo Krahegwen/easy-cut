@@ -8,9 +8,11 @@ import {
   baseName,
   canRedo,
   canUndo,
+  clipPaths,
   createClip,
   createHistory,
   createProject,
+  defaultPicture,
   dominantAspect,
   findClip,
   moveClip,
@@ -20,11 +22,14 @@ import {
   redo as historyRedo,
   removeClip as removeClipFromProject,
   serializeProject,
+  setCover,
   setTargetDuration,
   undo as historyUndo,
+  type Clip,
   type History,
   type MediaInfo,
   type Project,
+  type SaveTarget,
 } from '../domain'
 import type { NativeBridge, Thumbnail } from '../native/bridge'
 
@@ -60,7 +65,7 @@ export interface AutosaveSummary {
 export type ProxyStatus = 'working' | 'ready' | 'error'
 
 export interface ClipEditorStart {
-  tab: 'pauses'
+  tab: 'pauses' | 'picture'
   /** Lanzar ya la búsqueda de pausas. */
   findPauses: boolean
 }
@@ -99,8 +104,8 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
   const toast = shallowRef<Toast | null>(null)
   const error = shallowRef<AppError | null>(null)
   const autosave = shallowRef<AutosaveSummary | null>(null)
-  /** Fichero guardado en la última exportación. */
-  const lastExport = shallowRef<{ path: string; folder: string; durationMs: number } | null>(null)
+  /** Fichero guardado en la última exportación (un vídeo o, con 'sound', solo el sonido). */
+  const lastExport = shallowRef<{ path: string; folder: string; durationMs: number; target?: SaveTarget } | null>(null)
   /** Pantalla de la que se vino (para que «Volver» del teleprompter regrese a Inicio o a «Tu vídeo»). */
   const previousScreen = ref<Screen>('home')
   /** Con qué abrir «Arreglar este trozo» (lo lee la pantalla al montarse y lo borra). */
@@ -114,13 +119,33 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
   const redoable = computed(() => canRedo(history.value))
   const selectedClip = computed(() => (selectedClipId.value ? findClip(project.value, selectedClipId.value) ?? null : null))
   const selectedIndex = computed(() => project.value.clips.findIndex((c) => c.id === selectedClipId.value))
+  /** ¿El vídeo de encima de este trozo ha desaparecido (o no se ha podido leer)? */
+  function coverMissing(clip: Clip): boolean {
+    const p = clip.picture
+    return p.kind === 'cover' && (!!missing.value[p.sourcePath] || !media.value[p.sourcePath])
+  }
+
+  /** El trozo tal como se puede enseñar: sin vídeo de encima si este no está (se ve lo de serie). */
+  function visibleClip(clip: Clip): Clip {
+    return coverMissing(clip) ? { ...clip, picture: defaultPicture(clip.sourceHasVideo) } : clip
+  }
+
   /** Proyecto sin los trozos cuyo original no se encuentra (lo que se puede reproducir). */
   const playableProject = computed<Project>(() => {
     const p = project.value
-    const clips = p.clips.filter((c) => !missing.value[c.sourcePath] && media.value[c.sourcePath])
-    return clips.length === p.clips.length ? p : { ...p, clips }
+    let changed = false
+    const clips = p.clips
+      .filter((c) => !missing.value[c.sourcePath] && media.value[c.sourcePath])
+      .map((c) => {
+        const v = visibleClip(c)
+        if (v !== c) changed = true
+        return v
+      })
+    return clips.length === p.clips.length && !changed ? p : { ...p, clips }
   })
-  const hasMissing = computed(() => project.value.clips.some((c) => missing.value[c.sourcePath] || !media.value[c.sourcePath]))
+  const hasMissing = computed(() =>
+    project.value.clips.some((c) => missing.value[c.sourcePath] || !media.value[c.sourcePath] || coverMissing(c)),
+  )
 
   // ------------------------------------------------------------------ historial
 
@@ -215,9 +240,10 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
   }
 
   /**
-   * Añade los vídeos como trozos nuevos al final, en el orden dado. Hace probe de cada uno;
+   * Añade los vídeos (o sonidos) como trozos nuevos al final, en el orden dado. Hace probe de cada uno;
    * los que no se pueden leer se quedan en `preparing` con su error y no bloquean al resto.
-   * Si el vídeo estaba vacío, la forma pasa a ser la de la mayoría. Un solo paso de deshacer.
+   * Si el vídeo estaba vacío, la forma pasa a ser la de la mayoría de los que tienen imagen.
+   * Un solo paso de deshacer.
    */
   async function addClipsFromPaths(paths: readonly string[]): Promise<{ added: number; failed: PreparingItem[] }> {
     const items: PreparingItem[] = paths.map((path) => ({ path, name: baseName(path), status: 'pending' }))
@@ -231,8 +257,8 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
         const [path, i] = next
         try {
           const info = media.value[path] ?? (await bridge.probe(path))
-          if (!(info.durationMs > 0) || info.width <= 0 || info.height <= 0) {
-            throw new Error('El fichero no tiene imagen de vídeo o no dura nada.')
+          if (!(info.durationMs > 0) || (info.hasVideo && (info.width <= 0 || info.height <= 0)) || (!info.hasVideo && !info.hasAudio)) {
+            throw new Error('El fichero no tiene ni imagen ni sonido, o no dura nada.')
           }
           setMedia(info)
           setMissing(path, false)
@@ -264,9 +290,12 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     return { added: ok.length, failed: items.filter((i) => i.status === 'error') }
   }
 
-  /** Vuelve a comprobar que existen los originales y lee los que falten (al seguir con un autoguardado). */
+  /**
+   * Vuelve a comprobar que existen los originales (y los vídeos de encima) y lee los que falten
+   * (al seguir con un autoguardado).
+   */
   async function refreshOriginals() {
-    const paths = [...new Set(history.value.present.clips.map((c) => c.sourcePath))]
+    const paths = [...new Set(history.value.present.clips.flatMap(clipPaths))]
     await Promise.all(
       paths.map(async (path) => {
         let exists = false
@@ -463,6 +492,58 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     return Promise.all(timesMs.map((t) => thumbnail(path, t, height)))
   }
 
+  const waveCache = new Map<string, Promise<Thumbnail | null>>()
+  /** Forma de onda de un original sin imagen (cacheada en memoria; el bridge la cachea en disco). */
+  function waveform(path: string, width: number, height: number): Promise<Thumbnail | null> {
+    // El ancho se redondea a tramos de 200 px: así no se rehace al cambiar un poco el tamaño de la ventana.
+    const w = Math.max(200, Math.ceil(width / 200) * 200)
+    const key = `${path}|${w}|${height}`
+    let p = waveCache.get(key)
+    if (!p) {
+      p = bridge
+        .waveform({ path, width: w, height })
+        .result.catch(() => null)
+      waveCache.set(key, p)
+      void p.then((v) => {
+        if (v === null) waveCache.delete(key)
+      })
+    }
+    return p
+  }
+
+  // ------------------------------------------------------------------ imagen: vídeo de encima
+
+  /**
+   * «Elegir el vídeo» de encima: diálogo de un solo fichero, solo vídeos. Lo lee y lo pone encima del trozo
+   * (un paso de deshacer). Devuelve false si se cancela o no vale (con el aviso ya enseñado).
+   */
+  async function pickCover(clipId: string): Promise<boolean> {
+    let paths: string[]
+    try {
+      paths = await bridge.pickVideos({ multiple: false })
+    } catch (e) {
+      showError('No se ha podido abrir la ventana para elegir el vídeo.', e)
+      return false
+    }
+    const path = paths[0]
+    if (!path) return false
+    let info: MediaInfo
+    try {
+      info = await bridge.probe(path)
+    } catch (e) {
+      showError('No he podido leer ese vídeo.', e)
+      return false
+    }
+    if (!info.hasVideo) {
+      showToast('Ese fichero no tiene imagen: elige un vídeo para ponerlo encima.')
+      return false
+    }
+    setMedia(info)
+    setMissing(path, false)
+    apply((p) => setCover(p, clipId, info))
+    return true
+  }
+
   /** Cambia de pantalla. Los avisos de la anterior (p. ej. «Deshacer») ya no vienen a cuento. */
   function go(next: Screen) {
     commitPreview()
@@ -524,6 +605,8 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     redoable,
     playableProject,
     hasMissing,
+    coverMissing,
+    visibleClip,
     bridge,
     // acciones
     commit,
@@ -554,6 +637,8 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     mediaSrc,
     thumbnail,
     thumbnails,
+    waveform,
+    pickCover,
     go,
     addRecording,
     dismissRecordingOffer,

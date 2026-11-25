@@ -28,6 +28,14 @@ export interface PickVideosOptions {
   multiple?: boolean
   /** Carpeta en la que abrir el diálogo (por defecto, Vídeos del usuario). */
   defaultFolder?: string
+  /** Aceptar también ficheros de sonido (m4a, mp3, wav…), para añadirlos al montaje. */
+  sounds?: boolean
+}
+
+export interface WaveformRequest {
+  path: string
+  width: number
+  height: number
 }
 
 export interface ThumbnailRequest {
@@ -50,8 +58,8 @@ export interface SavedRecording {
   path: string
   durationMs: number
   /**
-   * 'video' = MP4 H.264 + AAC; 'audio' = M4A (AAC, 48 kHz) de solo la voz. De momento la de solo voz no
-   * entra en el montaje (para añadirla como trozo hará falta un trozo sin imagen en domain/project.ts).
+   * 'video' = MP4 H.264 + AAC; 'audio' = M4A (AAC, 48 kHz) de solo la voz, que entra en el montaje
+   * como un trozo sin imagen («Solo se oye»).
    */
   kind: RecordingKind
 }
@@ -125,10 +133,19 @@ export interface NativeBridge {
   /** Miniaturas en instantes concretos (para la tira de trozos y el filmstrip). Cacheadas en disco. */
   thumbnails(request: ThumbnailRequest): RunningProcess<Thumbnail[]>
 
+  /**
+   * Forma de onda de todo el sonido del fichero (PNG transparente de width × height), para la tira de
+   * «Cortar» y «Quitar pausas» de un original sin imagen. Cacheada en disco como las miniaturas.
+   */
+  waveform(request: WaveformRequest): RunningProcess<Thumbnail>
+
   /** Prueba qué encoders funcionan en este PC (ver domain/encoders.ts). Se prueba una vez por sesión. */
   probeEncoders(): Promise<EncoderProbeResults>
 
-  /** Carpeta donde se guardan los vídeos exportados: Vídeos\Mis montajes (se crea si no existe). */
+  /**
+   * Carpeta donde se guardan los vídeos exportados: Vídeos\Mis montajes (se crea si no existe).
+   * La app de desarrollo usa Vídeos\Mis montajes (pruebas).
+   */
   getOutputFolder(): Promise<string>
   pickOutputFolder(): Promise<string | null>
   /** Nombres de fichero que ya existen en una carpeta (para no sobrescribir). */

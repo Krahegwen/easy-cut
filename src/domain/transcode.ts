@@ -62,6 +62,21 @@ function fastVideoArgs(encoder: FastEncoder, quality: 'preview' | 'keep', gop: n
  * Un fotograma clave por segundo para que el seek sea rápido.
  */
 export function buildPreviewProxyArgs(media: MediaInfo, outputPath: string, encoder: FastEncoder): string[] {
+  if (media.hasVideo === false) {
+    // Un sonido que el visor no sabe reproducir (p. ej. WMA): solo su audio en AAC, mismos tiempos.
+    return [
+      '-hide_banner', '-y', '-nostdin', '-nostats',
+      '-loglevel', 'error',
+      '-progress', 'pipe:1',
+      '-i', media.path,
+      '-map', '0:a:0',
+      '-vn', '-sn', '-dn',
+      '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
+      '-map_metadata', '-1',
+      '-movflags', '+faststart',
+      outputPath,
+    ]
+  }
   const fps = proxyFps(media)
   const filters = [
     ...(media.isHdr ? [...toneMapFilters(media), BT709_SETPARAMS] : []),

@@ -197,6 +197,7 @@ export function createTauriBridge(): NativeBridge {
       return invoke<string[]>('pick_videos', {
         multiple: options.multiple ?? true,
         defaultFolder: options.defaultFolder ?? null,
+        sounds: options.sounds ?? false,
       })
     },
 
@@ -281,6 +282,18 @@ export function createTauriBridge(): NativeBridge {
         // Un instante suelto sin imagen (p. ej. justo al final) no tumba las demás.
         if (thumbs.length === 0 && failures.length > 0) throw toError(failures[0])
         return thumbs
+      })
+    },
+
+    waveform(request) {
+      return cancellable('wave', async (jobId) => {
+        const file = await invoke<{ path: string; width: number; height: number }>('make_waveform', {
+          path: request.path,
+          width: Math.round(request.width),
+          height: Math.round(request.height),
+          jobId,
+        })
+        return { timeMs: 0, url: convertFileSrc(file.path), width: file.width, height: file.height }
       })
     },
 

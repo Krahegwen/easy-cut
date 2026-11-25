@@ -52,8 +52,8 @@ const projectText = computed(() => formatDurationChange(props.projectBeforeMs ??
       </div>
       <p class="target-text" data-testid="target-text">
         <AppIcon :name="over ? 'warning' : 'check'" :size="22" />
-        {{ targetText }}
-        <span class="of">(máximo {{ formatDuration(targetMs!) }})</span>
+        <span class="target-main">{{ targetText }}</span>
+        <span class="of" data-testid="target-max">(máx. {{ formatDuration(targetMs!) }})</span>
       </p>
     </div>
 
@@ -98,6 +98,7 @@ const projectText = computed(() => formatDurationChange(props.projectBeforeMs ??
   align-items: center;
   gap: 14px;
   min-width: 0;
+  flex: 0 1 auto;
 }
 .meter {
   width: 180px;
@@ -120,9 +121,18 @@ const projectText = computed(() => formatDurationChange(props.projectBeforeMs ??
   font-size: 18px;
   font-weight: 650;
   color: var(--good);
+  min-width: 0;
+  /* Si no cabe, «(máx. …)» baja a otra línea: nada se corta. */
+  flex-wrap: wrap;
+  column-gap: 6px;
+  row-gap: 0;
+  line-height: 1.2;
+}
+.target-main {
   white-space: nowrap;
 }
 .of {
+  white-space: nowrap;
   font-weight: 400;
   color: var(--text-muted);
   font-size: 16px;
@@ -158,11 +168,22 @@ const projectText = computed(() => formatDurationChange(props.projectBeforeMs ??
   gap: 10px;
 }
 @media (max-width: 1250px) {
-  .meter {
-    width: 110px;
+  .duration-bar {
+    gap: 18px;
   }
-  .of {
-    display: none;
+  .meter {
+    width: 90px;
+  }
+  .total,
+  .target-text {
+    font-size: 17px;
+  }
+  .total strong {
+    font-size: 19px;
+  }
+  .changes {
+    font-size: 15px;
+    padding-left: 14px;
   }
 }
 @media (max-height: 760px) {

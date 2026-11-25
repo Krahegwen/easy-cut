@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// «Arreglar este trozo»: vista previa en bucle y pestañas Cortar, Quitar pausas, Encuadrar, Velocidad y Sonido.
-// Todo cambio se ve al momento; lo que se arrastra entra en el historial al soltar.
+// «Arreglar este trozo»: vista previa en bucle y pestañas Cortar, Quitar pausas, Encuadrar, Imagen, Velocidad
+// y Sonido. Todo cambio se ve al momento; lo que se arrastra entra en el historial al soltar.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import DurationBar from '../components/DurationBar.vue'
@@ -11,33 +11,45 @@ import PreviewPlayer from '../components/PreviewPlayer.vue'
 import ThumbImage from '../components/ThumbImage.vue'
 import UndoRedo from '../components/UndoRedo.vue'
 import {
+  baseName,
   clipInOut,
   clipMatchesAspect,
   clipOutputMs,
   computeFramingLayout,
+  coverShortfallMs,
   findClip,
   fitAspect,
   formatClock,
   formatDuration,
-  formatDurationChange,
+  INSET_CORNERS,
   keptSourceMs,
   MAX_ZOOM,
+  maxCoverStartMs,
   MIN_PIECE_MS,
   panOffset,
   projectDurationMs,
+  removeCover,
   removedRanges,
   resetKeepSegments,
   rotateClip,
+  setCoverFraming,
+  setCoverStart,
   setFraming,
   setInOut,
+  setInset,
   setMuted,
+  setPicture,
   setSpeed,
   sourceToOutput,
   splitClip,
   applyKeepSegments,
   type Clip,
+  type CoverPicture,
   type FramingMode,
+  type InsetCorner,
+  type InsetSize,
   type PauseLevel,
+  type Picture,
   type Project,
   type Speed,
 } from '../domain'
@@ -53,11 +65,12 @@ import {
 } from '../lib/pauses'
 import { store } from '../store'
 
-type Tab = 'cut' | 'pauses' | 'frame' | 'speed' | 'sound'
+type Tab = 'cut' | 'pauses' | 'frame' | 'picture' | 'speed' | 'sound'
 const tabs: { id: Tab; icon: IconName; label: string }[] = [
   { id: 'cut', icon: 'scissors', label: 'Cortar' },
   { id: 'pauses', icon: 'pauses', label: 'Quitar pausas' },
   { id: 'frame', icon: 'frame', label: 'Encuadrar' },
+  { id: 'picture', icon: 'image', label: 'Imagen' },
   { id: 'speed', icon: 'speed', label: 'Velocidad' },
   { id: 'sound', icon: 'sound', label: 'Sonido' },
 ]
@@ -89,7 +102,8 @@ const displayClip = computed<Clip | null>(() => {
 })
 const previewProject = computed<Project>(() => ({
   ...store.project.value,
-  clips: displayClip.value ? [displayClip.value] : [],
+  // Si el vídeo de encima no está en el disco, la vista previa enseña lo de serie.
+  clips: displayClip.value ? [store.visibleClip(displayClip.value)] : [],
 }))
 
 // ------------------------------------------------------------------ duraciones
@@ -119,6 +133,7 @@ onMounted(() => {
   // Viene de «Quitar las pausas de esta grabación»: directo a la pestaña, con la búsqueda lanzada.
   const start = store.clipEditorStart.value
   store.clipEditorStart.value = null
+  if (start?.tab === 'picture') tab.value = 'picture'
   if (start?.tab === 'pauses') {
     tab.value = 'pauses'
     if (start.findPauses && hasAudio.value && pauses.value?.status !== 'searching') findPauses()
@@ -286,12 +301,14 @@ watch([tab, io], () => {
 
 // ------------------------------------------------------------------ Encuadrar
 
-const matches = computed(() => (clip.value && media.value ? clipMatchesAspect(clip.value, media.value, store.project.value.aspect) : true))
+/** Encuadrar solo tiene sentido si se ve el vídeo del propio trozo. */
+const ownVisible = computed(() => !!clip.value && clip.value.sourceHasVideo && clip.value.picture.kind === 'own')
+const matches = computed(() => (clip.value && media.value && ownVisible.value ? clipMatchesAspect(clip.value, media.value, store.project.value.aspect) : true))
 const canPan = ref(false)
 watch(
   [clip, media, () => store.project.value.aspect],
   () => {
-    if (!clip.value || !media.value) return
+    if (!clip.value || !media.value || !ownVisible.value) return
     const f = fitAspect(store.project.value.aspect, 640, 640)
     const l = computeFramingLayout(clip.value, media.value, f.width, f.height)
     canPan.value = l.canPanX || l.canPanY
@@ -351,6 +368,98 @@ function modePreview(mode: FramingMode) {
     },
     blur: l.showsBackground,
   }
+}
+
+// ------------------------------------------------------------------ Imagen
+
+const cover = computed<CoverPicture | null>(() => (clip.value?.picture.kind === 'cover' ? clip.value.picture : null))
+const coverLost = computed(() => !!clip.value && store.coverMissing(clip.value))
+const coverMedia = computed(() => (cover.value ? store.media.value[cover.value.sourcePath] ?? null : null))
+const coverShortMs = computed(() => (clip.value ? coverShortfallMs(clip.value) : 0))
+const coverMaxStart = computed(() => (cover.value ? maxCoverStartMs(cover.value.sourceDurationMs) : 0))
+/** Instantes de la tira de miniaturas de «Empieza en…». */
+const coverStripTimes = computed(() => {
+  const c = cover.value
+  if (!c) return []
+  const n = 6
+  return Array.from({ length: n }, (_, i) => Math.round(((i + 0.5) * c.sourceDurationMs) / n))
+})
+/** Último vídeo de encima de cada trozo, para recuperarlo si se vuelve a «Poner otro vídeo encima». */
+const lastCovers = new Map<string, CoverPicture>()
+
+async function choosePicture(kind: Picture['kind']) {
+  const c = clip.value
+  if (!c) return
+  if (c.picture.kind === 'cover') lastCovers.set(c.id, c.picture)
+  if (kind === 'own' || kind === 'none') {
+    store.apply((p) => setPicture(p, c.id, { kind }))
+    return
+  }
+  if (c.picture.kind === 'cover') return
+  const saved = lastCovers.get(c.id)
+  if (saved && store.media.value[saved.sourcePath] && !store.missing.value[saved.sourcePath]) {
+    store.apply((p) => setPicture(p, c.id, saved))
+    return
+  }
+  player.value?.pause()
+  await store.pickCover(c.id)
+}
+
+async function changeCover() {
+  const c = clip.value
+  if (!c) return
+  player.value?.pause()
+  await store.pickCover(c.id)
+}
+
+function dropCover() {
+  const c = clip.value
+  if (c) store.apply((p) => removeCover(p, c.id))
+}
+
+function dragCoverStart(e: Event, commit: boolean) {
+  const c = clip.value
+  if (!c) return
+  const v = Number((e.target as HTMLInputElement).value)
+  store.preview((p) => setCoverStart(p, c.id, v))
+  if (commit) store.commitPreview()
+}
+
+function stepCoverStart(delta: number) {
+  const c = clip.value
+  const cv = cover.value
+  if (c && cv) store.apply((p) => setCoverStart(p, c.id, cv.startMs + delta))
+}
+
+function setCoverMode(mode: FramingMode) {
+  const c = clip.value
+  if (c) store.apply((p) => setCoverFraming(p, c.id, { mode }))
+}
+
+function toggleInset() {
+  const c = clip.value
+  const cv = cover.value
+  if (!c || !cv) return
+  store.apply((p) => setInset(p, c.id, cv.inset ? null : { corner: 'bottom-right', size: 'small' }))
+}
+
+function chooseCorner(corner: InsetCorner) {
+  const c = clip.value
+  const cv = cover.value
+  if (c && cv) store.apply((p) => setInset(p, c.id, { corner, size: cv.inset?.size ?? 'small' }))
+}
+
+function chooseInsetSize(size: InsetSize) {
+  const c = clip.value
+  const cv = cover.value
+  if (c && cv) store.apply((p) => setInset(p, c.id, { corner: cv.inset?.corner ?? 'bottom-right', size }))
+}
+
+const cornerLabels: Record<InsetCorner, string> = {
+  'top-left': 'Arriba a la izquierda',
+  'top-right': 'Arriba a la derecha',
+  'bottom-left': 'Abajo a la izquierda',
+  'bottom-right': 'Abajo a la derecha',
 }
 
 // ------------------------------------------------------------------ Velocidad y sonido
@@ -425,7 +534,7 @@ function done() {
           ref="player"
           :project="previewProject"
           loop
-          :pannable="tab === 'frame'"
+          :pannable="tab === 'frame' && ownVisible"
           clock-label="Posición en el trozo"
           @time="onTime"
           @pan="onPan"
@@ -497,7 +606,8 @@ function done() {
             <template v-else>
               <p class="found" data-testid="pauses-found">
                 He encontrado {{ pauseCount }} {{ pauseCount === 1 ? 'pausa' : 'pausas' }}.
-                <span>Este trozo: <strong>{{ formatDurationChange(withoutPausesMs, candidateMs) }}</strong></span>
+                <!-- Solo el ahorro: el «antes → después» del trozo está arriba, en la barra de duración. -->
+                <span>Quitarlas ahorra <strong>{{ formatDuration(Math.max(0, withoutPausesMs - candidateMs)) }}</strong>.</span>
               </p>
               <p class="legend"><span class="swatch" /> En naranja, lo que se quita.</p>
             </template>
@@ -543,6 +653,17 @@ function done() {
         </template>
 
         <!-- Encuadrar -->
+        <template v-else-if="tab === 'frame' && !ownVisible">
+          <div class="note" data-testid="frame-nothing">
+            <AppIcon :name="cover ? 'cover-video' : 'wave'" />
+            <p v-if="cover">Lo que se ve es el vídeo de encima. Cómo se ve («entero» o «que llene la pantalla») se elige en la pestaña «Imagen».</p>
+            <p v-else>Este trozo solo se oye: no hay imagen que encuadrar.</p>
+          </div>
+          <button class="btn" type="button" data-testid="frame-go-picture" @click="tab = 'picture'">
+            <AppIcon name="image" />
+            Ir a «Imagen»
+          </button>
+        </template>
         <template v-else-if="tab === 'frame'">
           <template v-if="!matches">
             <p class="lead">Este trozo tiene otra forma que el vídeo. ¿Cómo lo pongo?</p>
@@ -589,6 +710,202 @@ function done() {
               Girar a la derecha
             </button>
           </div>
+        </template>
+
+        <!-- Imagen: qué se ve mientras suena el trozo -->
+        <template v-else-if="tab === 'picture'">
+          <div class="pictures" :class="{ two: !clip.sourceHasVideo }" role="radiogroup" aria-label="Qué se ve mientras suena este trozo">
+            <button
+              v-if="clip.sourceHasVideo"
+              class="picture-option"
+              :class="{ selected: clip.picture.kind === 'own' }"
+              type="button"
+              role="radio"
+              :aria-checked="clip.picture.kind === 'own'"
+              data-testid="picture-own"
+              @click="choosePicture('own')"
+            >
+              <svg class="sketch" viewBox="0 0 72 44" aria-hidden="true">
+                <rect x="1" y="1" width="70" height="42" rx="4" fill="#4d7290" />
+                <circle cx="36" cy="18" r="7" fill="#d5e6f2" />
+                <path d="M22 43c2-9 8-13 14-13s12 4 14 13z" fill="#d5e6f2" />
+              </svg>
+              <span>Se ve el vídeo</span>
+            </button>
+            <button
+              class="picture-option"
+              :class="{ selected: clip.picture.kind === 'none' }"
+              type="button"
+              role="radio"
+              :aria-checked="clip.picture.kind === 'none'"
+              data-testid="picture-none"
+              @click="choosePicture('none')"
+            >
+              <svg class="sketch" viewBox="0 0 72 44" aria-hidden="true">
+                <rect x="1" y="1" width="70" height="42" rx="4" fill="#1c2229" />
+                <path d="M22 22h3M29 16v12M34 10v24M39 15v14M44 19v6M49 22h2" stroke="#7fb4dc" stroke-width="3" stroke-linecap="round" />
+              </svg>
+              <span>Solo se oye</span>
+            </button>
+            <button
+              class="picture-option"
+              :class="{ selected: clip.picture.kind === 'cover' }"
+              type="button"
+              role="radio"
+              :aria-checked="clip.picture.kind === 'cover'"
+              data-testid="picture-cover"
+              @click="choosePicture('cover')"
+            >
+              <svg class="sketch" viewBox="0 0 72 44" aria-hidden="true">
+                <rect x="1" y="1" width="70" height="42" rx="4" fill="#3e6e5c" />
+                <circle cx="54" cy="13" r="5" fill="#f3d27a" />
+                <path d="M1 39l20-18 14 12 10-8 26 17v1a4 4 0 0 1-4 4H5a4 4 0 0 1-4-4z" fill="#9cc7a4" />
+              </svg>
+              <span>Poner otro vídeo encima</span>
+            </button>
+          </div>
+
+          <template v-if="cover && coverLost">
+            <div class="note warn" data-testid="cover-lost">
+              <AppIcon name="warning" />
+              <p>No encuentro el vídeo de encima ({{ baseName(cover.sourcePath) }}). Puede que se haya movido o borrado.</p>
+            </div>
+            <div class="pair">
+              <button class="btn" type="button" data-testid="cover-change" @click="changeCover">
+                <AppIcon name="folder" />
+                Elegir otro
+              </button>
+              <button class="btn" type="button" data-testid="cover-remove" @click="dropCover">
+                <AppIcon name="close" />
+                Quitarlo
+              </button>
+            </div>
+          </template>
+
+          <template v-else-if="cover">
+            <div class="chosen" data-testid="cover-chosen">
+              <span class="chosen-thumb"><ThumbImage :path="cover.sourcePath" :time-ms="cover.startMs + 300" :height="72" /></span>
+              <span class="chosen-text">
+                <strong>{{ baseName(cover.sourcePath) }}</strong>
+                <span>Dura {{ formatDuration(cover.sourceDurationMs) }} · se ve sin su sonido</span>
+              </span>
+            </div>
+            <div class="pair">
+              <button class="btn" type="button" data-testid="cover-change" @click="changeCover">
+                <AppIcon name="folder" />
+                Cambiarlo
+              </button>
+              <button class="btn" type="button" data-testid="cover-remove" @click="dropCover">
+                <AppIcon name="close" />
+                Quitarlo
+              </button>
+            </div>
+
+            <h3 class="sub">Empieza en…</h3>
+            <div class="start-strip">
+              <div class="start-thumbs">
+                <span v-for="t in coverStripTimes" :key="t" class="start-cell"><ThumbImage :path="cover.sourcePath" :time-ms="t" :height="56" /></span>
+              </div>
+              <input
+                class="start-range"
+                type="range"
+                min="0"
+                :max="coverMaxStart"
+                step="100"
+                :value="cover.startMs"
+                aria-label="Desde qué momento del otro vídeo se ve"
+                data-testid="cover-start"
+                @input="dragCoverStart($event, false)"
+                @change="dragCoverStart($event, true)"
+              />
+            </div>
+            <div class="start-row">
+              <button class="btn small-step" type="button" aria-label="Un segundo antes" data-testid="cover-start-back" :disabled="cover.startMs <= 0" @click="stepCoverStart(-1000)">
+                <AppIcon name="step-back" />
+                1 s
+              </button>
+              <p class="start-text" data-testid="cover-start-text">Se ve desde el <strong>{{ formatClock(cover.startMs) }}</strong> del otro vídeo</p>
+              <button class="btn small-step" type="button" aria-label="Un segundo después" data-testid="cover-start-forward" :disabled="cover.startMs >= coverMaxStart" @click="stepCoverStart(1000)">
+                1 s
+                <AppIcon name="step-forward" />
+              </button>
+            </div>
+            <p v-if="coverShortMs > 0" class="note warn" data-testid="cover-short">
+              <AppIcon name="warning" />
+              El vídeo de encima dura menos: al acabar se queda quieto en su última imagen.
+            </p>
+
+            <h3 class="sub">Cómo se ve</h3>
+            <div class="pair">
+              <button class="btn" :class="{ selected: cover.framing.mode === 'fit-blur' }" type="button" data-testid="cover-fit-blur" @click="setCoverMode('fit-blur')">
+                <AppIcon name="horizontal" />
+                Que se vea entero
+              </button>
+              <button class="btn" :class="{ selected: cover.framing.mode === 'fill' }" type="button" data-testid="cover-fill" @click="setCoverMode('fill')">
+                <AppIcon name="frame" />
+                Que llene la pantalla
+              </button>
+            </div>
+
+            <template v-if="clip.sourceHasVideo">
+              <button
+                class="btn switch"
+                :class="{ on: !!cover.inset }"
+                type="button"
+                role="switch"
+                :aria-checked="!!cover.inset"
+                data-testid="inset-toggle"
+                @click="toggleInset"
+              >
+                <AppIcon name="corner" />
+                <span class="switch-label">Verme en una esquina</span>
+                <span class="knob-track"><span class="switch-knob" /></span>
+              </button>
+              <template v-if="cover.inset">
+                <div class="corners" role="radiogroup" aria-label="En qué esquina">
+                  <button
+                    v-for="corner in INSET_CORNERS"
+                    :key="corner"
+                    class="corner-btn"
+                    :class="{ selected: cover.inset.corner === corner }"
+                    type="button"
+                    role="radio"
+                    :aria-checked="cover.inset.corner === corner"
+                    :aria-label="cornerLabels[corner]"
+                    :title="cornerLabels[corner]"
+                    :data-testid="`inset-${corner}`"
+                    @click="chooseCorner(corner)"
+                  >
+                    <svg viewBox="0 0 48 30" aria-hidden="true">
+                      <rect x="1" y="1" width="46" height="28" rx="3" fill="none" stroke="currentColor" stroke-width="2" />
+                      <rect
+                        :x="corner.endsWith('left') ? 5 : 27"
+                        :y="corner.startsWith('top') ? 5 : 15"
+                        width="16"
+                        height="10"
+                        rx="2"
+                        fill="currentColor"
+                      />
+                    </svg>
+                    <span>{{ cornerLabels[corner].replace(' a la ', ', ') }}</span>
+                  </button>
+                </div>
+                <div class="pair">
+                  <button class="btn" :class="{ selected: cover.inset.size === 'small' }" type="button" data-testid="inset-small" @click="chooseInsetSize('small')">
+                    Pequeño
+                  </button>
+                  <button class="btn" :class="{ selected: cover.inset.size === 'medium' }" type="button" data-testid="inset-medium" @click="chooseInsetSize('medium')">
+                    Mediano
+                  </button>
+                </div>
+              </template>
+            </template>
+          </template>
+
+          <p v-else-if="clip.picture.kind === 'none'" class="lead small" data-testid="picture-none-text">
+            Mientras suena este trozo se ve un fondo liso. {{ clip.sourceHasVideo ? '' : 'Es un sonido: no tiene imagen propia.' }}
+          </p>
+          <p v-else class="lead small">Se ve el vídeo de este trozo, como siempre.</p>
         </template>
 
         <!-- Velocidad -->
@@ -647,6 +964,7 @@ function done() {
           :playhead-ms="playheadMs"
           :highlights="pauseHighlights"
           :editable="tab === 'cut'"
+          :waveform="!clip.sourceHasVideo"
           :caption="tab === 'cut' ? 'Mueve las asas blancas, o pon la imagen donde quieras y pulsa un botón' : ''"
           @drag-in="dragIn"
           @drag-out="dragOut"
@@ -872,6 +1190,218 @@ function done() {
 .mini-img {
   position: absolute;
   display: block;
+}
+.pictures {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.pictures.two {
+  grid-template-columns: repeat(2, 1fr);
+}
+.picture-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-height: 96px;
+  padding: 10px 6px 8px;
+  border-radius: 12px;
+  border: 1.5px solid var(--border-strong);
+  background: var(--surface);
+  cursor: pointer;
+  font-weight: 650;
+  font-size: 15px;
+  line-height: 1.15;
+  text-align: center;
+}
+.picture-option:hover {
+  border-color: var(--accent);
+}
+.picture-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.sketch {
+  width: 72px;
+  height: 44px;
+  flex: none;
+}
+.sub {
+  font-size: 17px;
+  font-weight: 650;
+  margin-top: 6px;
+}
+.chosen {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.chosen-thumb {
+  flex: none;
+  width: 96px;
+  height: 54px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.chosen-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.chosen-text strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chosen-text span {
+  color: var(--text-muted);
+  font-size: 15px;
+}
+.start-strip {
+  position: relative;
+  flex: none;
+  height: 60px;
+  margin: 0 12px;
+}
+.start-thumbs {
+  position: absolute;
+  inset: 4px 0;
+  display: flex;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #1f252c;
+}
+.start-cell {
+  flex: 1;
+  min-width: 0;
+  border-right: 1px solid rgb(0 0 0 / 0.35);
+}
+.start-range {
+  position: absolute;
+  inset: 0 -12px;
+  width: calc(100% + 24px);
+  height: 60px;
+  margin: 0;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+.start-range::-webkit-slider-runnable-track {
+  height: 60px;
+  background: transparent;
+}
+.start-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 24px;
+  height: 60px;
+  border-radius: 8px;
+  background: #fff;
+  border: 3px solid var(--accent);
+  box-shadow: 0 1px 6px rgb(0 0 0 / 0.45);
+}
+.start-range:focus-visible {
+  outline: 3px solid var(--accent-ring);
+  border-radius: 8px;
+}
+.start-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.start-text {
+  flex: 1;
+  text-align: center;
+  font-size: 15px;
+  color: var(--text-muted);
+}
+.start-text strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.small-step {
+  padding: 0 10px;
+  gap: 4px;
+  font-size: 15px;
+}
+.switch {
+  justify-content: flex-start;
+  gap: 10px;
+  margin-top: 6px;
+}
+.switch-label {
+  flex: 1;
+  text-align: left;
+}
+.knob-track {
+  position: relative;
+  width: 46px;
+  height: 26px;
+  border-radius: 13px;
+  background: var(--border-strong);
+  transition: background 0.15s;
+}
+.switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+.switch.on {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+.switch.on .knob-track {
+  background: var(--accent);
+}
+.switch.on .switch-knob {
+  transform: translateX(20px);
+}
+.corners {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.corner-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  border: 1.5px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+  line-height: 1.15;
+}
+.corner-btn svg {
+  flex: none;
+  width: 48px;
+  height: 30px;
+}
+.corner-btn span {
+  color: var(--text);
+}
+.corner-btn.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 .speeds {
   display: grid;

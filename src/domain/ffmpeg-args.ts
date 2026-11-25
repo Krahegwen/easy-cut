@@ -2,21 +2,29 @@
 // Siempre un array de argumentos (para spawn/execFile), nunca una cadena para el shell.
 
 import { encoderVideoArgs, type VideoEncoder } from './encoders'
-import { computeOutputSpec, even, type OutputSpec, type PresetId } from './output'
+import { insetRect, PLAIN_BACKGROUND_HEX } from './layout'
+import { computeOutputSpec, even, SOUND_BITRATE_KBPS, type OutputSpec, type PresetId } from './output'
 import {
   clipDisplaySize,
   clipInOut,
   clipOutputMs,
   type Clip,
+  type CoverPicture,
   type MediaInfo,
   type Project,
   type Speed,
+  type Viewable,
 } from './project'
 
 export const AUDIO_SAMPLE_RATE = 48_000
 /** Microfundido en los bordes de cada rango conservado, para evitar clics. */
 export const EDGE_FADE_MS = 30
 export const BT709_SETPARAMS = 'setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv'
+/**
+ * El vídeo de encima nunca se busca a menos de esto de su final: más allá no hay fotogramas que
+ * decodificar y tpad no tendría nada que repetir (se vería su última imagen igualmente).
+ */
+export const COVER_SEEK_TAIL_MS = 250
 
 type MediaLookup = ReadonlyMap<string, MediaInfo> | Record<string, MediaInfo>
 
@@ -104,11 +112,11 @@ export interface FramingPlan {
 }
 
 /**
- * Encuadre del trozo (ya girado, de w×h) dentro de la salida W×H.
+ * Encuadre del trozo o del vídeo de encima (ya girado, de w×h) dentro de la salida W×H.
  * fit-blur: se ve entero y, si no llena, el mismo vídeo desenfocado de fondo.
  * fill: llena la pantalla recortando lo que sobra.
  */
-export function planFraming(clip: Clip, media: MediaInfo, spec: Pick<OutputSpec, 'width' | 'height'>): FramingPlan {
+export function planFraming(clip: Viewable, media: MediaInfo, spec: Pick<OutputSpec, 'width' | 'height'>): FramingPlan {
   const { width: w, height: h } = clipDisplaySize(clip, media)
   const W = spec.width
   const H = spec.height
@@ -175,6 +183,187 @@ export interface ExportOptions {
   filterScriptPath?: string
 }
 
+// setparams etiqueta cada fotograma como BT.709: las opciones de salida -color_trc/-color_primaries
+// no bastan en ffmpeg reciente si el fotograma llega «sin especificar» (comprobado con la build local).
+const VIDEO_TAIL = ['setsar=1', 'format=yuv420p', BT709_SETPARAMS]
+const AUDIO_FORMAT = `aformat=sample_fmts=fltp:sample_rates=${AUDIO_SAMPLE_RATE}:channel_layouts=stereo`
+
+/** Entradas de ffmpeg con su recorte (-ss/-t de entrada); add devuelve el índice de la entrada. */
+function createInputs() {
+  const args: string[] = []
+  let count = 0
+  return {
+    args,
+    add(path: string, startMs: number, lengthMs: number, extra: string[] = []): number {
+      args.push(...extra, '-ss', sec(startMs), '-t', sec(lengthMs), '-i', path)
+      return count++
+    },
+  }
+}
+
+/** Rangos conservados relativos a la entrada del trozo (la entrada ya empieza en su punto de entrada). */
+function relativeSegments(clip: Clip) {
+  const io = clipInOut(clip)
+  return clip.segments.map((s) => ({ startMs: s.startMs - io.startMs, endMs: s.endMs - io.startMs }))
+}
+
+/** Une los rangos conservados del vídeo propio: deja la etiqueta [v{i}seg]. */
+function ownSegmentChains(clip: Clip, i: number, input: number): string[] {
+  const rel = relativeSegments(clip)
+  const vSeg = `v${i}seg`
+  if (rel.length <= 1) return [`[${input}:v:0]setpts=PTS-STARTPTS[${vSeg}]`]
+  const labels = rel.map((_, j) => `[v${i}s${j}]`)
+  return [
+    `[${input}:v:0]split=${rel.length}${labels.join('')}`,
+    ...rel.map((r, j) => `[v${i}s${j}]trim=start=${sec(r.startMs)}:end=${sec(r.endMs)},setpts=PTS-STARTPTS[v${i}t${j}]`),
+    `${rel.map((_, j) => `[v${i}t${j}]`).join('')}concat=n=${rel.length}:v=1:a=0[${vSeg}]`,
+  ]
+}
+
+/** Tiempos del vídeo propio: velocidad, fps fijos y el número exacto de fotogramas. */
+function ownTiming(clip: Clip, fps: number, frames: number): string[] {
+  return [
+    clip.speed === 1 ? 'setpts=PTS-STARTPTS' : `setpts=(PTS-STARTPTS)/${clip.speed}`,
+    `fps=${fps}`,
+    // Rellena con el último fotograma si faltara alguno y corta en el número exacto de fotogramas.
+    `tpad=stop_mode=clone:stop=${fps}`,
+    `trim=end_frame=${frames}`,
+  ]
+}
+
+/** HDR → SDR y giro. */
+function lookFilters(media: MediaInfo, quarterTurns: number): string[] {
+  return [...(media.isHdr ? toneMapFilters(media) : []), ...rotationFilters(quarterTurns)]
+}
+
+/** [src] → tiempos, aspecto y encuadre (con fondo desenfocado si hace falta) → [out], ya en BT.709. */
+function framedChains(
+  src: string,
+  timing: string[],
+  media: MediaInfo,
+  view: Viewable,
+  spec: Pick<OutputSpec, 'width' | 'height'>,
+  prefix: string,
+  out: string,
+): string[] {
+  const look = lookFilters(media, view.quarterTurns)
+  const plan = planFraming(view, media, spec)
+  if (!plan.background) return [`[${src}]${[...timing, ...look, ...plan.foreground, ...VIDEO_TAIL].join(',')}[${out}]`]
+  return [
+    `[${src}]${[...timing, ...look, `split=2[${prefix}bgsrc][${prefix}fgsrc]`].join(',')}`,
+    `[${prefix}bgsrc]${plan.background.join(',')}[${prefix}bg]`,
+    `[${prefix}fgsrc]${plan.foreground.join(',')}[${prefix}fg]`,
+    `[${prefix}bg][${prefix}fg]overlay=x=${plan.overlayX}:y=${plan.overlayY}:shortest=1,${VIDEO_TAIL.join(',')}[${out}]`,
+  ]
+}
+
+/** Dónde se empieza a leer el vídeo de encima (sin pasar de su final menos COVER_SEEK_TAIL_MS). */
+export function coverSeekMs(cover: CoverPicture): number {
+  return Math.max(0, Math.min(cover.startMs, cover.sourceDurationMs - COVER_SEEK_TAIL_MS))
+}
+
+/**
+ * Expresión de geq para la máscara de esquinas redondeadas de un recuadro de w×h con radio r:
+ * 255 dentro, 0 fuera. Va entre comillas simples: las comas no separan filtros.
+ */
+export function roundedMaskExpression(radius: number): string {
+  const r = Math.max(1, Math.round(radius))
+  return `255*lte(pow(max(0,abs(X-(W-1)/2)-(W/2-${r})),2)+pow(max(0,abs(Y-(H-1)/2)-(H/2-${r})),2),${r * r})`
+}
+
+/** Cadenas de audio de un trozo, con el número exacto de muestras: deja [a{i}]. */
+function audioChains(clip: Clip, media: MediaInfo, i: number, input: number, samples: number): string[] {
+  if (!clipKeepsAudio(clip, media)) {
+    return [`anullsrc=channel_layout=stereo:sample_rate=${AUDIO_SAMPLE_RATE},atrim=end_sample=${samples},${AUDIO_FORMAT}[a${i}]`]
+  }
+  const rel = relativeSegments(clip)
+  const chains: string[] = []
+  const fade = (lenMs: number) =>
+    lenMs > EDGE_FADE_MS * 2
+      ? [`afade=t=in:d=${sec(EDGE_FADE_MS)}`, `afade=t=out:st=${sec(lenMs - EDGE_FADE_MS)}:d=${sec(EDGE_FADE_MS)}`]
+      : []
+  const pre = `[${input}:a:0]aresample=${AUDIO_SAMPLE_RATE},${AUDIO_FORMAT}`
+  const aSeg = `a${i}seg`
+  if (rel.length > 1) {
+    const labels = rel.map((_, j) => `[a${i}s${j}]`)
+    chains.push(`${pre},asplit=${rel.length}${labels.join('')}`)
+    rel.forEach((r, j) => {
+      const parts = [`atrim=start=${sec(r.startMs)}:end=${sec(r.endMs)}`, 'asetpts=PTS-STARTPTS', ...fade(r.endMs - r.startMs)]
+      chains.push(`[a${i}s${j}]${parts.join(',')}[a${i}t${j}]`)
+    })
+    chains.push(`${rel.map((_, j) => `[a${i}t${j}]`).join('')}concat=n=${rel.length}:v=0:a=1[${aSeg}]`)
+  } else {
+    const r = rel[0]!
+    chains.push(`${pre},${['asetpts=PTS-STARTPTS', ...fade(r.endMs - r.startMs)].join(',')}[${aSeg}]`)
+  }
+  const after = [
+    ...atempoChain(clip.speed),
+    // Mismo número exacto de muestras que de fotogramas: audio y vídeo duran lo mismo.
+    `apad=whole_len=${samples}`,
+    `atrim=end_sample=${samples}`,
+    AUDIO_FORMAT,
+  ]
+  chains.push(`[${aSeg}]${after.join(',')}[a${i}]`)
+  return chains
+}
+
+/**
+ * Imagen de un trozo según `picture`, con exactamente `frames` fotogramas: deja [v{i}].
+ * own: su vídeo · none: fondo liso · cover: el otro vídeo (sin su sonido) desde startMs, en tiempo de salida
+ * y a velocidad normal, quieto en su última imagen si se acaba · cover + inset: además, su vídeo en una esquina.
+ */
+function pictureChains(
+  clip: Clip,
+  i: number,
+  mainInput: number,
+  coverInput: number | null,
+  media: MediaInfo,
+  coverMedia: MediaInfo | null,
+  spec: OutputSpec,
+  frames: number,
+): string[] {
+  const F = spec.fps
+  const W = spec.width
+  const H = spec.height
+  const picture = clip.picture
+
+  if (picture.kind === 'none' || (picture.kind === 'own' && !media.hasVideo)) {
+    return [`color=c=0x${PLAIN_BACKGROUND_HEX}:s=${W}x${H}:r=${F},trim=end_frame=${frames},${VIDEO_TAIL.join(',')}[v${i}]`]
+  }
+  if (picture.kind === 'own') {
+    return [...ownSegmentChains(clip, i, mainInput), ...framedChains(`v${i}seg`, ownTiming(clip, F, frames), media, clip, spec, `v${i}`, `v${i}`)]
+  }
+
+  // Vídeo de encima: setpts a cero, fps fijos y, si se acaba antes, su última imagen repetida.
+  const coverTiming = ['setpts=PTS-STARTPTS', `fps=${F}`, `tpad=stop_mode=clone:stop=${frames}`, `trim=end_frame=${frames}`]
+  const inset = picture.inset && media.hasVideo ? picture.inset : null
+  const coverOut = inset ? `v${i}base` : `v${i}`
+  const chains = framedChains(`${coverInput}:v:0`, coverTiming, coverMedia!, picture, spec, `c${i}`, coverOut)
+  if (!inset) return chains
+
+  // Su vídeo en pequeño: recorte centrado con la forma del vídeo, esquinas redondeadas y margen.
+  const r = insetRect(inset, W, H, true)
+  const scaleOpts = 'flags=bicubic:out_color_matrix=bt709:out_range=tv'
+  chains.push(...ownSegmentChains(clip, i, mainInput))
+  chains.push(
+    `[v${i}seg]${[
+      ...ownTiming(clip, F, frames),
+      ...lookFilters(media, clip.quarterTurns),
+      `scale=${r.width}:${r.height}:force_original_aspect_ratio=increase:${scaleOpts}`,
+      `crop=${r.width}:${r.height}`,
+      'setsar=1',
+      'format=yuva420p',
+    ].join(',')}[v${i}inset]`,
+  )
+  // La máscara se calcula una sola vez y se repite (geq por fotograma sería mucho más lento).
+  chains.push(
+    `color=c=white:s=${r.width}x${r.height}:r=${F},trim=end_frame=1,format=gray,geq=lum='${roundedMaskExpression(r.radius)}',loop=loop=-1:size=1,trim=end_frame=${frames},setpts=N/${F}/TB[v${i}mask]`,
+  )
+  chains.push(`[v${i}inset][v${i}mask]alphamerge[v${i}insetround]`)
+  chains.push(`[v${i}base][v${i}insetround]overlay=x=${r.left}:y=${r.top}:shortest=1,${VIDEO_TAIL.join(',')}[v${i}]`)
+  return chains
+}
+
 /** Construye la orden de exportación completa. */
 export function buildExportCommand(
   project: Project,
@@ -187,94 +376,27 @@ export function buildExportCommand(
   if (project.clips.length === 0) throw new Error('El proyecto no tiene trozos que exportar.')
   const spec = computeOutputSpec(project, mediaByPath, presetId)
   const F = spec.fps
-  const inputs: string[] = []
+  const inputs = createInputs()
   const chains: string[] = []
   const concatInputs: string[] = []
 
   project.clips.forEach((clip, i) => {
     const media = lookup(mediaByPath, clip.sourcePath)
     const io = clipInOut(clip)
-    inputs.push('-ss', sec(io.startMs), '-t', sec(io.endMs - io.startMs), '-i', clip.sourcePath)
-
+    const mainInput = inputs.add(clip.sourcePath, io.startMs, io.endMs - io.startMs)
     const frames = clipFrameCount(clip, F)
     const samples = Math.round((frames * AUDIO_SAMPLE_RATE) / F)
-    const rel = clip.segments.map((s) => ({ startMs: s.startMs - io.startMs, endMs: s.endMs - io.startMs }))
-    const multi = rel.length > 1
 
-    // --- Vídeo ---
-    const vSeg = `v${i}seg`
-    if (multi) {
-      const labels = rel.map((_, j) => `[v${i}s${j}]`)
-      chains.push(`[${i}:v:0]split=${rel.length}${labels.join('')}`)
-      rel.forEach((r, j) => {
-        chains.push(`[v${i}s${j}]trim=start=${sec(r.startMs)}:end=${sec(r.endMs)},setpts=PTS-STARTPTS[v${i}t${j}]`)
-      })
-      chains.push(`${rel.map((_, j) => `[v${i}t${j}]`).join('')}concat=n=${rel.length}:v=1:a=0[${vSeg}]`)
-    } else {
-      chains.push(`[${i}:v:0]setpts=PTS-STARTPTS[${vSeg}]`)
+    let coverInput: number | null = null
+    let coverMedia: MediaInfo | null = null
+    if (clip.picture.kind === 'cover') {
+      coverMedia = lookup(mediaByPath, clip.picture.sourcePath)
+      // Un segundo de más: lo que sobre lo corta trim; si falta, tpad repite la última imagen.
+      coverInput = inputs.add(clip.picture.sourcePath, coverSeekMs(clip.picture), (frames * 1000) / F + 1000)
     }
 
-    const timing = [
-      clip.speed === 1 ? 'setpts=PTS-STARTPTS' : `setpts=(PTS-STARTPTS)/${clip.speed}`,
-      `fps=${F}`,
-      // Rellena con el último fotograma si faltara alguno y corta en el número exacto de fotogramas.
-      `tpad=stop_mode=clone:stop=${F}`,
-      `trim=end_frame=${frames}`,
-    ]
-    const look = [...(media.isHdr ? toneMapFilters(media) : []), ...rotationFilters(clip.quarterTurns)]
-    const plan = planFraming(clip, media, spec)
-    // setparams etiqueta cada fotograma como BT.709: las opciones de salida -color_trc/-color_primaries
-    // no bastan en ffmpeg reciente si el fotograma llega «sin especificar» (comprobado con la build local).
-    const tail = ['setsar=1', 'format=yuv420p', BT709_SETPARAMS]
-    if (plan.background) {
-      chains.push(`[${vSeg}]${[...timing, ...look, `split=2[v${i}bgsrc][v${i}fgsrc]`].join(',')}`)
-      chains.push(`[v${i}bgsrc]${plan.background.join(',')}[v${i}bg]`)
-      chains.push(`[v${i}fgsrc]${plan.foreground.join(',')}[v${i}fg]`)
-      chains.push(
-        `[v${i}bg][v${i}fg]overlay=x=${plan.overlayX}:y=${plan.overlayY}:shortest=1,${tail.join(',')}[v${i}]`,
-      )
-    } else {
-      chains.push(`[${vSeg}]${[...timing, ...look, ...plan.foreground, ...tail].join(',')}[v${i}]`)
-    }
-
-    // --- Audio ---
-    const audioFormat = `aformat=sample_fmts=fltp:sample_rates=${AUDIO_SAMPLE_RATE}:channel_layouts=stereo`
-    if (clipKeepsAudio(clip, media)) {
-      const fade = (lenMs: number) =>
-        lenMs > EDGE_FADE_MS * 2
-          ? [`afade=t=in:d=${sec(EDGE_FADE_MS)}`, `afade=t=out:st=${sec(lenMs - EDGE_FADE_MS)}:d=${sec(EDGE_FADE_MS)}`]
-          : []
-      const pre = `[${i}:a:0]aresample=${AUDIO_SAMPLE_RATE},${audioFormat}`
-      const aSeg = `a${i}seg`
-      if (multi) {
-        const labels = rel.map((_, j) => `[a${i}s${j}]`)
-        chains.push(`${pre},asplit=${rel.length}${labels.join('')}`)
-        rel.forEach((r, j) => {
-          const parts = [
-            `atrim=start=${sec(r.startMs)}:end=${sec(r.endMs)}`,
-            'asetpts=PTS-STARTPTS',
-            ...fade(r.endMs - r.startMs),
-          ]
-          chains.push(`[a${i}s${j}]${parts.join(',')}[a${i}t${j}]`)
-        })
-        chains.push(`${rel.map((_, j) => `[a${i}t${j}]`).join('')}concat=n=${rel.length}:v=0:a=1[${aSeg}]`)
-      } else {
-        const r = rel[0]!
-        chains.push(`${pre},${['asetpts=PTS-STARTPTS', ...fade(r.endMs - r.startMs)].join(',')}[${aSeg}]`)
-      }
-      const after = [
-        ...atempoChain(clip.speed),
-        // Mismo número exacto de muestras que de fotogramas: audio y vídeo duran lo mismo.
-        `apad=whole_len=${samples}`,
-        `atrim=end_sample=${samples}`,
-        audioFormat,
-      ]
-      chains.push(`[${aSeg}]${after.join(',')}[a${i}]`)
-    } else {
-      chains.push(
-        `anullsrc=channel_layout=stereo:sample_rate=${AUDIO_SAMPLE_RATE},atrim=end_sample=${samples},${audioFormat}[a${i}]`,
-      )
-    }
+    chains.push(...pictureChains(clip, i, mainInput, coverInput, media, coverMedia, spec, frames))
+    chains.push(...audioChains(clip, media, i, mainInput, samples))
     concatInputs.push(`[v${i}][a${i}]`)
   })
 
@@ -287,7 +409,7 @@ export function buildExportCommand(
     '-nostats',
     '-loglevel', 'error',
     '-progress', 'pipe:1',
-    ...inputs,
+    ...inputs.args,
     ...(options.filterScriptPath
       ? ['-/filter_complex', options.filterScriptPath]
       : ['-filter_complex', filterComplex]),
@@ -323,4 +445,68 @@ export function buildExportArgs(
   outputPath: string,
 ): string[] {
   return buildExportCommand(project, mediaByPath, preset, encoder, outputPath).args
+}
+
+// ---------------------------------------------------------------------------
+// «Solo el sonido»: el mismo camino de audio, sin imagen
+
+/** Muestras del trozo en «Solo el sonido»: su duración exacta (sin redondear a fotogramas). */
+export function soundSampleCount(clip: Clip): number {
+  return Math.max(1, Math.round((clipOutputMs(clip) * AUDIO_SAMPLE_RATE) / 1000))
+}
+
+export interface SoundExportCommand {
+  args: string[]
+  filterComplex: string
+  /** Duración del fichero (suma de las muestras de cada trozo). */
+  expectedDurationMs: number
+}
+
+/**
+ * «Solo el sonido»: M4A (AAC 192 kbps, 48 kHz estéreo, +faststart) con el sonido del montaje entero:
+ * mismos cortes, velocidades, silencios y microfundidos que el vídeo. Sin imagen: las entradas van con
+ * -vn para no leer ni decodificar el vídeo, y es rápido.
+ */
+export function buildSoundExportCommand(
+  project: Project,
+  mediaByPath: MediaLookup,
+  outputPath: string,
+  options: ExportOptions = {},
+): SoundExportCommand {
+  if (project.clips.length === 0) throw new Error('El proyecto no tiene trozos que exportar.')
+  const inputs = createInputs()
+  const chains: string[] = []
+  let totalSamples = 0
+  project.clips.forEach((clip, i) => {
+    const media = lookup(mediaByPath, clip.sourcePath)
+    const io = clipInOut(clip)
+    const input = inputs.add(clip.sourcePath, io.startMs, io.endMs - io.startMs, ['-vn'])
+    const samples = soundSampleCount(clip)
+    totalSamples += samples
+    chains.push(...audioChains(clip, media, i, input, samples))
+  })
+  chains.push(`${project.clips.map((_, i) => `[a${i}]`).join('')}concat=n=${project.clips.length}:v=0:a=1[aout]`)
+  const filterComplex = chains.join(';\n')
+  const args = [
+    '-hide_banner',
+    '-y',
+    '-nostats',
+    '-loglevel', 'error',
+    '-progress', 'pipe:1',
+    ...inputs.args,
+    ...(options.filterScriptPath
+      ? ['-/filter_complex', options.filterScriptPath]
+      : ['-filter_complex', filterComplex]),
+    '-map', '[aout]',
+    '-vn',
+    '-c:a', 'aac',
+    '-b:a', `${SOUND_BITRATE_KBPS}k`,
+    '-ar', String(AUDIO_SAMPLE_RATE),
+    '-ac', '2',
+    '-map_metadata', '-1',
+    '-map_chapters', '-1',
+    '-movflags', '+faststart',
+    outputPath,
+  ]
+  return { args, filterComplex, expectedDurationMs: (totalSamples * 1000) / AUDIO_SAMPLE_RATE }
 }

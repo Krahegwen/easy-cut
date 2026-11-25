@@ -31,6 +31,11 @@ export interface Framing {
 export interface MediaInfo {
   path: string
   durationMs: number
+  /**
+   * ¿Tiene imagen? Un fichero de sonido (M4A, MP3, WAV…) no la tiene: entonces width, height,
+   * codedWidth, codedHeight y fps valen 0 y videoCodec es 'ninguno'.
+   */
+  hasVideo: boolean
   /** Ancho visible, con la rotación ya aplicada. */
   width: number
   /** Alto visible, con la rotación ya aplicada. */
@@ -54,20 +59,56 @@ export interface MediaInfo {
   sizeBytes: number | null
 }
 
+export type InsetCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+export const INSET_CORNERS: readonly InsetCorner[] = ['top-left', 'top-right', 'bottom-left', 'bottom-right']
+export type InsetSize = 'small' | 'medium'
+export const INSET_SIZES: readonly InsetSize[] = ['small', 'medium']
+
+/** El vídeo del propio trozo, en pequeño en una esquina (encima del vídeo de encima). */
+export interface Inset {
+  corner: InsetCorner
+  size: InsetSize
+}
+
+/** Otro vídeo que se ve (sin su sonido) mientras suena el trozo. */
+export interface CoverPicture {
+  kind: 'cover'
+  sourcePath: string
+  /** Duración del otro vídeo, para saber cuándo se queda quieto en su última imagen. */
+  sourceDurationMs: number
+  /** Desde qué instante del otro vídeo se ve (ms). Corre en tiempo de salida del trozo, a velocidad normal. */
+  startMs: number
+  framing: Framing
+  quarterTurns: QuarterTurns
+  /** Solo si el trozo tiene imagen propia. */
+  inset: Inset | null
+}
+
+/**
+ * Qué se ve mientras suena el trozo. Manda el trozo que se oye: su duración, cortes, velocidad y sonido
+ * son los que cuentan, y lo que se ve encima se adapta.
+ * own: su propio vídeo · none: fondo liso (obligado si el original no tiene imagen) · cover: otro vídeo.
+ */
+export type Picture = { kind: 'own' } | { kind: 'none' } | CoverPicture
+
 export interface Clip {
   id: string
   sourcePath: string
   /** Duración del original, para no salirse al recortar. */
   sourceDurationMs: number
+  /** ¿El original tiene imagen? (un fichero de sonido no). */
+  sourceHasVideo: boolean
   /** Rangos del original que se conservan, ordenados y sin solape. Por defecto, uno. */
   segments: TimeRange[]
   speed: Speed
   muted: boolean
   quarterTurns: QuarterTurns
   framing: Framing
+  picture: Picture
 }
 
-export const PROJECT_VERSION = 1 as const
+/** Versión 2: los trozos llevan `picture` y `sourceHasVideo` (la 1 se migra al leerla). */
+export const PROJECT_VERSION = 2 as const
 
 export interface Project {
   version: typeof PROJECT_VERSION
@@ -103,16 +144,24 @@ export const defaultIdFactory: IdFactory = () => {
 }
 
 export function createClip(media: MediaInfo, id: string = defaultIdFactory()): Clip {
+  const hasVideo = media.hasVideo !== false
   return {
     id,
     sourcePath: media.path,
     sourceDurationMs: Math.max(0, Math.round(media.durationMs)),
+    sourceHasVideo: hasVideo,
     segments: [{ startMs: 0, endMs: Math.max(0, Math.round(media.durationMs)) }],
     speed: 1,
     muted: false,
     quarterTurns: 0,
     framing: { ...DEFAULT_FRAMING },
+    picture: defaultPicture(hasVideo),
   }
+}
+
+/** Lo que se ve por defecto: su vídeo si lo tiene; si no, fondo liso. */
+export function defaultPicture(sourceHasVideo: boolean): Picture {
+  return sourceHasVideo ? { kind: 'own' } : { kind: 'none' }
 }
 
 // ---------------------------------------------------------------------------
@@ -341,7 +390,14 @@ export function splitClip(
   if (left.length === 0 || right.length === 0) return project
 
   const first: Clip = { ...clip, segments: left }
-  const second: Clip = { ...clip, id: newId, segments: right, framing: { ...clip.framing } }
+  // El vídeo de encima corre en tiempo de salida: la segunda parte sigue donde iba.
+  const second: Clip = {
+    ...clip,
+    id: newId,
+    segments: right,
+    framing: { ...clip.framing },
+    picture: shiftPicture(clip.picture, clipOutputMs(first)),
+  }
   const clips = project.clips.slice()
   clips.splice(index, 1, first, second)
   return { ...project, clips }
@@ -413,12 +469,148 @@ export function resetKeepSegments(project: Project, clipId: string): Project {
   })
 }
 
+// ---------------------------------------------------------------------------
+// Imagen: qué se ve mientras suena el trozo
+
+/** El vídeo de encima no puede empezar a menos de esto de su final (para que se vea algo moverse). */
+export const COVER_MIN_TAIL_MS = 500
+
+/** Copia del vídeo de encima que empieza `deltaMs` más tarde (al partir un trozo). */
+function shiftPicture(picture: Picture, deltaMs: number): Picture {
+  if (picture.kind !== 'cover') return { ...picture }
+  return {
+    ...picture,
+    framing: { ...picture.framing },
+    inset: picture.inset ? { ...picture.inset } : null,
+    startMs: Math.min(picture.sourceDurationMs, Math.max(0, Math.round(picture.startMs + deltaMs))),
+  }
+}
+
+/** Último instante desde el que puede empezar el vídeo de encima. */
+export function maxCoverStartMs(coverDurationMs: number): number {
+  return Math.max(0, Math.round(coverDurationMs) - COVER_MIN_TAIL_MS)
+}
+
+/** Deja la imagen en un estado válido para un trozo con o sin imagen propia. */
+export function normalizePicture(picture: Picture, sourceHasVideo: boolean): Picture {
+  if (picture.kind === 'own') return sourceHasVideo ? { kind: 'own' } : { kind: 'none' }
+  if (picture.kind === 'none') return { kind: 'none' }
+  const duration = Math.max(0, Math.round(picture.sourceDurationMs))
+  const inset =
+    sourceHasVideo && picture.inset && INSET_CORNERS.includes(picture.inset.corner) && INSET_SIZES.includes(picture.inset.size)
+      ? { corner: picture.inset.corner, size: picture.inset.size }
+      : null
+  return {
+    kind: 'cover',
+    sourcePath: picture.sourcePath,
+    sourceDurationMs: duration,
+    startMs: Math.min(duration, Math.max(0, Math.round(Number.isFinite(picture.startMs) ? picture.startMs : 0))),
+    framing: clampFraming(picture.framing),
+    quarterTurns: ((((Math.round(picture.quarterTurns ?? 0) % 4) + 4) % 4) as QuarterTurns),
+    inset,
+  }
+}
+
+function samePicture(a: Picture, b: Picture): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+/** Cambia lo que se ve. Se normaliza: «su vídeo» no vale si el original no tiene imagen. */
+export function setPicture(project: Project, clipId: string, picture: Picture): Project {
+  return updateClip(project, clipId, (clip) => {
+    const next = normalizePicture(picture, clip.sourceHasVideo)
+    return samePicture(next, clip.picture) ? clip : { ...clip, picture: next }
+  })
+}
+
+/**
+ * Pone otro vídeo encima (o lo cambia por otro). Si ya había uno, conserva la esquina;
+ * el encuadre vuelve al de serie y empieza desde `startMs` (por defecto, el principio).
+ */
+export function setCover(
+  project: Project,
+  clipId: string,
+  cover: Pick<MediaInfo, 'path' | 'durationMs'>,
+  startMs = 0,
+): Project {
+  const clip = findClip(project, clipId)
+  if (!clip) return project
+  const inset = clip.picture.kind === 'cover' ? clip.picture.inset : null
+  return setPicture(project, clipId, {
+    kind: 'cover',
+    sourcePath: cover.path,
+    sourceDurationMs: Math.max(0, Math.round(cover.durationMs)),
+    startMs: Math.min(startMs, maxCoverStartMs(cover.durationMs)),
+    framing: { ...DEFAULT_FRAMING },
+    quarterTurns: 0,
+    inset,
+  })
+}
+
+/** Quita el vídeo de encima: vuelve a verse su vídeo (o el fondo liso, si es un sonido). */
+export function removeCover(project: Project, clipId: string): Project {
+  const clip = findClip(project, clipId)
+  if (!clip || clip.picture.kind !== 'cover') return project
+  return setPicture(project, clipId, defaultPicture(clip.sourceHasVideo))
+}
+
+function updateCover(project: Project, clipId: string, fn: (cover: CoverPicture) => CoverPicture): Project {
+  const clip = findClip(project, clipId)
+  if (!clip || clip.picture.kind !== 'cover') return project
+  return setPicture(project, clipId, fn(clip.picture))
+}
+
+/** Desde qué momento del otro vídeo se ve (sin pasar de su final menos COVER_MIN_TAIL_MS). */
+export function setCoverStart(project: Project, clipId: string, startMs: number): Project {
+  return updateCover(project, clipId, (c) => ({
+    ...c,
+    startMs: Math.min(Math.max(0, Math.round(startMs)), maxCoverStartMs(c.sourceDurationMs)),
+  }))
+}
+
+export function setCoverFraming(project: Project, clipId: string, change: Partial<Framing>): Project {
+  return updateCover(project, clipId, (c) => ({ ...c, framing: clampFraming({ ...c.framing, ...change }) }))
+}
+
+/** «Verme en una esquina» (null = no). Solo vale si el trozo tiene imagen propia. */
+export function setInset(project: Project, clipId: string, inset: Inset | null): Project {
+  return updateCover(project, clipId, (c) => ({ ...c, inset }))
+}
+
+/** ¿Se ve la imagen del propio trozo (entera o en la esquina)? */
+export function clipShowsOwnVideo(clip: Clip): boolean {
+  return clip.sourceHasVideo && (clip.picture.kind === 'own' || (clip.picture.kind === 'cover' && clip.picture.inset !== null))
+}
+
+/** ¿El trozo enseña alguna imagen? (con «Solo se oye», no). */
+export function clipShowsPicture(clip: Clip): boolean {
+  return clip.picture.kind !== 'none'
+}
+
+/**
+ * Cuánto le falta al vídeo de encima para cubrir el trozo (ms; 0 si llega). Si le falta,
+ * al acabarse se queda quieto en su última imagen.
+ */
+export function coverShortfallMs(clip: Clip): number {
+  if (clip.picture.kind !== 'cover') return 0
+  const available = clip.picture.sourceDurationMs - clip.picture.startMs
+  return Math.max(0, clipOutputMs(clip) - available)
+}
+
+/** Todos los ficheros que usa el trozo (el original y, si lo hay, el vídeo de encima). */
+export function clipPaths(clip: Clip): string[] {
+  return clip.picture.kind === 'cover' ? [clip.sourcePath, clip.picture.sourcePath] : [clip.sourcePath]
+}
+
 function sameSegments(a: readonly TimeRange[], b: readonly TimeRange[]): boolean {
   return a.length === b.length && a.every((s, i) => s.startMs === b[i]!.startMs && s.endMs === b[i]!.endMs)
 }
 
-/** Ancho y alto visibles del trozo tras aplicar sus giros. */
-export function clipDisplaySize(clip: Clip, media: Pick<MediaInfo, 'width' | 'height'>): { width: number; height: number } {
+/** Lo que hace falta para encuadrar una imagen: el trozo (su vídeo) o el vídeo de encima. */
+export type Viewable = Pick<Clip, 'framing' | 'quarterTurns'>
+
+/** Ancho y alto visibles del trozo (o del vídeo de encima) tras aplicar sus giros. */
+export function clipDisplaySize(clip: Viewable, media: Pick<MediaInfo, 'width' | 'height'>): { width: number; height: number } {
   return clip.quarterTurns % 2 === 1
     ? { width: media.height, height: media.width }
     : { width: media.width, height: media.height }
@@ -465,17 +657,49 @@ export function parseProject(json: string): Project {
   if (typeof data.version !== 'number' || data.version > PROJECT_VERSION) {
     throw new ProjectFormatError('Este proyecto se guardó con una versión más nueva de easy-cut.')
   }
-  // Versión 1: no hay migraciones todavía.
   const p = data.project
   if (!isObject(p)) throw new ProjectFormatError('El proyecto no tiene contenido.')
   const aspect = ASPECT_RATIOS.includes(p.aspect as AspectRatio) ? (p.aspect as AspectRatio) : '16:9'
   if (!Array.isArray(p.clips)) throw new ProjectFormatError('El proyecto no tiene la lista de trozos.')
-  const clips = p.clips.map((c, i) => parseClip(c, i))
+  const version = data.version
+  const clips = p.clips.map((c, i) => parseClip(c, i, version))
   const target = typeof p.targetDurationMs === 'number' && p.targetDurationMs > 0 ? Math.round(p.targetDurationMs) : null
   return { version: PROJECT_VERSION, aspect, clips, targetDurationMs: target }
 }
 
-function parseClip(raw: unknown, index: number): Clip {
+function parseFraming(raw: unknown): Framing {
+  const f = isObject(raw) ? raw : {}
+  return clampFraming({
+    mode: f.mode === 'fill' ? 'fill' : 'fit-blur',
+    zoom: typeof f.zoom === 'number' ? f.zoom : 1,
+    offsetX: typeof f.offsetX === 'number' ? f.offsetX : 0,
+    offsetY: typeof f.offsetY === 'number' ? f.offsetY : 0,
+  })
+}
+
+/** Imagen guardada (versión 2). Lo que no se entienda vuelve a lo de serie, sin perder el trozo. */
+function parsePicture(raw: unknown, sourceHasVideo: boolean): Picture {
+  if (!isObject(raw)) return defaultPicture(sourceHasVideo)
+  if (raw.kind === 'none') return { kind: 'none' }
+  if (raw.kind === 'cover' && typeof raw.sourcePath === 'string' && raw.sourcePath !== '' && typeof raw.sourceDurationMs === 'number' && raw.sourceDurationMs > 0) {
+    const inset = isObject(raw.inset) ? { corner: raw.inset.corner as InsetCorner, size: raw.inset.size as InsetSize } : null
+    return normalizePicture(
+      {
+        kind: 'cover',
+        sourcePath: raw.sourcePath,
+        sourceDurationMs: raw.sourceDurationMs,
+        startMs: typeof raw.startMs === 'number' ? raw.startMs : 0,
+        framing: parseFraming(raw.framing),
+        quarterTurns: (typeof raw.quarterTurns === 'number' ? raw.quarterTurns : 0) as QuarterTurns,
+        inset,
+      },
+      sourceHasVideo,
+    )
+  }
+  return defaultPicture(sourceHasVideo)
+}
+
+function parseClip(raw: unknown, index: number, version: number): Clip {
   const fail = (what: string): never => {
     throw new ProjectFormatError(`El trozo ${index + 1} está dañado (${what}).`)
   }
@@ -496,22 +720,21 @@ function parseClip(raw: unknown, index: number): Clip {
   if (segments.length === 0) fail('sin rangos válidos')
   const speed = SPEEDS.includes(raw.speed as Speed) ? (raw.speed as Speed) : 1
   const turns = typeof raw.quarterTurns === 'number' ? ((((Math.round(raw.quarterTurns) % 4) + 4) % 4) as QuarterTurns) : 0
-  const f = isObject(raw.framing) ? raw.framing : {}
-  const framing = clampFraming({
-    mode: f.mode === 'fill' ? 'fill' : 'fit-blur',
-    zoom: typeof f.zoom === 'number' ? f.zoom : 1,
-    offsetX: typeof f.offsetX === 'number' ? f.offsetX : 0,
-    offsetY: typeof f.offsetY === 'number' ? f.offsetY : 0,
-  })
+  const framing = parseFraming(raw.framing)
+  // Migración 1 → 2: en la versión 1 todos los trozos eran vídeos con su imagen.
+  const sourceHasVideo = version < 2 ? true : raw.sourceHasVideo !== false
+  const picture = version < 2 ? defaultPicture(true) : parsePicture(raw.picture, sourceHasVideo)
   return {
     id: raw.id as string,
     sourcePath: raw.sourcePath as string,
     sourceDurationMs,
+    sourceHasVideo,
     segments,
     speed,
     muted: raw.muted === true,
     quarterTurns: turns,
     framing,
+    picture,
   }
 }
 

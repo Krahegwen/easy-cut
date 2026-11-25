@@ -33,6 +33,7 @@ export function createBrowserBridge(): NativeBridge {
     writeTempTextFile: () => unavailable('Escribir ficheros'),
     detectSilences: () => unavailableProcess('Quitar pausas'),
     thumbnails: () => unavailableProcess('Miniaturas'),
+    waveform: () => unavailableProcess('Dibujar el sonido'),
     probeEncoders: () => Promise.resolve<EncoderProbeResults>({ libx264: true }),
     getOutputFolder: () => Promise.resolve('C:\\Users\\Usuario\\Videos\\Mis montajes'),
     pickOutputFolder: () => unavailable('Elegir carpeta'),

@@ -4,6 +4,7 @@ const COMMANDS: &[&str] = &[
     "run_tool",
     "cancel_job",
     "make_thumbnail",
+    "make_waveform",
     "cache_entry",
     "promote_cache_file",
     "discard_cache_file",

@@ -25,6 +25,22 @@ function thumbTime(clip: Clip): number {
   return Math.min(io.startMs + 400, Math.max(io.startMs, io.endMs - 100))
 }
 
+type CardPicture =
+  | { kind: 'lost' | 'cover-lost' | 'sound' }
+  | { kind: 'thumb' | 'cover'; path: string; timeMs: number }
+
+/** Lo que enseña la tarjeta: la miniatura del trozo, la del vídeo de encima, el sonido o el aviso. */
+function cardPicture(clip: Clip): CardPicture {
+  if (isMissing(clip)) return { kind: 'lost' }
+  const p = clip.picture
+  if (p.kind === 'cover') {
+    if (store.coverMissing(clip)) return { kind: 'cover-lost' }
+    return { kind: 'cover', path: p.sourcePath, timeMs: Math.min(p.startMs + 400, Math.max(0, p.sourceDurationMs - 100)) }
+  }
+  if (p.kind === 'none' || !clip.sourceHasVideo) return { kind: 'sound' }
+  return { kind: 'thumb', path: clip.sourcePath, timeMs: thumbTime(clip) }
+}
+
 function badges(clip: Clip): { icon: 'speed' | 'mute' | 'pauses' | 'scissors'; text: string }[] {
   const out: { icon: 'speed' | 'mute' | 'pauses' | 'scissors'; text: string }[] = []
   if (clip.speed !== 1) out.push({ icon: 'speed', text: clip.speed < 1 ? 'Despacio' : clip.speed === 4 ? 'Muy rápido' : 'Rápido' })
@@ -159,8 +175,26 @@ const slotBefore = computed<string | null>(() => {
         @pointerdown="down(clip, $event)"
         @keydown.enter.prevent="store.select(clip.id)"
       >
-        <span class="picture">
-          <ThumbImage v-if="!isMissing(clip)" :path="clip.sourcePath" :time-ms="thumbTime(clip)" :height="120" />
+        <span class="picture" :class="`pic-${cardPicture(clip).kind}`" :data-picture="cardPicture(clip).kind">
+          <template v-if="cardPicture(clip).kind === 'thumb' || cardPicture(clip).kind === 'cover'">
+            <ThumbImage
+              :path="(cardPicture(clip) as { path: string }).path"
+              :time-ms="(cardPicture(clip) as { timeMs: number }).timeMs"
+              :height="120"
+            />
+            <span v-if="cardPicture(clip).kind === 'cover'" class="over" title="Lleva otro vídeo encima">
+              <AppIcon name="cover-video" :size="16" />
+              Vídeo encima
+            </span>
+          </template>
+          <span v-else-if="cardPicture(clip).kind === 'sound'" class="sound-card">
+            <AppIcon name="wave" :size="34" />
+            Solo se oye
+          </span>
+          <span v-else-if="cardPicture(clip).kind === 'cover-lost'" class="lost">
+            <AppIcon name="warning" :size="28" />
+            No encuentro el vídeo de encima
+          </span>
           <span v-else class="lost">
             <AppIcon name="warning" :size="28" />
             No encuentro este vídeo
@@ -178,7 +212,7 @@ const slotBefore = computed<string | null>(() => {
     <button class="clip-card add" type="button" data-testid="add-more" @click="emit('add')">
       <span class="add-inner">
         <AppIcon name="plus" :size="34" />
-        Añadir más vídeos
+        Añadir vídeos o sonidos
       </span>
     </button>
     <button class="clip-card add record" type="button" data-testid="record-more" @click="emit('record')">
@@ -189,8 +223,17 @@ const slotBefore = computed<string | null>(() => {
     </button>
     <Teleport to="body">
       <div v-if="draggedClip" class="clip-card ghost selected" :style="ghostStyle">
-        <span class="picture">
-          <ThumbImage :path="draggedClip.sourcePath" :time-ms="thumbTime(draggedClip)" :height="120" />
+        <span class="picture" :class="`pic-${cardPicture(draggedClip).kind}`">
+          <ThumbImage
+            v-if="cardPicture(draggedClip).kind === 'thumb' || cardPicture(draggedClip).kind === 'cover'"
+            :path="(cardPicture(draggedClip) as { path: string }).path"
+            :time-ms="(cardPicture(draggedClip) as { timeMs: number }).timeMs"
+            :height="120"
+          />
+          <span v-else-if="cardPicture(draggedClip).kind === 'sound'" class="sound-card">
+            <AppIcon name="wave" :size="34" />
+            Solo se oye
+          </span>
           <span class="duration">{{ formatDuration(clipDurationMs(draggedClip)) }}</span>
         </span>
       </div>
@@ -293,8 +336,40 @@ const slotBefore = computed<string | null>(() => {
   color: var(--text-soft);
   font-weight: 400;
 }
-.missing .picture {
+.missing .picture,
+.picture.pic-cover-lost {
   background: var(--warn-soft);
+}
+.picture.pic-sound {
+  background: #1c2229;
+}
+.sound-card {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  /* Por encima de la duración, que va abajo a la derecha. */
+  padding-bottom: 26px;
+  color: #9ec5e0;
+  font-weight: 650;
+  font-size: 15px;
+}
+.over {
+  position: absolute;
+  right: 7px;
+  top: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 7px;
+  background: rgb(0 0 0 / 0.72);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
 }
 .lost {
   position: absolute;
@@ -360,6 +435,10 @@ const slotBefore = computed<string | null>(() => {
   }
   .picture {
     height: 84px;
+  }
+  .sound-card {
+    padding-bottom: 22px;
+    font-size: 14px;
   }
 }
 </style>

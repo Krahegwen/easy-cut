@@ -25,7 +25,7 @@ defineProps<{ hovering: boolean }>()
           <AppIcon name="folder" />
           Elegir vídeos del ordenador
         </button>
-        <p class="hint muted">Puedes elegir varios a la vez. Saldrán en el orden en que los elijas, y luego podrás cambiarlo.</p>
+        <p class="hint muted">Puedes elegir varios a la vez, y también sonidos (como una grabación de voz). Saldrán en el orden en que los elijas, y luego podrás cambiarlo.</p>
       </div>
     </div>
   </main>

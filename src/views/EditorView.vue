@@ -8,7 +8,7 @@ import DurationBar from '../components/DurationBar.vue'
 import PreviewPlayer from '../components/PreviewPlayer.vue'
 import TargetPicker from '../components/TargetPicker.vue'
 import UndoRedo from '../components/UndoRedo.vue'
-import { clipDurationMs, clipStartTimes, formatDuration, setAspect, type AspectRatio } from '../domain'
+import { clipDurationMs, clipStartTimes, formatDuration, removeCover, setAspect, type AspectRatio } from '../domain'
 import { pickAndAddVideos } from '../lib/add-videos'
 import { setKeyHandler } from '../lib/keys'
 import { store } from '../store'
@@ -25,6 +25,13 @@ const clip = computed(() => store.selectedClip.value)
 const index = computed(() => store.selectedIndex.value)
 const count = computed(() => store.project.value.clips.length)
 const clipMissing = computed(() => !!clip.value && !!store.missing.value[clip.value.sourcePath])
+const clipCoverMissing = computed(() => !!clip.value && !clipMissing.value && store.coverMissing(clip.value))
+
+/** Quita el vídeo de encima que no se encuentra, sin perder el trozo. */
+function dropLostCover() {
+  const c = clip.value
+  if (c) store.apply((p) => removeCover(p, c.id))
+}
 const missingCount = computed(() => store.project.value.clips.filter((c) => store.missing.value[c.sourcePath]).length)
 
 function setShape(a: AspectRatio) {
@@ -33,7 +40,7 @@ function setShape(a: AspectRatio) {
 
 function save() {
   if (store.hasMissing.value) {
-    store.showToast('Antes de guardar, quita los trozos cuyo vídeo no encuentro.')
+    store.showToast('Antes de guardar, quita los trozos (o los vídeos de encima) que no encuentro.')
     return
   }
   player.value?.pause()
@@ -177,6 +184,18 @@ onBeforeUnmount(() => setKeyHandler(null))
           <button class="btn danger" type="button" data-testid="remove-clip" @click="store.removeClip(clip.id)">
             <AppIcon name="trash" />
             Quitarlo del vídeo
+          </button>
+        </template>
+        <template v-else-if="clipCoverMissing">
+          <p class="lost" data-testid="cover-lost-panel"><AppIcon name="warning" /> No encuentro el vídeo de encima de este trozo.</p>
+          <span class="spacer" />
+          <button class="btn" type="button" data-testid="remove-lost-cover" @click="dropLostCover">
+            <AppIcon name="close" />
+            Quitar el vídeo de encima
+          </button>
+          <button class="btn fix" type="button" data-testid="fix-clip" @click="fix">
+            <AppIcon name="wrench" />
+            Arreglar este trozo
           </button>
         </template>
         <template v-else>

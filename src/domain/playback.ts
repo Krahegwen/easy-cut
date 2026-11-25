@@ -2,7 +2,7 @@
 // (un tramo = un rango conservado de un trozo). La vista previa no renderiza: salta de tramo en tramo
 // sobre los originales. Aquí está el mapa tiempo del vídeo ↔ trozo / rango / tiempo del original.
 
-import { clipOutputMs, clipStartTimes, type Clip, type Project, type Speed } from './project'
+import { clipOutputMs, clipStartTimes, type Clip, type CoverPicture, type Project, type Speed } from './project'
 
 export interface PlaybackSpan {
   clipIndex: number
@@ -101,6 +101,56 @@ export function findSpanForSource(plan: PlaybackPlan, clipIndex: number, sourceM
 /** Primer tramo de cada trozo (para saber qué cargar antes de tiempo). */
 export function firstSpanOfClip(plan: PlaybackPlan, clipIndex: number): number {
   return plan.spans.findIndex((s) => s.clipIndex === clipIndex)
+}
+
+// ---------------------------------------------------------------------------
+// Imagen de la vista previa: qué se enseña y en qué instante va el vídeo de encima
+
+/** Se corrige la posición del vídeo de encima si se separa más que esto de la que le toca. */
+export const COVER_DRIFT_TOLERANCE_MS = 150
+
+/** Instante del vídeo completo → ms de salida del trozo `clipIndex` (0 = su principio). */
+export function clipOutputAt(project: Project, clipIndex: number, projectMs: number): number {
+  const start = clipStartTimes(project)[clipIndex] ?? 0
+  const clip = project.clips[clipIndex]
+  const total = clip ? clipOutputMs(clip) : 0
+  return Math.min(Math.max(0, projectMs - start), total)
+}
+
+/**
+ * Instante del vídeo de encima a los `clipOutMs` ms de salida del trozo: avanza a velocidad normal desde
+ * startMs (sin la velocidad ni las pausas quitadas del trozo) y se queda en su final si se acaba.
+ */
+export function coverTimeAt(cover: CoverPicture, clipOutMs: number): number {
+  return Math.min(cover.sourceDurationMs, cover.startMs + Math.max(0, clipOutMs))
+}
+
+/** ¿El vídeo de encima ya está quieto en su última imagen en ese instante? */
+export function coverIsFrozen(cover: CoverPicture, clipOutMs: number): boolean {
+  return cover.startMs + Math.max(0, clipOutMs) >= cover.sourceDurationMs
+}
+
+/** ¿Hay que recolocar el vídeo de encima? (se ha separado más de COVER_DRIFT_TOLERANCE_MS). */
+export function coverNeedsResync(actualMs: number, expectedMs: number): boolean {
+  return Math.abs(actualMs - expectedMs) > COVER_DRIFT_TOLERANCE_MS
+}
+
+export type PreviewPicture =
+  | { kind: 'own' }
+  | { kind: 'none' }
+  | { kind: 'cover'; path: string; timeMs: number; frozen: boolean; inset: CoverPicture['inset'] }
+
+/**
+ * Qué enseña la vista previa del trozo a los `clipOutMs` ms de su salida. Si el vídeo de encima no está
+ * (p. ej. se ha borrado del disco), se enseña lo de serie: su vídeo o el fondo liso.
+ */
+export function previewPicture(clip: Clip, clipOutMs: number, coverAvailable = true): PreviewPicture {
+  const p = clip.picture
+  if (p.kind === 'cover' && coverAvailable) {
+    return { kind: 'cover', path: p.sourcePath, timeMs: coverTimeAt(p, clipOutMs), frozen: coverIsFrozen(p, clipOutMs), inset: p.inset }
+  }
+  if (p.kind === 'none' || !clip.sourceHasVideo) return { kind: 'none' }
+  return { kind: 'own' }
 }
 
 /** Margen con el que se da por acabado un tramo (el <video> no avisa justo en el milisegundo). */

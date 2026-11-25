@@ -70,6 +70,7 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     },
     detectSilences: () => done([]),
     thumbnails: (req) => done(req.timesMs.map((timeMs) => ({ timeMs, url: `thumb://${req.path}@${timeMs}`, width: 160, height: req.height }))),
+    waveform: (req) => done({ timeMs: 0, url: `wave://${req.path}`, width: req.width, height: req.height }),
     probeEncoders: async () => state.encoders,
     getOutputFolder: async () => 'C:\\Users\\Ana\\Videos\\Mis montajes',
     pickOutputFolder: async () => null,

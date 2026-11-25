@@ -76,14 +76,29 @@ export function even(n: number): number {
   return Math.max(2, Math.round(n / 2) * 2)
 }
 
-function mediaFor(project: Project, mediaByPath: ReadonlyMap<string, MediaInfo> | Record<string, MediaInfo>): MediaInfo[] {
-  const get = (p: string) => (mediaByPath instanceof Map ? mediaByPath.get(p) : (mediaByPath as Record<string, MediaInfo>)[p])
-  return project.clips.map((c) => {
-    const m = get(c.sourcePath)
-    if (!m) throw new Error(`Falta la información del original ${c.sourcePath}`)
+/**
+ * La imagen que se ve de cada trozo: su vídeo o el vídeo de encima. Los que «solo se oyen» no cuentan
+ * para decidir el tamaño ni los fps de salida.
+ */
+export function visibleMedia(project: Project, mediaByPath: ReadonlyMap<string, MediaInfo> | Record<string, MediaInfo>): MediaInfo[] {
+  const get = (p: string) => {
+    const m = mediaByPath instanceof Map ? mediaByPath.get(p) : (mediaByPath as Record<string, MediaInfo>)[p]
+    if (!m) throw new Error(`Falta la información del original ${p}`)
     return m
+  }
+  return project.clips.flatMap((c) => {
+    if (c.picture.kind === 'cover') return [get(c.picture.sourcePath)]
+    if (c.picture.kind === 'none') return []
+    const m = get(c.sourcePath)
+    return m.hasVideo ? [m] : []
   })
 }
+
+/** Tamaño de salida cuando ningún trozo tiene imagen: lado corto de 720 (1280×720 en horizontal), a 30 fps. */
+export const NO_PICTURE_SHORT_SIDE = 720
+
+/** Bitrate de «Solo el sonido» (M4A AAC). */
+export const SOUND_BITRATE_KBPS = 192
 
 /** Bitrate de vídeo recomendado por YouTube (kbps) según el lado corto y los fps. */
 export function youtubeRecommendedKbps(shortSide: number, fps: number): number {
@@ -98,8 +113,9 @@ export function youtubeRecommendedKbps(shortSide: number, fps: number): number {
 
 /** Lado corto de salida según el preset. Nunca más que el original más grande. */
 export function outputShortSide(preset: PresetId, media: readonly MediaInfo[]): number {
-  const shorts = media.map((m) => Math.min(m.width, m.height))
-  const largest = shorts.length > 0 ? Math.max(...shorts) : 1080
+  const shorts = media.filter((m) => m.width > 0 && m.height > 0).map((m) => Math.min(m.width, m.height))
+  if (shorts.length === 0) return NO_PICTURE_SHORT_SIDE
+  const largest = Math.max(...shorts)
   switch (preset) {
     case 'whatsapp':
       return Math.min(720, largest)
@@ -123,7 +139,7 @@ export function computeOutputSpec(
   presetId: PresetId,
 ): OutputSpec {
   const preset = PRESETS[presetId]
-  const media = mediaFor(project, mediaByPath)
+  const media = visibleMedia(project, mediaByPath)
   const shortSide = even(outputShortSide(presetId, media))
   const f = ASPECT_FACTORS[project.aspect]
   const shortFactor = Math.min(f.w, f.h)
@@ -167,6 +183,16 @@ export function estimateProjectSizeBytes(
   presetId: PresetId,
 ): number {
   return estimateFileSizeBytes(computeOutputSpec(project, mediaByPath, presetId), projectDurationMs(project))
+}
+
+/** Peso de «Solo el sonido» (bytes). */
+export function estimateSoundSizeBytes(durationMs: number): number {
+  return Math.round(((SOUND_BITRATE_KBPS * 1000) / 8) * (durationMs / 1000) * 1.01)
+}
+
+/** Lo que tarda «Solo el sonido»: sin imagen que hacer, unas 60 veces más rápido que lo que dura. */
+export function estimateSoundTimeMs(durationMs: number): number {
+  return Math.round(1_500 + durationMs / 60)
 }
 
 export type SizeCategory = 'small' | 'medium' | 'large'

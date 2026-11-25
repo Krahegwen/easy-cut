@@ -106,7 +106,20 @@ describe('ffprobe', () => {
 
   it('errores en castellano', () => {
     expect(() => parseProbeOutput('{{', 'x')).toThrow(ProbeError)
-    expect(() => parseProbeOutput({ streams: [audio], format: { duration: '1' } }, 'x')).toThrow(/no tiene imagen/)
+    expect(() => parseProbeOutput({ streams: [], format: { duration: '1' } }, 'x')).toThrow(/ni imagen ni sonido/)
     expect(() => parseProbeOutput({ streams: [video()], format: {} }, 'x')).toThrow(/cuánto dura/)
+    expect(() => parseProbeOutput({ streams: [audio], format: {} }, 'x')).toThrow(/cuánto dura este sonido/)
+  })
+
+  it('un fichero de solo sonido (M4A, MP3 con carátula) entra sin imagen', () => {
+    const m = parseProbeOutput({ streams: [audio], format: { duration: '3.25', size: '52000' } }, 'C:\\voz.m4a')
+    expect(m.hasVideo).toBe(false)
+    expect(m.hasAudio).toBe(true)
+    expect([m.width, m.height, m.fps, m.durationMs]).toEqual([0, 0, 0, 3250])
+    const coverArt = { codec_type: 'video', codec_name: 'mjpeg', width: 600, height: 600, disposition: { attached_pic: 1 } }
+    const mp3 = parseProbeOutput({ streams: [audio, coverArt], format: { duration: '10' } }, 'C:\\canción.mp3')
+    expect(mp3.hasVideo).toBe(false)
+    const withVideo = parseProbeOutput({ streams: [video(), audio], format: { duration: '1' } }, 'x')
+    expect(withVideo.hasVideo).toBe(true)
   })
 })

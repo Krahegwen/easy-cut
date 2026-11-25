@@ -57,3 +57,7 @@ export type IconName =
   | 'rewind'
   | 'eye-off'
   | 'text'
+  | 'image'
+  | 'wave'
+  | 'cover-video'
+  | 'corner'

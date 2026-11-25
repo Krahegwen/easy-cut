@@ -6,13 +6,14 @@ import { describeRemaining, formatPercent } from '../domain'
 import { askConfirm } from '../lib/confirm'
 import { saveFlow } from '../store'
 
+const sound = computed(() => saveFlow.preset.value === 'sound')
 const fraction = computed(() => saveFlow.progress.value?.fraction ?? 0)
 const remaining = computed(() => describeRemaining(saveFlow.progress.value?.remainingMs ?? null, saveFlow.progress.value?.done))
 
 async function cancel() {
   const ok = await askConfirm({
     title: '¿Dejar de guardar?',
-    message: 'El vídeo no se guardará. Lo que llevas montado no se pierde y puedes volver a guardarlo cuando quieras.',
+    message: `${sound.value ? 'El sonido' : 'El vídeo'} no se guardará. Lo que llevas montado no se pierde y puedes volver a guardarlo cuando quieras.`,
     confirmLabel: 'Sí, dejar de guardar',
     cancelLabel: 'No, seguir guardando',
     danger: true,
@@ -25,7 +26,7 @@ async function cancel() {
   <main class="screen saving" data-testid="saving-view">
     <div class="box card">
       <span class="spinner big" />
-      <h1>Guardando tu vídeo…</h1>
+      <h1>{{ sound ? 'Guardando el sonido…' : 'Guardando tu vídeo…' }}</h1>
       <div class="bar" role="progressbar" :aria-valuenow="Math.round(fraction * 100)" aria-valuemin="0" aria-valuemax="100">
         <div class="fill" :style="{ width: `${fraction * 100}%` }" />
       </div>

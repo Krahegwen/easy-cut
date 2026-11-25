@@ -1,12 +1,47 @@
 // Forma de los trozos y del vídeo, y cómo colocar un trozo dentro del marco de la vista previa.
 // Es el mismo cálculo que planFraming (ffmpeg-args.ts), en píxeles de pantalla y sin redondear a pares.
 
-import { clipDisplaySize, type AspectRatio, type Clip, type MediaInfo } from './project'
+import { clipDisplaySize, type AspectRatio, type Inset, type InsetSize, type MediaInfo, type Viewable } from './project'
 
 export const ASPECT_VALUES: Record<AspectRatio, number> = {
   '16:9': 16 / 9,
   '9:16': 9 / 16,
   '1:1': 1,
+}
+
+/** Fondo liso de los trozos que «solo se oyen»: gris pizarra muy oscuro (el mismo en la vista previa y al guardar). */
+export const PLAIN_BACKGROUND_HEX = '1c2229'
+export const PLAIN_BACKGROUND_CSS = `#${PLAIN_BACKGROUND_HEX}`
+
+/** Ancho del vídeo en la esquina respecto al del vídeo (es una copia en pequeño, con la misma forma). */
+export const INSET_SCALE: Record<InsetSize, number> = { small: 0.28, medium: 0.4 }
+/** Margen respecto al borde, como fracción del lado corto del vídeo. */
+export const INSET_MARGIN = 0.04
+/** Radio de las esquinas redondeadas, como fracción del lado corto del recuadro. */
+export const INSET_RADIUS = 0.08
+
+export interface InsetRect {
+  left: number
+  top: number
+  width: number
+  height: number
+  radius: number
+}
+
+/**
+ * Dónde va el vídeo en la esquina dentro de un marco de frameWidth × frameHeight.
+ * Con `even`, todo en píxeles pares (para ffmpeg); sin él, en píxeles de pantalla.
+ */
+export function insetRect(inset: Inset, frameWidth: number, frameHeight: number, even = false): InsetRect {
+  const round = (n: number) => (even ? Math.max(2, Math.round(n / 2) * 2) : n)
+  const scale = INSET_SCALE[inset.size]
+  const width = round(frameWidth * scale)
+  const height = round(frameHeight * scale)
+  const margin = round(Math.min(frameWidth, frameHeight) * INSET_MARGIN)
+  const left = inset.corner.endsWith('left') ? margin : frameWidth - width - margin
+  const top = inset.corner.startsWith('top') ? margin : frameHeight - height - margin
+  const radius = even ? Math.max(2, Math.round(Math.min(width, height) * INSET_RADIUS)) : Math.min(width, height) * INSET_RADIUS
+  return { left, top, width, height, radius }
 }
 
 /** Forma más parecida a un ancho × alto («horizontal», «vertical» o «cuadrado»). */
@@ -18,8 +53,9 @@ export function closestAspect(width: number, height: number): AspectRatio {
   return '1:1'
 }
 
-/** Forma de la mayoría de los vídeos; en empate, la del primero; sin vídeos, horizontal. */
-export function dominantAspect(sizes: readonly Pick<MediaInfo, 'width' | 'height'>[]): AspectRatio {
+/** Forma de la mayoría de los vídeos; en empate, la del primero; sin vídeos, horizontal. Los sonidos (sin imagen) no cuentan. */
+export function dominantAspect(all: readonly Pick<MediaInfo, 'width' | 'height'>[]): AspectRatio {
+  const sizes = all.filter((s) => s.width > 0 && s.height > 0)
   if (sizes.length === 0) return '16:9'
   const counts = new Map<AspectRatio, number>()
   for (const s of sizes) {
@@ -32,7 +68,7 @@ export function dominantAspect(sizes: readonly Pick<MediaInfo, 'width' | 'height
 }
 
 /** ¿El trozo (ya girado) tiene la misma forma que el vídeo? Si no, hay que elegir cómo encuadrarlo. */
-export function clipMatchesAspect(clip: Clip, media: Pick<MediaInfo, 'width' | 'height'>, aspect: AspectRatio): boolean {
+export function clipMatchesAspect(clip: Viewable, media: Pick<MediaInfo, 'width' | 'height'>, aspect: AspectRatio): boolean {
   const { width, height } = clipDisplaySize(clip, media)
   if (width <= 0 || height <= 0) return true
   return Math.abs(width / height / ASPECT_VALUES[aspect] - 1) < 0.03
@@ -70,7 +106,7 @@ export interface FramingLayout {
  * offset −1 pega el borde izquierdo/superior, 0 centra y 1 el derecho/inferior (como planFraming).
  */
 export function computeFramingLayout(
-  clip: Clip,
+  clip: Viewable,
   media: Pick<MediaInfo, 'width' | 'height'>,
   frameWidth: number,
   frameHeight: number,

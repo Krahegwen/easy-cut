@@ -1,12 +1,14 @@
 <script setup lang="ts">
 // «¡Listo!»: ver el vídeo, abrir la carpeta, copiarlo para WhatsApp, guardarlo de otra forma o hacer otro.
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import { baseName, formatDuration } from '../domain'
 import { askConfirm } from '../lib/confirm'
 import { store } from '../store'
 
 const copied = ref(false)
+/** Se ha guardado «Solo el sonido» (M4A): los textos hablan de sonido, no de vídeo. */
+const sound = computed(() => store.lastExport.value?.target === 'sound')
 
 async function run(what: string, fn: () => Promise<void>) {
   try {
@@ -18,7 +20,7 @@ async function run(what: string, fn: () => Promise<void>) {
 
 function open() {
   const p = store.lastExport.value?.path
-  if (p) void run('No he podido abrir el vídeo.', () => store.bridge.openFile(p))
+  if (p) void run(sound.value ? 'No he podido abrir el sonido.' : 'No he podido abrir el vídeo.', () => store.bridge.openFile(p))
 }
 function reveal() {
   const p = store.lastExport.value?.path
@@ -31,7 +33,7 @@ async function copy() {
     await store.bridge.copyFileToClipboard(p)
     copied.value = true
   } catch (e) {
-    store.showError('No he podido copiar el vídeo.', e)
+    store.showError(sound.value ? 'No he podido copiar el sonido.' : 'No he podido copiar el vídeo.', e)
   }
 }
 
@@ -53,14 +55,14 @@ async function another() {
     <div class="box card">
       <span class="ok"><AppIcon name="check" :size="44" /></span>
       <h1>¡Listo!</h1>
-      <p class="where">Tu vídeo está guardado en «Mis montajes»</p>
+      <p class="where">{{ sound ? 'El sonido está guardado en «Mis montajes»' : 'Tu vídeo está guardado en «Mis montajes»' }}</p>
       <p v-if="store.lastExport.value" class="file muted" data-testid="done-file">
         {{ baseName(store.lastExport.value.path) }} · dura {{ formatDuration(store.lastExport.value.durationMs) }}
       </p>
       <div class="grid">
         <button class="btn primary large" type="button" data-testid="open-video" @click="open">
-          <AppIcon name="play" />
-          Ver el vídeo
+          <AppIcon :name="sound ? 'sound' : 'play'" />
+          {{ sound ? 'Escuchar' : 'Ver el vídeo' }}
         </button>
         <button class="btn large" type="button" data-testid="open-folder" @click="reveal">
           <AppIcon name="folder" />

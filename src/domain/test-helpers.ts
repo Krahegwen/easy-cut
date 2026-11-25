@@ -4,6 +4,7 @@ import type { MediaInfo } from './project'
 export function fakeMedia(overrides: Partial<MediaInfo> & { path: string }): MediaInfo {
   return {
     durationMs: 10_000,
+    hasVideo: true,
     width: 1920,
     height: 1080,
     codedWidth: 1920,
@@ -23,4 +24,22 @@ export function fakeMedia(overrides: Partial<MediaInfo> & { path: string }): Med
     sizeBytes: null,
     ...overrides,
   }
+}
+
+/** Un fichero de solo sonido (M4A, MP3…), como lo devuelve parseProbeOutput. */
+export function fakeAudio(overrides: Partial<MediaInfo> & { path: string }): MediaInfo {
+  return fakeMedia({
+    hasVideo: false,
+    width: 0,
+    height: 0,
+    codedWidth: 0,
+    codedHeight: 0,
+    fps: 0,
+    videoCodec: 'ninguno',
+    pixelFormat: null,
+    colorTransfer: null,
+    colorPrimaries: null,
+    colorSpace: null,
+    ...overrides,
+  })
 }

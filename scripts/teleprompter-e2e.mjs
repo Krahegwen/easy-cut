@@ -43,7 +43,8 @@ function check(name, ok, detail = '') {
   return ok
 }
 
-const recordingsFolder = join(homedir(), 'Videos', 'Mis montajes', 'Grabaciones')
+// La app de desarrollo guarda en su propia carpeta (commands.rs), no en la de la app instalada.
+const recordingsFolder = join(homedir(), 'Videos', 'Mis montajes (pruebas)', 'Grabaciones')
 const recordingsBefore = new Set(existsSync(recordingsFolder) ? readdirSync(recordingsFolder) : [])
 const tempFiles = new Set()
 
@@ -503,9 +504,13 @@ try {
     const heard = await app.evaluate('const a = document.querySelector("[data-testid=review-audio]"); return { t: a.currentTime, paused: a.paused }')
     check('Se puede escuchar en «Revisar»', heard.t > 0.3 && !heard.paused, JSON.stringify(heard))
     await app.click('[data-testid=review-play]')
-    check('Acciones: «Abrir la carpeta», «Repetir» y «Volver» (no «Usar»)', !!(await app.text('[data-testid=voice-open-folder]')) && !!(await app.text('[data-testid=voice-back]')) && !(await app.text('[data-testid=use-recording]')))
+    check(
+      'Acciones: «Usar esta grabación», «Repetir» y «Guardarla sin usarla»',
+      (await app.text('[data-testid=use-recording]')) === 'Usar esta grabación' && !!(await app.text('[data-testid=retake]')) && (await app.text('[data-testid=keep-recording]')) === 'Guardarla sin usarla',
+    )
     await shot('tp-22-revisar-solo-voz.png')
-    check('La voz no entra en el montaje', (await app.evaluate('return window.__easyCut.store.project.value.clips.length')) === clipsBefore)
+    await shot('pic-tp-revisar-solo-voz.png')
+    check('Revisar la voz no la mete aún en el montaje', (await app.evaluate('return window.__easyCut.store.project.value.clips.length')) === clipsBefore)
     // Repetir: borra el M4A y vuelve a preparar, en modo voz
     await app.click('[data-testid=retake]')
     await confirmDialog(true)
@@ -514,7 +519,7 @@ try {
     check('«Repetir» borra la voz grabada', !existsSync(voicePath), voicePath)
     await app.waitFor('return !!document.querySelector("[data-testid=voice-only]")', { timeoutMs: 15_000, what: 'modo solo la voz otra vez' })
     check('Recuerda el modo «Grabar solo la voz»', (await app.evaluate('return document.querySelector("[data-testid=kind-audio]").getAttribute("aria-checked")')) === 'true')
-    // Otra corta y «Volver»: se queda guardada
+    // Otra corta y «Guardarla sin usarla»: se queda guardada
     await app.click('[data-testid=start-recording]')
     await waitStep('record')
     await waitRunning()
@@ -523,12 +528,59 @@ try {
     await waitStep('review', 60_000)
     const keptSrc = await app.waitFor('const a = document.querySelector("[data-testid=review-audio]"); return a && a.src', { what: 'audio de revisión' })
     const keptPath = assetToPath(keptSrc)
-    await app.click('[data-testid=voice-back]')
+    await app.click('[data-testid=keep-recording]')
     await waitStep('script')
     const toast = await app.text('[data-testid=toast]')
-    check('«Volver» la deja guardada y lo dice', !!keptPath && existsSync(keptPath) && !!toast && toast.includes('Grabaciones'), toast ?? '')
+    check('«Guardarla sin usarla» la deja guardada y lo dice', !!keptPath && existsSync(keptPath) && !!toast && toast.includes('Grabaciones'), toast ?? '')
     check('Y no queda el micrófono encendido', (await liveTracks()).length === 0)
-    await app.click('[data-testid=back-home]')
+    check('Y no entra en el montaje', (await app.evaluate('return window.__easyCut.store.project.value.clips.length')) === clipsBefore)
+
+    // Otra de ~8 s y «Usar esta grabación»: entra como trozo de solo sonido y se le pueden quitar las pausas.
+    // El micrófono falso no deja silencios: se guarda el stream para apagar su pista 2,5 s a mitad (eso sí graba silencio).
+    await app.evaluate(`const orig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = async (c) => { const s = await orig(c); window.__e2eStream = s; return s }; return true`)
+    await app.click('[data-testid=go-camera]')
+    await waitStep('camera')
+    await app.waitFor('return !!document.querySelector("[data-testid=voice-only]")', { timeoutMs: 15_000, what: 'modo solo la voz' })
+    await app.waitFor('const b = document.querySelector("[data-testid=start-recording]"); return b && !b.disabled', { timeoutMs: 15_000, what: 'micrófono listo' })
+    await app.click('[data-testid=start-recording]')
+    await waitStep('record')
+    await waitRunning()
+    await sleep(3000)
+    const muted = await app.evaluate('const t = window.__e2eStream?.getAudioTracks() ?? []; t.forEach((x) => (x.enabled = false)); return t.length')
+    await sleep(2500)
+    await app.evaluate('(window.__e2eStream?.getAudioTracks() ?? []).forEach((x) => (x.enabled = true)); return true')
+    check('Se ha callado el micrófono 2,5 s a mitad de la grabación', muted >= 1, `${muted} pistas`)
+    await sleep(3000)
+    await app.click('[data-testid=run-finish]')
+    await waitStep('review', 60_000)
+    const usedSrc = await app.waitFor('const a = document.querySelector("[data-testid=review-audio]"); return a && a.src', { what: 'audio de revisión' })
+    const usedPath = assetToPath(usedSrc)
+    await app.click('[data-testid=use-recording]')
+    await waitScreen('editor', 60_000)
+    await noErrorDialog('usar la voz')
+    const voiceClip = await app.evaluate(`const s = window.__easyCut.store; const c = s.selectedClip.value;
+      return c ? { path: c.sourcePath, picture: c.picture.kind, hasVideo: c.sourceHasVideo, n: s.project.value.clips.length, offer: s.recordingOffer.value === c.id, index: s.selectedIndex.value } : null`)
+    check('«Usar esta grabación» la mete como trozo de solo sonido', !!voiceClip && voiceClip.n === clipsBefore + 1 && voiceClip.picture === 'none' && voiceClip.hasVideo === false && voiceClip.path === usedPath, JSON.stringify(voiceClip))
+    check('La tarjeta del trozo dice «Solo se oye»', (await app.evaluate(`return document.querySelector('[data-testid=clip-card-${voiceClip.index + 1}] .picture').dataset.picture`)) === 'sound')
+    check('Y ofrece quitarle las pausas', !!voiceClip.offer && !!(await app.text('[data-testid=recording-offer]')))
+    await sleep(600)
+    await shot('pic-tp-voz-en-el-montaje.png')
+    await app.click('[data-testid=offer-remove-pauses]')
+    await waitScreen('clip-editor')
+    await app.waitFor('return document.querySelector("[data-testid=pauses-found]") || document.querySelector("[data-testid=pauses-none]")', { timeoutMs: 60_000, what: 'fin de la búsqueda de pausas en la voz' })
+    await noErrorDialog('quitar pausas de la voz')
+    const voiceFound = await app.text('[data-testid=pauses-found]')
+    check('«Quitar pausas» encuentra la pausa de la voz', !!voiceFound, voiceFound ?? (await app.text('[data-testid=pauses-none]')))
+    if (voiceFound) {
+      await app.click('[data-testid=remove-pauses]')
+      const segs = await app.evaluate('return window.__easyCut.store.selectedClip.value.segments.length')
+      check('Y las quita', segs > 1, `${segs} rangos`)
+    }
+    const wave = await app.waitFor('const i = document.querySelector("[data-testid=filmstrip-wave] img"); return i && i.complete && i.naturalWidth > 0 ? i.naturalWidth : null', { timeoutMs: 20_000, what: 'forma de onda de la voz' })
+    check('La tira enseña la forma de onda de la voz', !!wave, `${wave} px`)
+    await shot('pic-tp-quitar-pausas-voz.png')
+    await app.click('[data-testid=clip-done]')
     await waitScreen('editor')
   }
 

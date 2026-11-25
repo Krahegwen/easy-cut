@@ -84,7 +84,7 @@ onBeforeUnmount(() => {
   <DoneView v-else-if="store.screen.value === 'done'" />
   <TeleprompterView v-else-if="store.screen.value === 'teleprompter'" />
 
-  <div v-if="hovering && store.screen.value === 'editor'" class="drop-hint">Suelta los vídeos para añadirlos al final</div>
+  <div v-if="hovering && store.screen.value === 'editor'" class="drop-hint">Suelta los vídeos o sonidos para añadirlos al final</div>
   <PreparingOverlay />
   <ToastBar />
   <ConfirmDialog />

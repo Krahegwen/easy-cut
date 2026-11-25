@@ -2,21 +2,33 @@
 // Vista previa sin renderizar: un <video> por trozo (el que suena y el siguiente, ya cargado),
 // saltando de rango en rango según el plan de reproducción del dominio. Velocidad con playbackRate,
 // giro y encuadre con CSS dentro de un marco con la forma del vídeo, y fondo desenfocado barato
-// (un lienzo diminuto ampliado con blur) cuando el trozo no llena el marco.
+// (un lienzo diminuto ampliado con blur) cuando la imagen no llena el marco.
+//
+// Lo que se ve lo decide la imagen del trozo: su vídeo; el fondo liso con «Solo se oye» (el <video> sigue
+// sonando, escondido; también reproduce sin problema un fichero de solo sonido); u otro vídeo encima en un
+// segundo <video> silenciado que sigue el tiempo de salida del trozo (se recoloca si se separa más de
+// 150 ms y se queda en su última imagen si se acaba), con el vídeo del trozo en pequeño en una esquina.
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   buildPlaybackPlan,
+  clipOutputAt,
+  clipShowsOwnVideo,
   clipStartTimes,
   computeFramingLayout,
+  coverNeedsResync,
+  coverTimeAt,
   findSpanForSource,
   firstSpanOfClip,
   fitAspect,
   formatClock,
   hasReachedSpanEnd,
+  insetRect,
   locatePlayback,
+  PLAIN_BACKGROUND_CSS,
   playbackTimeAt,
   type Clip,
+  type CoverPicture,
   type FramingLayout,
   type Project,
 } from '../domain'
@@ -66,24 +78,53 @@ const mountedClips = computed(() => {
   if (next >= 0 && next !== a) list.push(clips[next]!)
   return list
 })
+const mountedCovers = computed(() => mountedClips.value.filter((c) => c.picture.kind === 'cover'))
 
 const markers = computed(() => clipStartTimes(props.project).slice(1))
 
 const elements = new Map<string, HTMLVideoElement>()
+const coverElements = new Map<string, HTMLVideoElement>()
 /** Instante que debe enseñar cada <video> montado (ms del original). */
 const desired = new Map<string, number>()
 
+// ------------------------------------------------------------------ qué se ve
+
+function mediaOf(path: string) {
+  return store.media.value[path] ?? null
+}
+
+function coverOf(clip: Clip | null): CoverPicture | null {
+  return clip && clip.picture.kind === 'cover' ? clip.picture : null
+}
+
+/** ¿Se enseña el vídeo del propio trozo (entero o en la esquina)? */
+function showsOwn(clip: Clip): boolean {
+  return clipShowsOwnVideo(clip) && !!mediaOf(clip.sourcePath)?.hasVideo
+}
+
+const activeKind = computed<'own' | 'none' | 'cover' | null>(() => {
+  const c = activeClip.value
+  if (!c) return null
+  if (c.picture.kind === 'cover') return 'cover'
+  return showsOwn(c) ? 'own' : 'none'
+})
+
+/** Encuadre de la imagen principal del trozo: su vídeo o el vídeo de encima. */
 function layoutFor(clip: Clip): FramingLayout | null {
-  const m = store.media.value[clip.sourcePath]
-  if (!m || frame.value.width <= 0) return null
+  if (frame.value.width <= 0) return null
+  const cover = coverOf(clip)
+  if (cover) {
+    const m = mediaOf(cover.sourcePath)
+    return m ? computeFramingLayout(cover, m, frame.value.width, frame.value.height) : null
+  }
+  const m = mediaOf(clip.sourcePath)
+  if (!m || !showsOwn(clip)) return null
   return computeFramingLayout(clip, m, frame.value.width, frame.value.height)
 }
 
 const activeLayout = computed(() => (activeClip.value ? layoutFor(activeClip.value) : null))
 
-function videoStyle(clip: Clip) {
-  const l = layoutFor(clip)
-  if (!l) return { display: 'none' }
+function placed(l: FramingLayout) {
   return {
     width: `${l.elementWidth}px`,
     height: `${l.elementHeight}px`,
@@ -93,14 +134,55 @@ function videoStyle(clip: Clip) {
   }
 }
 
+/** Estilo del <video> del trozo: entero, en la esquina o escondido (pero sonando). */
+function videoStyle(clip: Clip) {
+  const cover = coverOf(clip)
+  if (cover && cover.inset && showsOwn(clip) && frame.value.width > 0) {
+    // En la esquina: recorte centrado con la forma del vídeo (aproximado; lo guardado es exacto).
+    const r = insetRect(cover.inset, frame.value.width, frame.value.height)
+    const odd = clip.quarterTurns % 2 === 1
+    const w = odd ? r.height : r.width
+    const h = odd ? r.width : r.height
+    return {
+      width: `${w}px`,
+      height: `${h}px`,
+      left: `${r.left + r.width / 2 - w / 2}px`,
+      top: `${r.top + r.height / 2 - h / 2}px`,
+      transform: clip.quarterTurns ? `rotate(${clip.quarterTurns * 90}deg)` : undefined,
+      objectFit: 'cover' as const,
+      borderRadius: `${r.radius}px`,
+    }
+  }
+  if (!cover) {
+    const l = layoutFor(clip)
+    if (l) return placed(l)
+  }
+  return { width: '2px', height: '2px', left: '0px', top: '0px' }
+}
+
+function videoVisible(clip: Clip): boolean {
+  if (clip.id !== activeClip.value?.id || !showsOwn(clip)) return false
+  return clip.picture.kind === 'own' || !!coverOf(clip)?.inset
+}
+
+function coverStyle(clip: Clip) {
+  const l = layoutFor(clip)
+  return l ? placed(l) : { display: 'none' }
+}
+
 function isMutedClip(clip: Clip): boolean {
-  const m = store.media.value[clip.sourcePath]
+  const m = mediaOf(clip.sourcePath)
   return clip.muted || clip.speed === 4 || !m?.hasAudio
 }
 
 function register(clipId: string, el: unknown) {
   if (el instanceof HTMLVideoElement) elements.set(clipId, el)
   else elements.delete(clipId)
+}
+
+function registerCover(clipId: string, el: unknown) {
+  if (el instanceof HTMLVideoElement) coverElements.set(clipId, el)
+  else coverElements.delete(clipId)
 }
 
 function configure(el: HTMLVideoElement, clip: Clip, active: boolean) {
@@ -122,6 +204,13 @@ function emitTime() {
   emit('time', { projectMs: currentMs.value, clipIndex: activeClipIndex.value, sourceMs: sourceMs.value, playing: playing.value })
 }
 
+/** Un original con imagen que el visor no sabe enseñar (videoWidth 0) pide el proxy si hace falta su imagen. */
+function checkDecodable(clip: Clip) {
+  const el = elements.get(clip.id)
+  if (!el || el.readyState < 1 || store.proxies.value[clip.sourcePath]) return
+  if (showsOwn(clip) && el.videoWidth === 0) void store.ensureProxy(clip.sourcePath)
+}
+
 /** Prepara los <video> montados: el activo en su instante y el siguiente en su primer fotograma. */
 function prepareElements() {
   const active = activeClip.value
@@ -132,12 +221,80 @@ function prepareElements() {
       const first = plan.value.spans[firstSpanOfClip(plan.value, props.project.clips.indexOf(clip))]
       if (first) desired.set(clip.id, first.sourceStartMs)
       if (el && !el.paused) el.pause()
+      // El vídeo de encima del siguiente, en su primera imagen.
+      const cover = coverOf(clip)
+      const cel = coverElements.get(clip.id)
+      if (cover && cel && cel.readyState >= 1) {
+        if (!cel.paused) cel.pause()
+        if (Math.abs(cel.currentTime * 1000 - cover.startMs) > 45) cel.currentTime = cover.startMs / 1000
+      }
     } else {
       desired.set(clip.id, sourceMs.value)
     }
     if (el) configure(el, clip, isActive)
     sync(clip)
+    checkDecodable(clip)
   }
+  syncCover(playing.value, true)
+}
+
+// ------------------------------------------------------------------ vídeo de encima
+
+/** Posición real y esperada del vídeo de encima (para las pruebas: data-cover-ms / data-cover-expected-ms). */
+const coverActualMs = ref<number | null>(null)
+const coverExpectedMs = ref<number | null>(null)
+
+/**
+ * Lleva el vídeo de encima del trozo activo a donde le toca (tiempo de salida del trozo, a velocidad normal)
+ * y lo pone a sonar o en pausa. Quieto al reproducir si se separa menos de 150 ms; en pausa, exacto.
+ */
+function syncCover(play: boolean, exact = false) {
+  const clip = activeClip.value
+  const cover = coverOf(clip)
+  const el = clip ? coverElements.get(clip.id) : undefined
+  if (!clip || !cover || !el) {
+    coverActualMs.value = null
+    coverExpectedMs.value = null
+    return
+  }
+  const outMs = clipOutputAt(props.project, activeClipIndex.value, currentMs.value)
+  const expected = coverTimeAt(cover, outMs)
+  coverExpectedMs.value = Math.round(expected)
+  if (el.readyState < 1) return
+  coverActualMs.value = Math.round(el.currentTime * 1000)
+  const endMs = Number.isFinite(el.duration) && el.duration > 0 ? Math.min(el.duration * 1000, cover.sourceDurationMs) : cover.sourceDurationMs
+  if (expected >= endMs - 40) {
+    // Se ha acabado: quieto en su última imagen.
+    if (!el.paused) el.pause()
+    if (!el.seeking && el.currentTime * 1000 < endMs - 120) el.currentTime = Math.max(0, endMs / 1000 - 0.03)
+    return
+  }
+  if (el.playbackRate !== 1) el.playbackRate = 1
+  if (play) {
+    if (el.paused && el.readyState >= 2) void el.play().catch(() => {})
+  } else if (!el.paused) {
+    el.pause()
+  }
+  if (el.seeking) return
+  const actual = el.currentTime * 1000
+  if (exact ? Math.abs(actual - expected) > 45 : coverNeedsResync(actual, expected)) el.currentTime = expected / 1000
+}
+
+function onCoverMetadata(clip: Clip, e: Event) {
+  const el = e.target as HTMLVideoElement
+  const cover = coverOf(clip)
+  if (cover && !store.proxies.value[cover.sourcePath] && (el.error || el.videoWidth === 0)) {
+    void store.ensureProxy(cover.sourcePath)
+    return
+  }
+  el.muted = true
+  if (clip.id === activeClip.value?.id) syncCover(playing.value, !playing.value)
+  else if (cover) el.currentTime = cover.startMs / 1000
+}
+
+function onCoverError(clip: Clip) {
+  const cover = coverOf(clip)
+  if (cover && !store.proxies.value[cover.sourcePath]) void store.ensureProxy(cover.sourcePath)
 }
 
 // ------------------------------------------------------------------ reproducción
@@ -170,6 +327,7 @@ function tick() {
       sourceMs.value = src
       currentMs.value = playbackTimeAt(plan.value, spanIndex.value, src)
       if (el.paused) void el.play().catch(() => {})
+      syncCover(true)
       emitTime()
     }
     paintBackground()
@@ -202,8 +360,13 @@ function goToSpan(index: number, keepPlaying: boolean) {
   spanIndex.value = index
   sourceMs.value = span.sourceStartMs
   currentMs.value = span.projectStartMs
-  if (previousClipId && previousClipId !== span.clipId) elements.get(previousClipId)?.pause()
+  if (previousClipId && previousClipId !== span.clipId) pauseClip(previousClipId)
   void activate(keepPlaying)
+}
+
+function pauseClip(clipId: string) {
+  elements.get(clipId)?.pause()
+  coverElements.get(clipId)?.pause()
 }
 
 /** Tras cambiar de tramo: el <video> del trozo activo en su sitio y, si toca, sonando. */
@@ -254,6 +417,8 @@ function pause() {
   cancelAnimationFrame(raf)
   raf = 0
   for (const el of elements.values()) if (!el.paused) el.pause()
+  for (const el of coverElements.values()) if (!el.paused) el.pause()
+  syncCover(false, true)
   emitTime()
 }
 
@@ -275,7 +440,7 @@ function seek(projectMs: number) {
   freeSourceMs.value = null
   const previousClipId = activeSpan.value?.clipId
   locateAt(projectMs)
-  if (previousClipId && previousClipId !== activeSpan.value?.clipId) elements.get(previousClipId)?.pause()
+  if (previousClipId && previousClipId !== activeSpan.value?.clipId) pauseClip(previousClipId)
   void activate(playing.value)
 }
 
@@ -324,12 +489,23 @@ watch(plan, () => {
 })
 
 watch(mountedClips, () => void nextTick(prepareElements))
+// Cambiar la imagen (p. ej. «Empieza en…» o quitar la esquina) no cambia el plan: se recoloca igualmente.
+watch(
+  () => activeClip.value?.picture,
+  () => void nextTick(() => {
+    prepareElements()
+    paintBackground()
+  }),
+)
 
 // ------------------------------------------------------------------ eventos de los <video>
 
 function onLoadedMetadata(clip: Clip, e: Event) {
   const el = e.target as HTMLVideoElement
-  if (!store.proxies.value[clip.sourcePath] && (el.error || el.videoWidth === 0)) {
+  const m = mediaOf(clip.sourcePath)
+  // Un sonido no tiene imagen que comprobar: solo hace falta proxy si el visor no sabe ni reproducirlo.
+  const needsPicture = !!m?.hasVideo && showsOwn(clip)
+  if (!store.proxies.value[clip.sourcePath] && (el.error || (needsPicture && el.videoWidth === 0))) {
     void store.ensureProxy(clip.sourcePath)
     return
   }
@@ -347,7 +523,9 @@ function onSeeked(clip: Clip) {
 
 const preparingPreview = computed(() => {
   const clip = activeClip.value
-  return !!clip && store.proxyStatus.value[clip.sourcePath] === 'working'
+  if (!clip) return false
+  const cover = coverOf(clip)
+  return store.proxyStatus.value[clip.sourcePath] === 'working' || (!!cover && store.proxyStatus.value[cover.sourcePath] === 'working')
 })
 
 // ------------------------------------------------------------------ fondo desenfocado
@@ -358,20 +536,22 @@ function paintBackground() {
   const clip = activeClip.value
   const c = canvas.value
   if (!layout?.showsBackground || !clip || !c) return
-  const el = elements.get(clip.id)
+  const cover = coverOf(clip)
+  const el = cover ? coverElements.get(clip.id) : elements.get(clip.id)
+  const turns = cover ? cover.quarterTurns : clip.quarterTurns
   if (!el || el.readyState < 2) return
   const ctx = c.getContext('2d')
   if (!ctx) return
   const W = c.width
   const H = c.height
-  const odd = clip.quarterTurns % 2 === 1
+  const odd = turns % 2 === 1
   const vw = odd ? el.videoHeight : el.videoWidth
   const vh = odd ? el.videoWidth : el.videoHeight
   if (!vw || !vh) return
   const s = Math.max(W / vw, H / vh)
   ctx.save()
   ctx.translate(W / 2, H / 2)
-  ctx.rotate((clip.quarterTurns * Math.PI) / 2)
+  ctx.rotate((turns * Math.PI) / 2)
   const dw = (odd ? vh : vw) * s
   const dh = (odd ? vw : vh) * s
   try {
@@ -433,7 +613,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   observer?.disconnect()
   cancelAnimationFrame(raf)
-  for (const el of elements.values()) {
+  for (const el of [...elements.values(), ...coverElements.values()]) {
     el.pause()
     el.removeAttribute('src')
     el.load()
@@ -454,6 +634,9 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
     :data-playing="playing ? '1' : '0'"
     :data-clip-index="activeClipIndex"
     :data-source-ms="Math.round(sourceMs)"
+    :data-picture="activeKind ?? ''"
+    :data-cover-ms="coverActualMs ?? ''"
+    :data-cover-expected-ms="coverExpectedMs ?? ''"
   >
     <div ref="stage" class="stage">
       <div
@@ -475,11 +658,38 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
           aria-hidden="true"
         />
         <video
+          v-for="clip in mountedCovers"
+          :key="`cover-${clip.id}`"
+          :ref="(el) => registerCover(clip.id, el)"
+          class="video cover"
+          :class="{ hidden: clip.id !== activeClip?.id }"
+          :src="store.mediaSrc(coverOf(clip)?.sourcePath ?? '')"
+          :style="coverStyle(clip)"
+          data-testid="cover-video"
+          muted
+          preload="auto"
+          playsinline
+          disablepictureinpicture
+          disableremoteplayback
+          @loadedmetadata="onCoverMetadata(clip, $event)"
+          @error="onCoverError(clip)"
+          @seeked="onSeeked(clip)"
+        />
+        <div
+          v-if="activeKind === 'none'"
+          class="plain"
+          :style="{ background: PLAIN_BACKGROUND_CSS }"
+          data-testid="preview-sound-only"
+        >
+          <span class="plain-icon" :class="{ playing }"><AppIcon name="wave" :size="56" /></span>
+          <span class="plain-text">Solo se oye</span>
+        </div>
+        <video
           v-for="clip in mountedClips"
           :key="clip.id"
           :ref="(el) => register(clip.id, el)"
           class="video"
-          :class="{ hidden: clip.id !== activeClip?.id }"
+          :class="{ hidden: !videoVisible(clip), inset: clip.picture.kind === 'cover' }"
           :src="store.mediaSrc(clip.sourcePath)"
           :style="videoStyle(clip)"
           preload="auto"
@@ -567,8 +777,47 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
   transform-origin: 50% 50%;
   pointer-events: none;
 }
+.video.inset {
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.45);
+}
 .video.hidden {
   visibility: hidden;
+}
+.plain {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: rgb(255 255 255 / 0.6);
+}
+.plain-icon {
+  display: grid;
+  place-items: center;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.06);
+}
+.plain-icon.playing {
+  animation: breathe 1.6s ease-in-out infinite;
+}
+.plain-text {
+  font-size: 20px;
+  font-weight: 600;
+}
+@keyframes breathe {
+  50% {
+    transform: scale(1.08);
+    background: rgb(255 255 255 / 0.1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plain-icon.playing {
+    animation: none;
+  }
 }
 .empty {
   position: absolute;
@@ -626,7 +875,7 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
   font-variant-numeric: tabular-nums;
   font-size: 17px;
   white-space: nowrap;
-  color: rgb(255 255 255 / 0.85);
   min-width: 110px;
+  color: rgb(255 255 255 / 0.85);
 }
 </style>

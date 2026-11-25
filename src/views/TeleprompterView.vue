@@ -224,14 +224,26 @@ async function finishRecording(elapsedMs: number) {
 // ------------------------------------------------------------------ solo la voz (ya guardada)
 
 /**
- * Grabación de solo la voz ya guardada en Grabaciones. De momento no se añade al montaje: para eso
- * haría falta un trozo sin imagen (domain/project.ts) y store.addRecording admitiría audio.
+ * Grabación de solo la voz ya guardada en Grabaciones (M4A). «Usar esta grabación» la añade al montaje
+ * como un trozo sin imagen («Solo se oye»), con la misma oferta de quitarle las pausas que la de vídeo.
  */
 const voiceRecording = shallowRef<SavedRecording | null>(null)
 
-function openVoiceFolder() {
+async function useVoiceRecording() {
   const v = voiceRecording.value
-  if (v) void store.bridge.revealInFolder(v.path).catch((e) => store.showError('No he podido abrir la carpeta.', e))
+  if (!v) return
+  const placement = await askPlacement()
+  if (placement === null) return
+  unloadReview()
+  voiceRecording.value = null
+  if (placement.resume) await store.resumeAutosave()
+  const ok = await store.addRecording(v.path, { targetMs: targetMs.value, fresh: placement.fresh && !placement.resume })
+  if (!ok) {
+    store.showError('He guardado tu voz, pero no la puedo leer para añadirla al vídeo.', store.preparing.value[0]?.details ?? v.path)
+    store.go(store.project.value.clips.length > 0 ? 'editor' : 'home')
+    return
+  }
+  store.go('editor')
 }
 
 async function retakeVoice() {
@@ -353,8 +365,11 @@ async function saveIt(): Promise<SavedRecording | null> {
   }
 }
 
-async function useRecording() {
-  // Sin vídeo abierto pero con uno a medias: ¿la grabación va a ese o a uno nuevo?
+/**
+ * Sin vídeo abierto pero con uno a medias: ¿la grabación va a ese o a uno nuevo?
+ * (fresh = empezar uno nuevo; resume = seguir con el que estaba a medias).
+ */
+async function askPlacement(): Promise<{ fresh: boolean; resume: boolean } | null> {
   let fresh = store.project.value.clips.length === 0
   let resume = false
   if (fresh && store.autosave.value) {
@@ -367,10 +382,17 @@ async function useRecording() {
     resume = !startNew
     fresh = startNew
   }
+  return { fresh, resume }
+}
+
+async function useRecording() {
+  const placement = await askPlacement()
+  if (placement === null) return
+  let fresh = placement.fresh
   savingLabel.value = 'Preparando la grabación…'
   const res = await saveIt()
   if (!res) return
-  if (resume) {
+  if (placement.resume) {
     await store.resumeAutosave()
     fresh = false
   }
@@ -657,18 +679,18 @@ onBeforeUnmount(() => {
       </section>
       <aside v-if="voiceRecording" class="side review-side">
         <p class="recorded" data-testid="recorded-length">Has grabado <strong>{{ formatDuration(voiceRecording.durationMs) }}</strong> de voz</p>
-        <p class="muted saved-note" data-testid="voice-saved">Está guardada en Vídeos › Mis montajes › Grabaciones.</p>
-        <button class="btn primary large" type="button" data-testid="voice-open-folder" @click="openVoiceFolder">
-          <AppIcon name="folder" />
-          Abrir la carpeta
+        <p class="muted saved-note" data-testid="voice-saved">Está guardada en Vídeos › Mis montajes › Grabaciones. Si la usas, entra en tu vídeo como un trozo que solo se oye.</p>
+        <button class="btn primary large" type="button" data-testid="use-recording" @click="useVoiceRecording">
+          <AppIcon name="check" />
+          Usar esta grabación
         </button>
         <button class="btn large" type="button" data-testid="retake" @click="retakeVoice">
           <AppIcon name="reset" />
           Repetir
         </button>
-        <button class="btn quiet" type="button" data-testid="voice-back" @click="leaveVoiceReview">
-          <AppIcon name="back" />
-          Volver
+        <button class="btn quiet" type="button" data-testid="keep-recording" @click="leaveVoiceReview">
+          <AppIcon name="save" />
+          Guardarla sin usarla
         </button>
       </aside>
       <aside v-else class="side review-side">

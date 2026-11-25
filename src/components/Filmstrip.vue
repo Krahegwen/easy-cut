@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // Tira de miniaturas del original a lo ancho, con asas gruesas de inicio y fin, el cabezal arrastrable,
 // lo que no se conserva oscurecido y, opcionalmente, las pausas que se van a quitar en otro color.
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { formatClock, type TimeRange } from '../domain'
+import { store } from '../store'
 import ThumbImage from './ThumbImage.vue'
 
 const props = withDefaults(
@@ -19,8 +20,10 @@ const props = withDefaults(
     editable?: boolean
     /** Texto de ayuda bajo la tira. */
     caption?: string
+    /** El original no tiene imagen: en vez de miniaturas, la forma de onda de su sonido. */
+    waveform?: boolean
   }>(),
-  { highlights: () => [], editable: true, caption: '' },
+  { highlights: () => [], editable: true, caption: '', waveform: false },
 )
 
 type Phase = 'start' | 'move' | 'end'
@@ -42,6 +45,23 @@ onMounted(() => {
 onBeforeUnmount(() => observer?.disconnect())
 
 const count = computed(() => Math.min(16, Math.max(4, Math.round(width.value / 112))))
+
+/** Forma de onda (solo para originales sin imagen). */
+const waveUrl = ref<string | null>(null)
+let waveToken = 0
+watch(
+  () => [props.waveform, props.path, Math.ceil(width.value / 200)] as const,
+  async ([wave, path]) => {
+    const mine = ++waveToken
+    if (!wave) {
+      waveUrl.value = null
+      return
+    }
+    const img = await store.waveform(path, width.value, 72)
+    if (mine === waveToken) waveUrl.value = img?.url ?? null
+  },
+  { immediate: true },
+)
 const times = computed(() => Array.from({ length: count.value }, (_, i) => ((i + 0.5) * props.durationMs) / count.value))
 
 const pct = (ms: number) => `${(Math.min(Math.max(ms, 0), props.durationMs) / Math.max(1, props.durationMs)) * 100}%`
@@ -104,7 +124,10 @@ function up(e: PointerEvent) {
       @pointerup="up"
       @pointercancel="up"
     >
-      <div class="thumbs">
+      <div v-if="waveform" class="thumbs wave" data-testid="filmstrip-wave">
+        <img v-if="waveUrl" :src="waveUrl" alt="" draggable="false" />
+      </div>
+      <div v-else class="thumbs">
         <div v-for="(t, i) in times" :key="`${count}-${i}`" class="cell">
           <ThumbImage :path="path" :time-ms="t" :height="72" />
         </div>
@@ -178,6 +201,15 @@ function up(e: PointerEvent) {
   display: flex;
   border-radius: 10px;
   overflow: hidden;
+}
+.thumbs.wave {
+  background: #1c2229;
+}
+.thumbs.wave img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
 }
 .cell {
   flex: 1;

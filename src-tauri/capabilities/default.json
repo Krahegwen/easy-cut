@@ -9,6 +9,7 @@
     "allow-run-tool",
     "allow-cancel-job",
     "allow-make-thumbnail",
+    "allow-make-waveform",
     "allow-cache-entry",
     "allow-promote-cache-file",
     "allow-discard-cache-file",

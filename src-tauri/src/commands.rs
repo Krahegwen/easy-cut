@@ -26,10 +26,16 @@ pub const CANCELLED: &str = "__cancelled__";
 
 /// Extensiones que ofrece el diálogo de elegir vídeos.
 pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "mkv", "avi", "webm", "m4v", "3gp", "mts", "m2ts", "mpg", "wmv"];
+/// Extensiones de sonido que se pueden añadir al montaje (las mismas que domain/file-name.ts).
+pub const AUDIO_EXTENSIONS: &[&str] = &["m4a", "mp3", "wav", "aac", "ogg", "opus", "flac", "wma"];
 
 /// Procesos de miniaturas a la vez.
 const THUMBNAIL_CONCURRENCY: usize = 3;
-const OUTPUT_FOLDER_NAME: &str = "Mis montajes";
+/// Carpeta de los vídeos guardados, dentro de Vídeos. La app de desarrollo (`pnpm tauri dev`) usa otra,
+/// para que las pruebas automáticas no se mezclen con el trabajo de quien use la app instalada.
+const OUTPUT_FOLDER_NAME: &str = if cfg!(debug_assertions) { "Mis montajes (pruebas)" } else { "Mis montajes" };
+/// Subcarpeta de los datos y la caché de la app de desarrollo (autoguardado, miniaturas, proxies…).
+const DEV_DATA_SUBFOLDER: &str = "pruebas";
 const RECORDINGS_FOLDER_NAME: &str = "Grabaciones";
 const AUTOSAVE_FILE: &str = "autosave.json";
 const PROJECT_EXTENSION: &str = "easycut";
@@ -73,14 +79,27 @@ fn io_err(context: &str) -> impl Fn(std::io::Error) -> String + '_ {
     move |e| format!("{context}: {e}")
 }
 
+/// En desarrollo, los datos y la caché van a una subcarpeta propia; en la app instalada, como siempre.
+fn separate_in_dev(dir: PathBuf) -> PathBuf {
+    if cfg!(debug_assertions) {
+        dir.join(DEV_DATA_SUBFOLDER)
+    } else {
+        dir
+    }
+}
+
+fn cache_root(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(separate_in_dev(app.path().app_cache_dir().map_err(|e| e.to_string())?))
+}
+
 fn cache_dir(app: &AppHandle, sub: &str) -> Result<PathBuf, String> {
-    let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join(sub);
+    let dir = cache_root(app)?.join(sub);
     fs::create_dir_all(&dir).map_err(io_err("No se puede crear la carpeta de caché"))?;
     Ok(dir)
 }
 
 fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = separate_in_dev(app.path().app_data_dir().map_err(|e| e.to_string())?);
     fs::create_dir_all(&dir).map_err(io_err("No se puede crear la carpeta de datos"))?;
     Ok(dir)
 }
@@ -238,6 +257,70 @@ pub async fn make_thumbnail(
     read_thumbnail(&final_path).ok_or_else(|| "No se ha podido guardar la miniatura.".to_string())
 }
 
+/// Argumentos de ffmpeg para la forma de onda de un sonido (PNG con fondo transparente).
+fn waveform_args(path: &str, width: u32, height: u32, out: &Path) -> Vec<String> {
+    vec![
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-nostdin".into(),
+        "-y".into(),
+        "-i".into(),
+        path.to_string(),
+        "-vn".into(),
+        "-filter_complex".into(),
+        // sqrt: que las partes flojas (la voz baja) también se vean; draw=full: sin huecos entre muestras.
+        format!("[0:a:0]aformat=channel_layouts=mono,showwavespic=s={width}x{height}:colors=0x7fb4dc:draw=full:scale=sqrt"),
+        "-frames:v".into(),
+        "1".into(),
+        "-update".into(),
+        "1".into(),
+        path_string(out),
+    ]
+}
+
+/// Genera (o reutiliza de la caché) la forma de onda de todo el sonido del fichero, de width × height.
+/// Para la tira de «Cortar» y «Quitar pausas» de los originales sin imagen.
+#[tauri::command]
+pub async fn make_waveform(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    width: u32,
+    height: u32,
+    job_id: String,
+) -> Result<ThumbnailFile, String> {
+    let width = width.clamp(64, 4096);
+    let height = height.clamp(16, 512);
+    let stamp = file_stamp(Path::new(&path)).map_err(|e| format!("No se encuentra el fichero {path}: {e}"))?;
+    let key = cache_key(&path, &stamp, &["wave-v1", &width.to_string(), &height.to_string()]);
+    let dir = cache_dir(&app, "waves")?;
+    let final_path = dir.join(format!("{key}.png"));
+    let found = |p: &Path| fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false);
+    if found(&final_path) {
+        return Ok(ThumbnailFile { path: path_string(&final_path), width, height });
+    }
+    let _slot = state.thumbnail_slots.acquire().await.map_err(|e| e.to_string())?;
+    if found(&final_path) {
+        return Ok(ThumbnailFile { path: path_string(&final_path), width, height });
+    }
+    let tmp = dir.join(format!("{key}.{}.part.png", state.next_id()));
+    let program = resolve_tool(Tool::Ffmpeg)?;
+    let out = run_process(&state.registry, &program, &waveform_args(&path, width, height, &tmp), &job_id, true, None).await?;
+    if out.cancelled {
+        let _ = fs::remove_file(&tmp);
+        return Err(CANCELLED.into());
+    }
+    if !found(&tmp) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("No se ha podido dibujar el sonido: {}", out.stderr.trim()));
+    }
+    if fs::rename(&tmp, &final_path).is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    Ok(ThumbnailFile { path: path_string(&final_path), width, height })
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheEntry {
@@ -263,7 +346,7 @@ pub fn cache_entry(app: AppHandle, state: State<'_, AppState>, kind: String, pat
 }
 
 fn ensure_in_cache(app: &AppHandle, path: &Path) -> Result<(), String> {
-    let root = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    let root = cache_root(app)?;
     if is_inside(path, &root) {
         Ok(())
     } else {
@@ -307,14 +390,26 @@ pub async fn pick_videos(
     window: WebviewWindow,
     multiple: bool,
     default_folder: Option<String>,
+    sounds: Option<bool>,
 ) -> Result<Vec<String>, String> {
     let folder = default_folder.map(PathBuf::from).filter(|p| p.is_dir()).or_else(|| app.path().video_dir().ok());
-    let mut dialog = app
-        .dialog()
-        .file()
-        .set_parent(&window)
-        .set_title(if multiple { "Elige los vídeos" } else { "Elige un vídeo" })
-        .add_filter("Vídeos", VIDEO_EXTENSIONS);
+    let sounds = sounds.unwrap_or(false);
+    let title = match (multiple, sounds) {
+        (true, true) => "Elige los vídeos o sonidos",
+        (false, true) => "Elige un vídeo o un sonido",
+        (true, false) => "Elige los vídeos",
+        (false, false) => "Elige un vídeo",
+    };
+    let mut dialog = app.dialog().file().set_parent(&window).set_title(title);
+    if sounds {
+        let both: Vec<&str> = VIDEO_EXTENSIONS.iter().chain(AUDIO_EXTENSIONS.iter()).copied().collect();
+        dialog = dialog
+            .add_filter("Vídeos y sonidos", &both)
+            .add_filter("Vídeos", VIDEO_EXTENSIONS)
+            .add_filter("Sonidos", AUDIO_EXTENSIONS);
+    } else {
+        dialog = dialog.add_filter("Vídeos", VIDEO_EXTENSIONS);
+    }
     if let Some(folder) = folder {
         dialog = dialog.set_directory(folder);
     }
@@ -673,7 +768,24 @@ pub fn recording_cleanup(app: AppHandle, state: State<'_, AppState>, token: Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{recording_extension, recording_output_extension, recording_stem};
+    use super::{recording_extension, recording_output_extension, recording_stem, waveform_args, AUDIO_EXTENSIONS, OUTPUT_FOLDER_NAME};
+    use std::path::Path;
+
+    #[test]
+    fn dev_build_uses_its_own_output_folder() {
+        // `cargo test` compila en modo desarrollo: la carpeta de pruebas, no la de verdad.
+        assert_eq!(OUTPUT_FOLDER_NAME, "Mis montajes (pruebas)");
+    }
+
+    #[test]
+    fn waveform_reads_only_the_sound() {
+        let args = waveform_args("C:\\a b\\voz.m4a", 1200, 80, Path::new("C:\\cache\\w.png"));
+        assert!(args.contains(&"C:\\a b\\voz.m4a".to_string()));
+        assert!(args.contains(&"-vn".to_string()));
+        assert!(args.iter().any(|a| a.contains("showwavespic=s=1200x80")));
+        assert_eq!(args.last().unwrap(), "C:\\cache\\w.png");
+        assert!(AUDIO_EXTENSIONS.contains(&"m4a") && AUDIO_EXTENSIONS.contains(&"flac"));
+    }
 
     #[test]
     fn recording_output_is_mp4_or_m4a() {

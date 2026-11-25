@@ -1,15 +1,19 @@
 <script setup lang="ts">
-// «¿Para qué es el vídeo?»: WhatsApp, YouTube o calidad alta, con lo que pesará y lo que tardará.
+// «¿Para qué es el vídeo?»: WhatsApp, YouTube o calidad alta, con lo que pesará y lo que tardará; y, más
+// discreta debajo, «Solo el sonido» (un M4A). Si ningún trozo tiene imagen, esa pasa a ser la destacada.
 import { computed, onMounted } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import type { IconName } from '../components/icons'
 import {
+  clipShowsPicture,
   computeOutputSpec,
   describeExportTime,
   describeFileSize,
   describeTarget,
   estimateExportTimeMs,
   estimateProjectSizeBytes,
+  estimateSoundSizeBytes,
+  estimateSoundTimeMs,
   formatDuration,
   type PresetId,
 } from '../domain'
@@ -25,6 +29,8 @@ const project = computed(() => store.project.value)
 const total = computed(() => store.durationMs.value)
 const target = computed(() => project.value.targetDurationMs)
 const over = computed(() => target.value !== null && total.value - target.value >= 500)
+/** Ningún trozo enseña imagen: el vídeo saldría con fondo liso, así que se destaca «Solo el sonido». */
+const soundOnly = computed(() => project.value.clips.length > 0 && !project.value.clips.some(clipShowsPicture))
 
 function estimate(id: PresetId) {
   try {
@@ -36,6 +42,11 @@ function estimate(id: PresetId) {
     return { size: '', time: '' }
   }
 }
+
+const soundEstimate = computed(() => {
+  const size = describeFileSize(estimateSoundSizeBytes(total.value))
+  return `${size.amount.charAt(0).toUpperCase()}${size.amount.slice(1)} · ${describeExportTime(estimateSoundTimeMs(total.value))}`
+})
 
 onMounted(() => void saveFlow.detectHardware())
 </script>
@@ -65,11 +76,20 @@ onMounted(() => void saveFlow.detectHardware())
           <span>Puedes guardarlo igualmente, o volver y acortarlo.</span>
         </div>
       </div>
+      <div v-if="soundOnly" class="info" data-testid="save-sound-only-hint">
+        <AppIcon name="wave" :size="26" />
+        <div>
+          <strong>Tu vídeo no tiene imagen: todos los trozos solo se oyen.</strong>
+          <span>Si lo guardas como vídeo, saldrá con un fondo liso. Para tener solo el sonido, usa «Solo el sonido».</span>
+        </div>
+      </div>
+      <div class="choices">
       <div class="options">
         <button
           v-for="o in options"
           :key="o.id"
           class="option card"
+          :class="{ dimmed: soundOnly }"
           type="button"
           :data-testid="`preset-${o.id}`"
           @click="saveFlow.start(o.id)"
@@ -77,6 +97,7 @@ onMounted(() => void saveFlow.detectHardware())
           <span class="icon"><AppIcon :name="o.icon" :size="34" /></span>
           <span class="title">{{ o.title }}</span>
           <span class="text">{{ o.text }}</span>
+          <span v-if="soundOnly" class="plain-note">Saldrá con fondo liso</span>
           <span class="meta">
             <span>{{ estimate(o.id).size }}</span>
             <span v-if="estimate(o.id).time" class="muted">{{ estimate(o.id).time }}</span>
@@ -86,6 +107,18 @@ onMounted(() => void saveFlow.detectHardware())
             Guardar así
           </span>
         </button>
+      </div>
+      <button class="sound card" :class="{ featured: soundOnly }" type="button" data-testid="preset-sound" @click="saveFlow.start('sound')">
+        <span class="sound-icon"><AppIcon name="wave" :size="28" /></span>
+        <span class="sound-text">
+          <strong>Solo el sonido</strong>
+          <span>Un fichero de audio, sin imagen · {{ soundEstimate }}</span>
+        </span>
+        <span class="sound-go">
+          <AppIcon name="save" />
+          Guardar el sonido
+        </span>
+      </button>
       </div>
       <p class="where muted">Se guarda en tu carpeta Vídeos, dentro de «Mis montajes». Tus vídeos originales no se tocan.</p>
     </div>
@@ -99,8 +132,8 @@ onMounted(() => void saveFlow.detectHardware())
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 36px 32px;
-  gap: 18px;
+  padding: 32px 32px;
+  gap: 16px;
 }
 .question {
   font-size: 32px;
@@ -115,7 +148,8 @@ onMounted(() => void saveFlow.detectHardware())
   color: var(--good);
   font-weight: 600;
 }
-.warning {
+.warning,
+.info {
   display: flex;
   gap: 14px;
   align-items: flex-start;
@@ -126,23 +160,35 @@ onMounted(() => void saveFlow.detectHardware())
   font-size: 18px;
   max-width: 820px;
 }
-.warning span {
+.info {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.warning span,
+.info span {
   display: block;
   color: var(--text);
   margin-top: 2px;
+}
+.choices {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
 }
 .options {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 300px));
   gap: 20px;
-  margin-top: 8px;
+  margin-top: 4px;
 }
 .option {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 8px;
-  padding: 24px;
+  padding: 22px 24px;
   text-align: left;
   cursor: pointer;
   border: 2px solid var(--border);
@@ -154,6 +200,9 @@ onMounted(() => void saveFlow.detectHardware())
 .option:hover {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring), var(--shadow);
+}
+.option.dimmed {
+  opacity: 0.85;
 }
 .icon {
   width: 62px;
@@ -174,6 +223,11 @@ onMounted(() => void saveFlow.detectHardware())
   color: var(--text-muted);
   font-size: 17px;
   min-height: 48px;
+}
+.plain-note {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--warn);
 }
 .meta {
   display: flex;
@@ -202,7 +256,85 @@ onMounted(() => void saveFlow.detectHardware())
   align-self: stretch;
   justify-content: center;
 }
+/* «Solo el sonido»: secundaria (una fila, más pequeña) salvo que el vídeo no tenga imagen. */
+.sound {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: min(940px, 100%);
+  padding: 10px 14px;
+  border: 2px solid var(--border);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.12s,
+    box-shadow 0.12s;
+}
+.sound:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.sound-icon {
+  width: 48px;
+  height: 48px;
+  flex: none;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: var(--surface-2);
+  color: var(--accent);
+}
+.sound-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.sound-text strong {
+  font-size: 18px;
+}
+.sound-text span {
+  color: var(--text-muted);
+  font-size: 15px;
+}
+.sound-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 16px;
+  border-radius: 12px;
+  border: 1.5px solid var(--accent);
+  color: var(--accent-hover);
+  font-weight: 650;
+  white-space: nowrap;
+}
+.sound.featured {
+  /* Sin imagen en todo el vídeo, va la primera. */
+  order: -1;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  padding: 16px 18px;
+}
+.sound.featured .sound-icon {
+  background: var(--accent);
+  color: #fff;
+}
+.sound.featured .sound-go {
+  background: var(--accent);
+  color: #fff;
+}
 .where {
-  margin-top: 6px;
+  margin-top: 2px;
+}
+@media (max-height: 760px) {
+  .body {
+    padding: 20px 32px;
+    gap: 12px;
+  }
+  .question {
+    font-size: 28px;
+  }
 }
 </style>

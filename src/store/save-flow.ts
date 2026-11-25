@@ -4,8 +4,8 @@ import { ref, shallowRef } from 'vue'
 import {
   computeOutputSpec,
   normalizedExportFactor,
-  type PresetId,
   type ProgressUpdate,
+  type SaveTarget,
   type VideoEncoder,
 } from '../domain'
 import { CancelledError } from '../native/bridge'
@@ -33,7 +33,7 @@ function writeFactors(f: FactorStore) {
 }
 
 export function createSaveFlow(store: EditorStore) {
-  const preset = ref<PresetId>('whatsapp')
+  const preset = ref<SaveTarget>('whatsapp')
   const progress = shallowRef<ProgressUpdate | null>(null)
   const running = ref(false)
   const result = shallowRef<ExportResult | null>(null)
@@ -58,7 +58,7 @@ export function createSaveFlow(store: EditorStore) {
     return typeof v === 'number' && v > 0 ? v : null
   }
 
-  async function start(id: PresetId) {
+  async function start(id: SaveTarget) {
     if (running.value) return
     preset.value = id
     progress.value = null
@@ -82,23 +82,26 @@ export function createSaveFlow(store: EditorStore) {
     try {
       const res = await job.result
       result.value = res
-      store.lastExport.value = { path: res.path, folder: res.folder, durationMs: res.expectedDurationMs }
-      // Lo que ha tardado de verdad afina la estimación de la próxima vez.
-      const spec = computeOutputSpec(project, media, id)
-      const factor = normalizedExportFactor(spec, res.expectedDurationMs, res.elapsedMs)
-      if (factor > 0) {
-        const f = readFactors()
-        f[res.encoder === 'libx264' ? 'software' : 'hardware'] = factor
-        writeFactors(f)
+      store.lastExport.value = { path: res.path, folder: res.folder, durationMs: res.expectedDurationMs, target: id }
+      // Lo que ha tardado de verdad afina la estimación de la próxima vez (solo los vídeos).
+      if (id !== 'sound' && res.encoder) {
+        const spec = computeOutputSpec(project, media, id)
+        const factor = normalizedExportFactor(spec, res.expectedDurationMs, res.elapsedMs)
+        if (factor > 0) {
+          const f = readFactors()
+          f[res.encoder === 'libx264' ? 'software' : 'hardware'] = factor
+          writeFactors(f)
+        }
       }
       store.go('done')
     } catch (e) {
+      const what = id === 'sound' ? 'sonido' : 'vídeo'
       if (e instanceof CancelledError) {
         store.go('save')
-        store.showToast('No se ha guardado. No queda ningún vídeo a medias.')
+        store.showToast(`No se ha guardado. No queda ningún ${what} a medias.`)
       } else {
         store.go('save')
-        const message = e instanceof ExportError ? e.message : 'No se ha podido guardar el vídeo.'
+        const message = e instanceof ExportError ? e.message : `No se ha podido guardar el ${what}.`
         store.showError(message, e instanceof ExportError ? e.details : e)
       }
     } finally {
