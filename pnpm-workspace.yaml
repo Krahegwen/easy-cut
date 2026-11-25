@@ -1,0 +1,6 @@
+# Seguridad de la cadena de suministro: no instalar versiones con menos de 3 días.
+minimumReleaseAge: 4320
+
+# Únicos paquetes que pueden ejecutar scripts de instalación.
+allowBuilds:
+  esbuild: true
