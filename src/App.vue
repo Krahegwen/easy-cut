@@ -9,7 +9,8 @@ import PreparingOverlay from './components/PreparingOverlay.vue'
 import ToastBar from './components/ToastBar.vue'
 import { addVideos } from './lib/add-videos'
 import { installShortcutListener } from './lib/use-shortcuts'
-import { store } from './store'
+import UpdateDialog from './components/UpdateDialog.vue'
+import { store, updater, updaterEnabled } from './store'
 import ClipEditorView from './views/ClipEditorView.vue'
 import DoneView from './views/DoneView.vue'
 import EditorView from './views/EditorView.vue'
@@ -41,8 +42,11 @@ onMounted(() => {
     onHover: (h) => (hovering.value = h),
   })
   void store.loadAutosaveSummary()
+  // Solo en la app instalada: unos segundos después de arrancar mira si hay versión nueva (sin bloquear nada).
+  if (updaterEnabled) updater.start()
 })
 onBeforeUnmount(() => {
+  updater.stop()
   stopKeys?.()
   window.removeEventListener('beforeunload', onBeforeUnload)
   stopDrop?.()
@@ -63,6 +67,7 @@ onBeforeUnmount(() => {
   <PreparingOverlay />
   <ToastBar />
   <ConfirmDialog />
+  <UpdateDialog />
   <ErrorDialog />
   <KeysPanel />
 </template>

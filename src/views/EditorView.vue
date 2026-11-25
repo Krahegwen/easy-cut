@@ -8,6 +8,7 @@ import DurationBar from '../components/DurationBar.vue'
 import PreviewPlayer from '../components/PreviewPlayer.vue'
 import TargetPicker from '../components/TargetPicker.vue'
 import UndoRedo from '../components/UndoRedo.vue'
+import UpdateNotice from '../components/UpdateNotice.vue'
 import { clipDurationMs, clipStartTimes, formatDuration, removeCover, setAspect, type AspectRatio } from '../domain'
 import KeyHint from '../components/KeyHint.vue'
 import KeysButton from '../components/KeysButton.vue'
@@ -186,6 +187,7 @@ onBeforeUnmount(() => {
       </section>
 
       <aside class="side">
+        <UpdateNotice compact />
         <section v-if="offerClip" class="panel offer" data-testid="recording-offer">
           <h2><AppIcon name="check" :size="22" /> Grabación añadida</h2>
           <p>Es el trozo {{ offerIndex + 1 }} y dura {{ formatDuration(clipDurationMs(offerClip)) }}. ¿Quito los silencios entre frase y frase?</p>

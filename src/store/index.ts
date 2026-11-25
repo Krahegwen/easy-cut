@@ -4,7 +4,9 @@
 import * as domain from '../domain'
 import { liveTracks } from '../lib/camera'
 import { describeActiveShortcuts } from '../lib/use-shortcuts'
-import { bridge as nativeBridge, type NativeBridge, type PickVideosOptions } from '../native'
+import { createUpdater, type UpdaterBackend } from '../lib/updater'
+import { bridge as nativeBridge, isDesktop, type NativeBridge, type PickVideosOptions } from '../native'
+import { createTauriUpdaterBackend } from '../native/tauri-updater'
 import { createEditorStore } from './editor'
 import { createSaveFlow } from './save-flow'
 
@@ -26,6 +28,27 @@ export type { PreparingItem, Screen } from './editor'
 export const store = createEditorStore(appBridge)
 export const saveFlow = createSaveFlow(store)
 
+/** ¿Se actualiza sola? Solo la app instalada (compilación release); ni `tauri dev` ni el navegador. */
+export const updaterEnabled = isDesktop && !import.meta.env.DEV
+
+/** Versión instalada (la de package.json, que es también la de tauri.conf.json). */
+export const appVersion = __APP_VERSION__
+
+const disabledBackend: UpdaterBackend = {
+  check: () => Promise.resolve(null),
+  relaunch: () => Promise.resolve(),
+}
+
+export const updater = createUpdater({
+  backend: updaterEnabled ? createTauriUpdaterBackend() : disabledBackend,
+  beforeInstall: () => store.flushAutosave(),
+  // Solo se ofrece en Inicio y en «Tu vídeo», y nunca con un guardado o la cámara/micrófono en marcha.
+  busy: () => {
+    const screen = store.screen.value
+    return (screen !== 'home' && screen !== 'editor') || saveFlow.running.value || liveTracks().length > 0
+  },
+})
+
 export function useStore() {
   return store
 }
@@ -36,6 +59,7 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
     domain,
     store,
     saveFlow,
+    updater,
     /** La próxima vez que la interfaz abra «elegir vídeos», devuelve estas rutas sin diálogo. */
     queuePickedVideos(paths: string[]) {
       devPickQueue.push(paths)

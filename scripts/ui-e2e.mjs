@@ -17,7 +17,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'no
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
-import { connectToApp, sleep } from './cdp.mjs'
+import { appTestEnv, APP_LAUNCH_OPTIONS, connectToApp, sleep } from './cdp.mjs'
 
 const { values: opts } = parseArgs({
   options: {
@@ -26,6 +26,7 @@ const { values: opts } = parseArgs({
     shots: { type: 'string', default: resolve('test-output', 'screenshots') },
     'no-launch': { type: 'boolean', default: false },
     'keep-open': { type: 'boolean', default: false },
+    ...APP_LAUNCH_OPTIONS,
   },
 })
 const port = Number(opts.port)
@@ -92,7 +93,7 @@ async function startApp() {
   if (await cdpReachable()) throw new Error(`Ya hay algo escuchando en el ${port}: cierra la app o usa --no-launch`)
   const env = {
     ...process.env,
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
+    ...appTestEnv(port, { withSound: opts['with-sound'], foreground: opts.foreground }),
     PATH: `${join(homedir(), '.cargo', 'bin')};${process.env.PATH}`,
   }
   devProcess = spawn('cmd.exe', ['/d', '/s', '/c', 'pnpm tauri dev'], { env, stdio: 'ignore', windowsHide: true })
@@ -462,7 +463,8 @@ try {
     check('Nombre «Vídeo del … (para WhatsApp).mp4» en Mis montajes (pruebas)', /\\Mis montajes \(pruebas\)\\Vídeo del .+ \(para WhatsApp\)( \d+)?\.mp4$/.test(exportedPath), exportedPath)
     await shot('15-listo.png')
     await app.click('[data-testid=copy-whatsapp]')
-    await sleep(300)
+    // Copiar lanza un PowerShell (Set-Clipboard): según lo ocupado que esté el PC tarda más de 300 ms.
+    await app.waitFor('return !!document.querySelector("[data-testid=copied-hint]") || !!document.querySelector("[data-testid=error-dialog]")', { timeoutMs: 10_000, what: 'copiado' }).catch(() => {})
     check('«Copiar para pegarlo en WhatsApp» explica el Ctrl+V', (await app.text('[data-testid=copied-hint]')) === 'Ahora ve a WhatsApp y pulsa Ctrl+V')
     await shot('16-listo-copiado.png')
     await noErrorDialog('copiar')

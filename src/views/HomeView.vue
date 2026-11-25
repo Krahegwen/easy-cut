@@ -1,6 +1,8 @@
 <script setup lang="ts">
 // Inicio: hacer un vídeo nuevo (principal), seguir con el que quedó sin terminar o grabarse leyendo.
 import AppIcon from '../components/AppIcon.vue'
+import AppVersion from '../components/AppVersion.vue'
+import UpdateNotice from '../components/UpdateNotice.vue'
 import KeyHint from '../components/KeyHint.vue'
 import KeysButton from '../components/KeysButton.vue'
 import { formatDuration } from '../domain'
@@ -39,6 +41,7 @@ useShortcuts({
   <main class="screen home" data-testid="home-view">
     <KeysButton floating />
     <div class="content">
+      <UpdateNotice />
       <header class="hero">
         <span class="logo" aria-hidden="true"><AppIcon name="film" :size="34" /></span>
         <h1>Tus vídeos, fáciles de montar</h1>
@@ -71,6 +74,8 @@ useShortcuts({
           Grabarme leyendo un texto
         </button>
       </div>
+
+      <AppVersion />
     </div>
   </main>
 </template>

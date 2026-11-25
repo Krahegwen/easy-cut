@@ -1,0 +1,16 @@
+{
+  "description": "ffmpeg/ffprobe que se empaquetan en el instalador. Lo leen scripts/fetch-ffmpeg.ps1 -Download y .github/workflows/release.yml. Para cambiarlo: elegir otro autobuild de fin de mes, descargarlo, calcular su SHA-256 y actualizar todos los campos.",
+  "builder": "https://github.com/FFmpeg-Builds/FFmpeg-Builds",
+  "release": "autobuild-2026-10-31-12-59",
+  "asset": "ffmpeg-n9.0.2-39-g7adfbe40dc-win64-gpl-9.0.zip",
+  "url": "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/ffmpeg-n9.0.2-39-g7adfbe40dc-win64-gpl-9.0.zip",
+  "sha256": "693f3e224bc184b40524a62ca47526cfebaf2504414021b92fe75f677ad868b9",
+  "variant": "win64-gpl-9.0",
+  "version": "n9.0.2-39-g7adfbe40dc",
+  "branch": "release/9.0",
+  "commit": "7adfbe40dcde598f93a6963d2f7b22cd75202ccc",
+  "source": "https://git.ffmpeg.org/ffmpeg.git",
+  "license": "GPL-3.0",
+  "licenseName": "GNU General Public License, versión 3",
+  "licenseUrl": "https://www.gnu.org/licenses/gpl-3.0.html"
+}

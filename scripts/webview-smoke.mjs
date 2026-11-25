@@ -2,7 +2,7 @@
 // Ejecuta en la página las funciones del bridge con vídeos reales y comprueba los resultados.
 //
 // 1. Arrancar la app con depuración remota (PowerShell, cada línea por separado):
-//      $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=4853'
+//      $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=4853 --mute-audio'
 //      pnpm tauri dev
 // 2. En otra consola (con los clips de test-output/, que genera `pnpm test:ffmpeg`):
 //      node scripts/webview-smoke.mjs --big "C:\ruta\a\un vídeo grande.mp4" --hevc "C:\ruta\a\un hevc.mp4"

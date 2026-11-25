@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
-import { connectToApp, sleep } from './cdp.mjs'
+import { appTestEnv, APP_LAUNCH_OPTIONS, connectToApp, sleep } from './cdp.mjs'
 
 const { values: opts } = parseArgs({
   options: {
@@ -27,6 +27,7 @@ const { values: opts } = parseArgs({
     'no-launch': { type: 'boolean', default: false },
     'no-shots': { type: 'boolean', default: false },
     'keep-open': { type: 'boolean', default: false },
+    ...APP_LAUNCH_OPTIONS,
   },
 })
 const port = Number(opts.port)
@@ -85,9 +86,7 @@ async function cdpReachable() {
 async function startApp() {
   if (!launch) return
   if (await cdpReachable()) throw new Error(`Ya hay algo escuchando en el ${port}: cierra la app o usa --no-launch`)
-  const args = [`--remote-debugging-port=${port}`]
-  if (fake) args.push('--use-fake-device-for-media-stream')
-  const env = { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: args.join(' '), PATH: `${join(homedir(), '.cargo', 'bin')};${process.env.PATH}` }
+  const env = { ...process.env, ...appTestEnv(port, { withSound: opts['with-sound'], foreground: opts.foreground, extra: fake ? ['--use-fake-device-for-media-stream'] : [] }), PATH: `${join(homedir(), '.cargo', 'bin')};${process.env.PATH}` }
   devProcess = spawn('cmd.exe', ['/d', '/s', '/c', 'pnpm tauri dev'], { env, stdio: 'ignore', windowsHide: true })
 }
 

@@ -1,0 +1,85 @@
+# Comprobaciones de cada push a main y de cada pull request: tests y tipos del frontend, tests y clippy de
+# Rust. No necesita ffmpeg (ningún test de Rust lo ejecuta), pero tauri-build exige que existan los sidecars
+# de externalBin: se crean ficheros vacíos de relleno solo en este job.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  check:
+    name: Tests, tipos y clippy
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: pnpm (versión de packageManager)
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          cache: true
+
+      - name: Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Rust estable con clippy
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          rustc --version
+
+      - name: Caché de cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Dependencias
+        run: pnpm install --frozen-lockfile
+
+      - name: Tests
+        run: pnpm test
+
+      - name: Tipos
+        run: pnpm typecheck
+
+      - name: Frontend compilado (dist/, que lee tauri.conf.json)
+        run: pnpm exec vite build
+
+      - name: Sidecars de relleno (vacíos; ningún test los ejecuta)
+        run: |
+          $triple = ((rustc -vV | Select-String '^host:') -replace '^host:\s*', '').Trim()
+          New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
+          foreach ($tool in 'ffmpeg', 'ffprobe') {
+            New-Item -ItemType File -Force "src-tauri/binaries/$tool-$triple.exe" | Out-Null
+          }
+          Get-ChildItem src-tauri/binaries
+
+      - name: Tests de Rust
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings

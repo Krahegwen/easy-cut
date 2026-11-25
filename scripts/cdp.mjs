@@ -3,7 +3,42 @@
 
 import { writeFileSync } from 'node:fs'
 
-export async function connectToApp(port, { timeoutMs = 120_000 } = {}) {
+/**
+ * WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS para arrancar la app en las pruebas: depuración remota en `port`;
+ * salvo `withSound` (opción --with-sound), --mute-audio para que no suene nada por los altavoces (solo quita
+ * la salida: currentTime, MediaRecorder y el medidor del micrófono siguen igual); y que Chromium no frene la
+ * ventana aunque esté tapada por otras (en las pruebas se abre detrás, sin foco).
+ */
+export function webviewArgs(port, { withSound = false, extra = [] } = {}) {
+  const args = [
+    `--remote-debugging-port=${port}`,
+    '--disable-renderer-backgrounding',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-features=CalculateNativeWinOcclusion',
+    ...extra,
+  ]
+  if (!withSound) args.push('--mute-audio')
+  return args.join(' ')
+}
+
+/**
+ * Variables de entorno con las que las pruebas arrancan la app (`pnpm tauri dev`): los argumentos de WebView2
+ * y, salvo `foreground` (opción --foreground, para verla trabajar), EASY_CUT_TEST=1, que en la compilación de
+ * desarrollo abre la ventana detrás de las demás y sin quitar el foco (src-tauri/src/test_window.rs).
+ */
+export function appTestEnv(port, { withSound = false, foreground = false, extra = [] } = {}) {
+  const env = { WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: webviewArgs(port, { withSound, extra }) }
+  if (!foreground) env.EASY_CUT_TEST = '1'
+  return env
+}
+
+/** Las opciones comunes de los scripts que arrancan la app (para su parseArgs). */
+export const APP_LAUNCH_OPTIONS = {
+  'with-sound': { type: 'boolean', default: false },
+  foreground: { type: 'boolean', default: false },
+}
+
+export async function connectToApp(port, { timeoutMs = 120_000, focusEmulation = true } = {}) {
   const deadline = Date.now() + timeoutMs
   let page = null
   while (!page) {
@@ -172,6 +207,9 @@ export async function connectToApp(port, { timeoutMs = 120_000 } = {}) {
   }
 
   await send('Runtime.enable')
+  // La página se comporta como si la ventana tuviera el foco aunque no lo tenga (en las pruebas está detrás):
+  // foco de elementos, eventos focus/blur y :focus-visible no dependen de la ventana activa del sistema.
+  if (focusEmulation) await send('Emulation.setFocusEmulationEnabled', { enabled: true })
   return { send, evaluate, waitFor, click, clickAt, center, drag, key, setViewport, screenshot, text, close: () => ws.close(), url: page.url }
 }
 

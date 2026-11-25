@@ -1,0 +1,177 @@
+# Publica una versión: al subir una etiqueta v* compila el instalador firmado en Windows y crea la release de
+# esa etiqueta con el instalador (sin espacios en el nombre), su .sig y latest.json, que es lo que lee el
+# actualizador de la app (releases/latest/download/latest.json).
+#
+# Con «Run workflow» (workflow_dispatch) hace lo mismo pero NO publica nada: deja el resultado como artifact
+# del workflow, para probar.
+#
+# Secret necesario: TAURI_SIGNING_PRIVATE_KEY (el contenido de la clave privada del actualizador, sin
+# contraseña). Acciones de terceros fijadas por SHA de commit (el comentario dice su versión).
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  build:
+    name: Compilar el instalador
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: pnpm (versión de packageManager)
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          cache: true
+
+      - name: Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Rust estable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - name: Caché de cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri -> target
+
+      - name: La etiqueta coincide con la versión
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:REF_TYPE -eq 'tag') {
+            node scripts/prepare-release.mjs --check-tag "$env:REF_NAME"
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          } else {
+            Write-Host "Sin etiqueta (workflow_dispatch): se compila la versión $version sin publicarla."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Dependencias
+        run: pnpm install --frozen-lockfile
+
+      - name: Tests y tipos
+        run: |
+          pnpm test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          pnpm typecheck
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: ffmpeg y ffprobe (compilación fijada en scripts/ffmpeg-build.json, con SHA-256)
+        run: ./scripts/fetch-ffmpeg.ps1 -Download -CacheDir "$env:RUNNER_TEMP\ffmpeg"
+
+      - name: Tests de Rust
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Compilar y firmar el instalador
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: |
+          if ([string]::IsNullOrEmpty($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw 'Falta el secret TAURI_SIGNING_PRIVATE_KEY del repositorio: sin él no se puede firmar la actualización.'
+          }
+          ./scripts/build-release.ps1
+
+      - name: El ejecutable no lleva rutas del runner
+        run: |
+          $exe = 'src-tauri/target/release/easy-cut.exe'
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($exe))
+          $bad = @($env:USERPROFILE, $env:GITHUB_WORKSPACE, 'runneradmin') | Where-Object { $_ -and $text.Contains($_) }
+          if ($bad) { throw "El ejecutable contiene rutas de la máquina de compilación: $($bad -join ', ')" }
+          Write-Host 'Sin rutas de la máquina de compilación.'
+
+      - name: Instalador, firma, latest.json y notas
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          $tagArgs = @()
+          if ($env:REF_TYPE -eq 'tag') { $tagArgs = @('--tag', $env:REF_NAME) }
+          node scripts/prepare-release.mjs @tagArgs --out release-assets
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-Content release-assets/latest.json
+
+      - name: Guardar como artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: easy-cut-${{ steps.version.outputs.version }}
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publicar la release
+    needs: build
+    # Solo con el push de una etiqueta: «Run workflow» nunca publica, aunque se lance sobre una etiqueta.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Bajar lo compilado
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: easy-cut-${{ needs.build.outputs.version }}
+          path: release-assets
+
+      - name: Crear la release (borrador), subir los ficheros y publicarla
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          installer="Easy-Cut_${VERSION}_x64-setup.exe"
+          test -f "$installer"
+          test -f "$installer.sig"
+          test -f latest.json
+          # La URL de latest.json tiene que ser exactamente la del asset que se sube.
+          expected="https://github.com/${GH_REPO}/releases/download/${TAG}/${installer}"
+          actual="$(jq -r '.platforms."windows-x86_64".url' latest.json)"
+          if [ "$actual" != "$expected" ]; then
+            echo "latest.json apunta a $actual y debería ser $expected" >&2
+            exit 1
+          fi
+          # Primero en borrador: hasta que estén todos los ficheros, «latest» sigue siendo la anterior.
+          gh release create "$TAG" --draft --verify-tag --title "Easy Cut ${VERSION}" --notes-file release-notes.md
+          gh release upload "$TAG" "$installer" "$installer.sig" latest.json
+          gh release edit "$TAG" --draft=false --latest
+          gh release view "$TAG" --json url,assets --jq '.url, (.assets[] | .name)'
