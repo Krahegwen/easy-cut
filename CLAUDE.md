@@ -43,10 +43,16 @@ Prueba de integración con el ffmpeg real del PATH (genera `test-output/`, tarda
 pnpm test:ffmpeg
 ```
 
-La tanda propia de la biblioteca (efectos y sonidos generados, en `library/dist/`, y sus entradas en `library/catalog.json`; con `--review`, hojas de contacto y espectros para revisarlos):
+La biblioteca (tanda propia y de terceros, en `library/dist/`, y sus entradas en `library/catalog.json`; con `--review`, hojas de contacto, espectros y niveles para revisarlos; la de terceros necesita los originales en `library/sources/`, ver `library/README.md`):
 
 ```powershell
 node scripts/build-library.mjs --review
+```
+
+Que `library/dist/` cuadra con el catálogo y está lista para subir:
+
+```powershell
+pnpm library:check
 ```
 
 ### App de escritorio (Tauri 2)
@@ -111,7 +117,7 @@ Prueba de extremo a extremo de los atajos de teclado (eventos de teclado reales 
 node scripts/shortcuts-e2e.mjs
 ```
 
-Prueba de extremo a extremo de las pistas y la biblioteca (biblioteca con origen local `library/dist`: «Poner aquí» un sonido y un efecto, un sonido «De mi ordenador»; mover con imán, recortar, partir, duplicar, volumen, entrada suave, repetir; silenciar/ocultar pistas y la fila «Vídeo»; quitar pista y deshacer; quitar pausas en un trozo anterior, reordenar un trozo y quitar el trozo ancla; zoom; tarjetas/pistas; «Tamaño y sitio»; reproducir midiendo la sincronía de sonidos y efectos; guardar «Para WhatsApp» con ffprobe; créditos en «¡Listo!»; rendimiento con 5 minutos, 20 trozos, 3 pistas y 30 elementos; capturas `tracks-*.png` a 1280×800 y 1100×700). Necesita los ficheros de `pnpm test:ffmpeg` y la biblioteca generada:
+Prueba de extremo a extremo de las pistas y la biblioteca (biblioteca con origen local `library/dist`: «Poner aquí» un sonido y un efecto, un sonido «De mi ordenador»; mover con imán, recortar, partir, duplicar, volumen, entrada suave, repetir; silenciar/ocultar pistas y la fila «Vídeo»; quitar pista y deshacer; quitar pausas en un trozo anterior, reordenar un trozo y quitar el trozo ancla; zoom; tarjetas/pistas; «Tamaño y sitio»; reproducir midiendo la sincronía de sonidos y efectos; guardar «Para WhatsApp» con ffprobe; créditos en «¡Listo!»; buscador y categorías con contador y nombres legibles; un sonido de Freesound y uno de Kenney guardados y medidos en el fichero (±40 ms); rendimiento con 5 minutos, 20 trozos, 3 pistas y 30 elementos; capturas `tracks-*.png` y `lib-*.png` a 1280×800 y 1100×700). Necesita los ficheros de `pnpm test:ffmpeg` y la biblioteca generada:
 
 ```powershell
 node scripts/tracks-e2e.mjs
@@ -170,8 +176,11 @@ Copiar y pegar: Ctrl+C copia el trozo en la app (no toca el portapapeles de Wind
 - `library/catalog.json` (versionado, empaquetado con la app): categorías y elementos con `file`, `sha256`, `bytes`, `durationMs`, formato, `defaults` (mezcla, repetir, volumen, tamaño…), `license` (`own` | `CC0-1.0` | `CC-BY-3.0` | `CC-BY-4.0`), `author`, `sourceUrl`, `attribution` (texto exacto si la licencia lo pide). `validateCatalog` (`src/domain/library.ts`) lo comprueba; el test `library.test.ts` valida el del repo. Reglas de licencia y cómo añadir material: `library/README.md`.
 - Los ficheros van como assets de la release `library-v1` (`baseUrl` del catálogo), no en el repo ni en el instalador. `src-tauri/src/library.rs`: `library_fetch` (descarga a la caché `…\library\<sha16>-<fichero>`, solo https de `github.com`, `objects.githubusercontent.com` y `release-assets.githubusercontent.com`, también en cada redirección; nombres saneados; 3 intentos; progreso por canal; cancelación con `cancel_job`; comprueba tamaño y SHA-256; nada se ejecuta), `library_status` (lo ya descargado, sin red) y `library_catalog` (el de la release si es JSON, guardado en caché; si no, el último). En la interfaz (`src/store/library.ts`) el catálogo descargado solo sustituye al empaquetado si es válido y de `revision` mayor. La información de cada elemento sale del catálogo (sin ffprobe).
 - **Hasta que exista la release**: la app de desarrollo copia los ficheros de `library/dist/` (o de `EASY_CUT_LIBRARY_DIR`) a la caché, con la misma comprobación del SHA-256; la instalada no mira nunca esa carpeta. `library/dist/` está en `.gitignore`.
-- La primera tanda (todo `own`, publicado CC0) la genera `scripts/build-library.mjs`: efectos «como luz» sobre negro dibujados en JS (partículas con suma de luz y un halo con `gblur` en RGB) y codificados en H.264 1080p30; corazones en WebM VP9 con alfa; viñeta y marco en PNG con alfa; sonidos sintetizados a M4A. Lo que repite enlaza sin salto (movimiento periódico). Cada efecto trae una vista previa de 480×270.
-- **Créditos** (`projectCredits`, `libraryCredits`, `creditsText`): «¡Listo!» los enseña con «Copiar los créditos» si el vídeo usa algo que los pida; «Créditos de la biblioteca» en el pie de la biblioteca.
+- La tanda propia (todo `own`, publicado CC0) la genera `scripts/build-library.mjs`: efectos «como luz» sobre negro dibujados en JS (partículas con suma de luz y un halo con `gblur` en RGB; las llamas, con sprites del Particle Pack de Kenney, `scripts/library-particles.mjs`) y codificados en H.264 1080p30; corazones en WebM VP9 con alfa; viñeta y marco en PNG con alfa; sonidos sintetizados a M4A. Lo que repite enlaza sin salto (movimiento periódico). Cada efecto trae una vista previa de 480×270.
+- La **tanda de terceros** (CC0 de Freesound y Kenney, ~110 sonidos) sale de `library/third-party.json` con el mismo script (`--import-only` para solo esa; el trabajo, en `scripts/library-import.mjs`): tramo, mono si lo es, recorte de silencios, microfundidos, volumen igualado (−16 LUFS / −1 dBTP para todos los sonidos, también los propios; lo muy corto por pico) y M4A. Los originales van en `library/sources/` (ignorada). Nombres en castellano que dicen qué es y en qué se distingue; `findNameClashes` (en `validateCatalog`) no deja nombres iguales, casi iguales ni con número de serie. Cada sonido lleva `description` (se ve en la tarjeta) y `channels`; lo de terceros, `thanks` y `verifiedOn`. El script deja también `dist/catalog.json` y `dist/CREDITS.md`, y quita de `dist/` lo que ya no está; `pnpm library:check` comprueba que `dist/` cuadra con el catálogo (y el comando para publicar la release está en `library/README.md`).
+- **Buscador y categorías** (`searchLibrary`, `countByCategory`): sin tildes ni mayúsculas, en nombre, descripción, categoría y etiquetas; cada categoría lleva su contador (con lo que se busca) y, buscando, solo salen las que tienen algo.
+- **Errores de descarga**: `library_fetch` empieza el mensaje con `offline:`, `missing:` (4xx, sobre todo 404) o `mismatch:` (tamaño o SHA-256); `libraryFetchMessage` / `librarySaveMessage` dan un mensaje llano distinto para cada uno.
+- **Créditos** (`projectCredits`, `libraryCredits`, `libraryThanks`, `creditsText`): «¡Listo!» los enseña con «Copiar los créditos» si el vídeo usa algo que pida atribución (lo CC0 no); «Créditos de la biblioteca» (en el pie de la biblioteca) enseña eso y, aparte, los agradecimientos de todo lo de terceros.
 
 ## Actualizaciones y releases
 
@@ -265,7 +274,8 @@ src-tauri/           shell Tauri 2 (Rust)
   src/test_window.rs  modo de pruebas (EASY_CUT_TEST=1, solo desarrollo): ventana detrás y sin quitar el foco
   src/library.rs     biblioteca: descarga bajo demanda (hosts permitidos, SHA-256, reintentos, progreso, cancelación),
                      lo ya descargado y el catálogo de la release; en desarrollo, la carpeta library/dist
-library/             catalog.json (versionado), README.md (reglas y cómo añadir); dist/ (ficheros, ignorada)
+library/             catalog.json y third-party.json (versionados), README.md (reglas, cómo añadir y publicar);
+                     dist/ (ficheros, ignorada), sources/ (originales de terceros, ignorada)
   capabilities/      permisos mínimos (solo los comandos propios y escuchar eventos)
 .github/workflows/   ci.yml (tests, tipos, cargo test y clippy) y release.yml (etiqueta v* → release con latest.json)
 scripts/
@@ -279,7 +289,10 @@ scripts/
   picture-e2e.mjs    prueba de extremo a extremo de «Imagen» y «Solo el sonido»
   shortcuts-e2e.mjs  prueba de extremo a extremo de los atajos de teclado y de copiar y pegar
   tracks-e2e.mjs     prueba de extremo a extremo de las pistas, la biblioteca y los créditos (capturas tracks-*.png)
-  build-library.mjs  genera la tanda propia de la biblioteca (library/dist y sus entradas del catálogo)
+  build-library.mjs  genera la biblioteca (tanda propia y de terceros) en library/dist, el catálogo y CREDITS.md
+  library-import.mjs  tanda de terceros (library/third-party.json → M4A nivelados) y el nivelado común
+  library-particles.mjs  sprites del Particle Pack de Kenney para los efectos
+  check-library.mjs  pnpm library:check: library/dist cuadra con el catálogo (ficheros, tamaños, SHA-256)
 tests/integration/   pruebas con ffmpeg real (pnpm test:ffmpeg): export.itest.ts y tracks.itest.ts (pistas, medidas)
 ```
 

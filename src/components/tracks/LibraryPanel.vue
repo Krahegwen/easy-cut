@@ -3,7 +3,7 @@
 // ordenador». Se prueba antes de poner: los sonidos suenan al pulsar su tarjeta; los efectos se ven en su
 // tarjeta (en bucle) y, con «Probar sobre mi vídeo», en la vista previa. «Poner aquí» lo pone donde está la línea.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { formatClock, formatDuration, searchLibrary, type LibraryAsset, type LibraryCategory, type LibraryIcon } from '../../domain'
+import { countByCategory, formatClock, formatDuration, libraryFetchMessage, searchLibrary, type LibraryAsset, type LibraryCategory, type LibraryIcon } from '../../domain'
 import { LAYER_PRIORITY } from '../../lib/shortcuts'
 import { useShortcuts } from '../../lib/use-shortcuts'
 import { library, store, tracks } from '../../store'
@@ -20,10 +20,20 @@ const creditsOpen = ref(false)
 const kind = computed(() => (tab.value === 'effect' ? 'effect' : 'sound'))
 const categories = computed<LibraryCategory[]>(() => library.categories.value.filter((c) => c.kind === kind.value))
 const results = computed(() => (tab.value === 'computer' ? [] : searchLibrary(library.catalog.value, kind.value, query.value, category.value)))
+/** Cuántos hay en cada categoría con lo que se está buscando (el contador de cada botón). */
+const counts = computed(() => countByCategory(library.catalog.value, kind.value, query.value))
+const total = computed(() => Object.values(counts.value).reduce((s, n) => s + n, 0))
+const categoryName = computed(() => categories.value.find((c) => c.id === category.value)?.name ?? '')
 
 watch(tab, () => {
   category.value = null
   stopSound()
+})
+
+// Al buscar o cambiar de categoría, la lista vuelve arriba (si no, se queda a media lista de lo anterior).
+const grid = ref<HTMLElement | null>(null)
+watch([query, category, tab], () => {
+  if (grid.value) grid.value.scrollTop = 0
 })
 
 const ICONS: Record<LibraryIcon, IconName> = {
@@ -38,6 +48,14 @@ const ICONS: Record<LibraryIcon, IconName> = {
   star: 'star',
   frame: 'frame',
   whoosh: 'whoosh',
+  laugh: 'laugh',
+  check: 'check',
+  // Una «×» junto al desplegable parecería «quitar el filtro».
+  cross: 'warning',
+  drum: 'drum',
+  voice: 'mic',
+  countdown: 'clock',
+  objects: 'library',
 }
 function iconOf(id: string): IconName {
   const c = library.catalog.value.categories.find((x) => x.id === id)
@@ -63,7 +81,7 @@ async function toggleSound(a: LibraryAsset) {
     await el.play()
   } catch (e) {
     playingId.value = null
-    store.showError(`No se ha podido traer «${a.name}» de la biblioteca. Mira si hay conexión a internet.`, e)
+    store.showError(libraryFetchMessage(a.name, e), e)
   }
 }
 function stopSound() {
@@ -146,18 +164,26 @@ function progressOf(a: LibraryAsset): number | null {
       <div class="filters">
         <label class="search">
           <AppIcon name="search" :size="20" />
-          <input ref="searchInput" v-model="query" type="search" :placeholder="tab === 'sound' ? 'Buscar: aplausos, campana…' : 'Buscar: luz, nieve, confeti…'" aria-label="Buscar en la biblioteca" data-testid="library-search" />
+          <input ref="searchInput" v-model="query" type="search" spellcheck="false" autocomplete="off" :placeholder="tab === 'sound' ? 'Buscar: aplausos, campana…' : 'Buscar: luz, nieve, confeti…'" aria-label="Buscar en la biblioteca" data-testid="library-search" />
         </label>
-        <div class="chips" role="group" aria-label="Categorías">
-          <button class="chip" :class="{ on: category === null }" type="button" @click="category = null">Todo</button>
-          <button v-for="c in categories" :key="c.id" class="chip" :class="{ on: category === c.id }" type="button" :data-testid="`library-category-${c.id}`" @click="category = category === c.id ? null : c.id">
-            <AppIcon :name="ICONS[c.icon]" :size="18" />
-            {{ c.name }}
-          </button>
-        </div>
+        <!-- Con una docena de categorías, unos botones ocuparían media biblioteca: un desplegable con su contador. -->
+        <label class="category" :class="{ on: category !== null }">
+          <AppIcon :name="category ? iconOf(category) : 'library'" :size="20" />
+          <select v-model="category" aria-label="Categoría" data-testid="library-category">
+            <option :value="null" data-category="">Todo ({{ total }})</option>
+            <template v-for="c in categories" :key="c.id">
+              <!-- Buscando, solo las categorías donde hay algo (y la elegida, aunque se quede vacía). -->
+              <option v-if="!query.trim() || counts[c.id] || category === c.id" :value="c.id" :data-category="c.id" :data-count="counts[c.id] ?? 0">
+                {{ c.name }} ({{ counts[c.id] ?? 0 }})
+              </option>
+            </template>
+          </select>
+        </label>
       </div>
-      <div class="grid" :class="tab" data-testid="library-grid">
-        <p v-if="results.length === 0" class="empty muted">No hay nada con «{{ query }}». Prueba con otra palabra.</p>
+      <div ref="grid" class="grid" :class="tab" data-testid="library-grid">
+        <p v-if="results.length === 0" class="empty muted">
+          No hay nada con «{{ query }}»<template v-if="category"> en «{{ categoryName }}»</template>. Prueba con otra palabra<template v-if="category"> o mira en «Todo»</template>.
+        </p>
         <article
           v-for="a in results"
           :key="a.id"
@@ -175,12 +201,13 @@ function progressOf(a: LibraryAsset): number | null {
             <span v-else class="spinner" />
           </div>
           <div class="info">
-            <strong class="asset-name">{{ a.name }}</strong>
-            <span class="meta muted">
-              <AppIcon :name="iconOf(a.category)" :size="15" />
-              {{ a.still ? 'Imagen' : formatDuration(a.durationMs) }}
-              <template v-if="a.defaults.repeat"> · se repite</template>
-              <template v-if="a.defaults.look?.mix === 'light'"> · como luz</template>
+            <!-- Si no cabe, se corta con «…» y el nombre entero queda en el título (y en el botón de escuchar). -->
+            <strong class="asset-name" :title="a.name">{{ a.name }}</strong>
+            <span class="meta muted" :title="a.description">
+              <AppIcon :name="iconOf(a.category)" :size="15" class="meta-icon" />
+              <span class="meta-text">
+                {{ a.still ? 'Imagen' : formatDuration(a.durationMs) }}<template v-if="a.defaults.repeat"> · se repite</template><template v-if="a.defaults.look?.mix === 'light'"> · como luz</template><template v-if="a.description"> · {{ a.description }}</template>
+              </span>
             </span>
           </div>
           <div class="buttons">
@@ -284,11 +311,12 @@ function progressOf(a: LibraryAsset): number | null {
 }
 .filters {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 10px 12px 6px;
 }
-.search {
+.search,
+.category {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -298,6 +326,35 @@ function progressOf(a: LibraryAsset): number | null {
   border-radius: 10px;
   color: var(--text-muted);
 }
+.search {
+  flex: 1 1 200px;
+}
+.category {
+  flex: 1 1 190px;
+  cursor: pointer;
+}
+.category.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.category select {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: none;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+.category:focus-within,
+.search:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .search input {
   flex: 1;
   border: none;
@@ -306,29 +363,6 @@ function progressOf(a: LibraryAsset): number | null {
   font-size: 16px;
   background: none;
   min-width: 0;
-}
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 34px;
-  padding: 0 10px;
-  border-radius: 17px;
-  border: 1.5px solid var(--border);
-  background: var(--surface);
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.chip.on {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent-hover);
 }
 .grid {
   flex: 1;
@@ -416,17 +450,32 @@ function progressOf(a: LibraryAsset): number | null {
   flex-direction: column;
   min-width: 0;
 }
+/* Hasta dos líneas; si aun así no cabe, «…» (y el nombre entero en el título). */
 .asset-name {
   font-size: 16px;
-  white-space: nowrap;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 .meta {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 4px;
   font-size: 14px;
+  min-width: 0;
+}
+.meta-icon {
+  flex: none;
+}
+.meta-text {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .buttons {
   grid-area: buttons;

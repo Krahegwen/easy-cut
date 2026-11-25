@@ -1,26 +1,34 @@
-// Genera la primera tanda propia de la biblioteca (efectos y sonidos hechos por el proyecto, sin material de
-// terceros) en library/dist/ y escribe sus entradas en library/catalog.json (SHA-256, bytes, duración).
+// Genera la biblioteca en library/dist/ y escribe library/catalog.json (SHA-256, bytes, duración):
+// - la tanda propia (efectos y sonidos hechos por el proyecto);
+// - la tanda de terceros (CC0), preparada desde sus originales según library/third-party.json
+//   (scripts/library-import.mjs: tramo, recorte de silencios, fundidos, volumen igualado, M4A);
+// - library/dist/catalog.json (copia del catálogo) y library/dist/CREDITS.md, para subirlos con los ficheros.
 //
-// Reproducible: cada elemento sale de una semilla fija y de fórmulas; no hay nada aleatorio sin semilla.
-// Los efectos se dibujan en JavaScript (partículas con mezcla aditiva sobre negro) y se pasan como fotogramas
-// en bruto a ffmpeg; los que repiten son periódicos (el último fotograma enlaza con el primero). Los sonidos
-// se sintetizan muestra a muestra y se guardan en M4A. Sin dependencias: Node ≥ 22 y ffmpeg en el PATH.
+// Reproducible: cada elemento propio sale de una semilla fija y de fórmulas; no hay nada aleatorio sin semilla.
+// Los efectos se dibujan en JavaScript (partículas con mezcla aditiva sobre negro, y sprites del Particle Pack
+// de Kenney, CC0) y se pasan como fotogramas en bruto a ffmpeg; los que repiten son periódicos (el último
+// fotograma enlaza con el primero). Los sonidos propios se sintetizan muestra a muestra. Todos los sonidos
+// pasan por el mismo nivelado. Sin dependencias: Node ≥ 22 y ffmpeg en el PATH.
 //
 // PowerShell, desde la raíz del repo:
 //   node scripts/build-library.mjs
 // Solo algunos (por id): node scripts/build-library.mjs --only nieve,ding
+// Solo la tanda de terceros (lo propio se queda como está): --import-only
 // Con hojas de contacto y espectrogramas para revisarlos: --review (en library/dist/review/)
 
 import { spawn, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, statSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
+import { expandSelection, importAsset, levelAndEncode, readSelection, writeWavChannels } from './library-import.mjs'
+import { loadParticleSprites, PARTICLE_PACK } from './library-particles.mjs'
 
 const { values: opts } = parseArgs({
   options: {
     only: { type: 'string', default: '' },
     review: { type: 'boolean', default: false },
+    'import-only': { type: 'boolean', default: false },
   },
 })
 const ROOT = resolve(import.meta.dirname, '..')
@@ -372,6 +380,79 @@ const EFFECTS = [
     bloom: 4,
   },
   {
+    id: 'llamas',
+    name: 'Llamas en la parte de abajo',
+    category: 'fuego-y-chispas',
+    description: 'Una franja de llamas estilizadas con chispas que suben desde el borde inferior.',
+    tags: ['fuego', 'llamas', 'hoguera', 'calor', 'brasas', 'chispas', 'peligro'],
+    seconds: 4,
+    scale: 0.5,
+    bloom: 3,
+    needsParticles: true,
+    thanks: PARTICLE_PACK.thanks,
+    defaults: { repeat: true, durationMs: 8000, look: { mix: 'light' } },
+    // Lenguas de fuego (sprites del Particle Pack) que nacen abajo, suben, cambian de amarillo a rojo y se
+    // apagan; brasas pequeñas que suben más alto; un resplandor naranja en el borde. Todo con ciclos enteros
+    // en los 4 s, así enlaza sin salto.
+    draw: (P) => (cv, t, _f, s) => {
+      const T = 4
+      const r = rng(83)
+      const hot = hex('#fff2c4')
+      const orange = hex('#ff8a1e')
+      const red = hex('#c8240a')
+      const tint = (u) => (u < 0.45 ? hot.map((c, i) => mix(c, orange[i], u / 0.45)) : orange.map((c, i) => mix(c, red[i], (u - 0.45) / 0.55)))
+      // Resplandor del borde, que respira un poco.
+      for (let x = -40; x <= cv.w + 40; x += 36 * s) {
+        const fl = 0.85 + 0.15 * Math.sin(TAU * (3 * t / T + x / cv.w * 2.7))
+        cv.glow(x, cv.h + 30 * s, 110 * s, orange, 0.1 * fl)
+      }
+      const tongues = ['flame_05', 'flame_06']
+      const bodies = ['flame_01', 'flame_02', 'flame_03', 'flame_04']
+      // Cuerpo: manchas anchas y tenues, bajas.
+      for (let i = 0; i < 46; i++) {
+        const x0 = (r() * 1.1 - 0.05) * cv.w
+        const k = 2 + Math.floor(r() * 2)
+        const ph = r()
+        const name = bodies[Math.floor(r() * bodies.length)]
+        const big = (150 + r() * 120) * s
+        const rise = (0.1 + r() * 0.08) * cv.h
+        const u = (k * t / T + ph) % 1
+        const size = big * (0.55 + 0.6 * Math.sin(Math.PI * u))
+        const y = cv.h + size * 0.25 - u * rise
+        const env = Math.sin(Math.PI * u) ** 0.9
+        cv.sprite(P.get(name, size), x0 + 12 * s * Math.sin(TAU * (u + ph)), y, tint(Math.min(1, u * 0.8 + 0.25)), env * 0.33)
+      }
+      // Lenguas: más finas, más altas, más brillantes.
+      for (let i = 0; i < 64; i++) {
+        const x0 = (r() * 1.08 - 0.04) * cv.w
+        const k = 2 + Math.floor(r() * 3)
+        const ph = r()
+        const name = tongues[Math.floor(r() * tongues.length)]
+        const big = (170 + r() * 150) * s
+        const rise = (0.16 + r() * 0.16) * cv.h
+        const m = 3 + Math.floor(r() * 4)
+        const u = (k * t / T + ph) % 1
+        const size = big * (0.5 + 0.7 * Math.sin(Math.PI * Math.min(1, u * 1.3)))
+        const y = cv.h + size * 0.2 - u * rise
+        const sway = 16 * s * Math.sin(TAU * (2 * u + ph))
+        const env = Math.sin(Math.PI * u) ** 0.8 * (0.85 + 0.15 * Math.sin(TAU * (m * t / T + ph)))
+        cv.sprite(P.get(name, size), x0 + sway, y, tint(u), env * 0.62)
+      }
+      // Brasas: puntos pequeños que suben bastante y titilan.
+      for (let i = 0; i < 70; i++) {
+        const x0 = r() * cv.w
+        const k = 1 + Math.floor(r() * 2)
+        const ph = r()
+        const u = (k * t / T + ph) % 1
+        const y = cv.h * (1 - u * (0.35 + r() * 0.3))
+        const x = x0 + 40 * s * Math.sin(TAU * (u * 1.5 + ph))
+        const tw = 0.6 + 0.4 * Math.sin(TAU * ((4 + Math.floor(r() * 5)) * t / T + ph))
+        const fade = Math.sin(Math.PI * u) ** 1.5
+        cv.glow(x, y, (1.6 + r() * 1.6) * s * 2, tint(0.2 + u * 0.6), fade * tw * 0.9)
+      }
+    },
+  },
+  {
     id: 'fuegos-artificiales',
     name: 'Fuegos artificiales',
     category: 'fiesta',
@@ -673,30 +754,7 @@ const STILLS = [
 
 // ------------------------------------------------------------------------------------------------ sonidos
 
-/** Escribe un WAV estéreo de 32 bits en coma flotante. */
-function writeWav(path, left, right = left) {
-  const n = left.length
-  const data = Buffer.alloc(n * 8)
-  for (let i = 0; i < n; i++) {
-    data.writeFloatLE(left[i], i * 8)
-    data.writeFloatLE(right[i], i * 8 + 4)
-  }
-  const header = Buffer.alloc(44)
-  header.write('RIFF', 0)
-  header.writeUInt32LE(36 + data.length, 4)
-  header.write('WAVE', 8)
-  header.write('fmt ', 12)
-  header.writeUInt32LE(16, 16)
-  header.writeUInt16LE(3, 20)
-  header.writeUInt16LE(2, 22)
-  header.writeUInt32LE(SR, 24)
-  header.writeUInt32LE(SR * 8, 28)
-  header.writeUInt16LE(8, 32)
-  header.writeUInt16LE(32, 34)
-  header.write('data', 36)
-  header.writeUInt32LE(data.length, 40)
-  writeFileSync(path, Buffer.concat([header, data]))
-}
+// Los WAV intermedios los escribe writeWavChannels (scripts/library-import.mjs), en mono o estéreo.
 
 const buffer = (seconds) => new Float32Array(Math.round(seconds * SR))
 const note = (n) => 440 * 2 ** ((n - 69) / 12)
@@ -735,23 +793,6 @@ function bandNoise(n, r, freqAt, q = 2) {
   return out
 }
 
-/** Sierra de banda limitada (suma de armónicos), para los metales de la fanfarria. */
-function addBrass(buf, start, freq, length, gain) {
-  const s0 = Math.round(start * SR)
-  const len = Math.min(buf.length - s0, Math.round(length * SR))
-  const harmonics = Math.min(24, Math.floor(16000 / freq))
-  for (let i = 0; i < len; i++) {
-    const t = i / SR
-    const vib = 1 + 0.004 * Math.sin(TAU * 5.5 * t) * Math.min(1, t / 0.25)
-    // Ataque con el brillo que se abre (como un metal) y final suave.
-    const env = Math.min(1, t / 0.035) * (t > length - 0.12 ? Math.max(0, (length - t) / 0.12) : 1) * (0.85 + 0.15 * Math.exp(-t * 6))
-    const bright = 0.35 + 0.65 * Math.min(1, t / 0.08)
-    let v = 0
-    for (let h = 1; h <= harmonics; h++) v += (Math.sin(TAU * freq * h * vib * t) / h) * Math.exp(-h * (1.15 - bright * 0.75) * 0.35)
-    buf[s0 + i] += v * env * gain
-  }
-}
-
 /** Pico de varias señales (sin «...», que con cientos de miles de muestras desborda la pila). */
 function peakOf(...signals) {
   let m = 0
@@ -776,9 +817,10 @@ function tailFade(buf, ms = 15) {
 const SOUNDS = [
   {
     id: 'ding',
-    name: 'Campanita (ding)',
-    category: 'avisos',
-    tags: ['campana', 'aviso', 'notificación', 'ding'],
+    name: 'Ding claro de campanita',
+    category: 'campanas',
+    description: 'Una campanita aguda y limpia que se apaga despacio.',
+    tags: ['campana', 'aviso', 'notificación', 'ding', 'campanita', 'claro'],
     synth() {
       const b = buffer(1.8)
       addTone(b, 0.005, note(88), { length: 1.79, gain: 0.5, partials: [[1, 1, 2.6], [2.76, 0.42, 4.5], [5.4, 0.2, 7], [8.93, 0.1, 11]] })
@@ -788,9 +830,10 @@ const SOUNDS = [
   },
   {
     id: 'acierto',
-    name: 'Acierto',
-    category: 'avisos',
-    tags: ['correcto', 'bien', 'premio', 'positivo'],
+    name: 'Acierto de marimba (dos notas)',
+    category: 'aciertos',
+    description: 'Dos notas de marimba que suben, cortas y alegres.',
+    tags: ['correcto', 'bien', 'premio', 'positivo', 'marimba', 'acierto'],
     synth() {
       const b = buffer(0.9)
       const mar = [[1, 1, 7], [4, 0.25, 18], [10, 0.08, 30]]
@@ -802,9 +845,10 @@ const SOUNDS = [
   },
   {
     id: 'error',
-    name: 'Error',
-    category: 'avisos',
-    tags: ['fallo', 'mal', 'incorrecto', 'negativo'],
+    name: 'Error de dos pitidos graves',
+    category: 'fallos',
+    description: 'Dos pitidos electrónicos graves, el segundo más bajo.',
+    tags: ['fallo', 'mal', 'incorrecto', 'negativo', 'pitido', 'error'],
     synth() {
       const b = buffer(0.62)
       const tone = (start, freq, len) => {
@@ -825,9 +869,10 @@ const SOUNDS = [
   },
   {
     id: 'pop',
-    name: 'Pop',
-    category: 'avisos',
-    tags: ['burbuja', 'aparecer', 'corto', 'globo'],
+    name: 'Pop de burbuja',
+    category: 'transiciones',
+    description: 'Un «pop» redondo y blando, como una burbuja que revienta.',
+    tags: ['burbuja', 'aparecer', 'corto', 'globo', 'pop'],
     synth() {
       const b = buffer(0.22)
       const r = rng(7)
@@ -844,9 +889,10 @@ const SOUNDS = [
   },
   {
     id: 'whoosh',
-    name: 'Zas (paso rápido)',
-    category: 'avisos',
-    tags: ['transición', 'aire', 'rápido', 'swoosh'],
+    name: 'Zas que cruza de lado a lado',
+    category: 'transiciones',
+    description: 'Un soplo de aire de casi un segundo que pasa de izquierda a derecha.',
+    tags: ['transición', 'aire', 'rápido', 'swoosh', 'zas', 'whoosh', 'cruzar'],
     stereo: true,
     synth() {
       const len = 0.9
@@ -871,9 +917,10 @@ const SOUNDS = [
   },
   {
     id: 'redoble',
-    name: 'Redoble',
-    category: 'felicitaciones',
-    tags: ['tambor', 'suspense', 'anuncio', 'tachán'],
+    name: 'Redoble largo con platillo final',
+    category: 'redobles',
+    description: 'Un redoble de caja que va creciendo y acaba en golpe de platillo.',
+    tags: ['tambor', 'suspense', 'anuncio', 'tachán', 'platillo', 'redoble', 'largo'],
     synth() {
       const b = buffer(3.6)
       const r = rng(29)
@@ -902,66 +949,11 @@ const SOUNDS = [
     },
   },
   {
-    id: 'fanfarria',
-    name: 'Fanfarria de felicitación',
-    category: 'felicitaciones',
-    tags: ['trompeta', 'victoria', 'enhorabuena', 'premio'],
-    synth() {
-      const b = buffer(2.6)
-      // Sol-Sol-Sol (tresillo) – Do – Mi – Sol, y acorde de Do mantenido.
-      const seq = [[0, 67, 0.12], [0.14, 67, 0.12], [0.28, 67, 0.12], [0.42, 72, 0.3], [0.74, 76, 0.18], [0.94, 79, 0.2]]
-      for (const [at, n, len] of seq) addBrass(b, at, note(n), len, 0.32)
-      for (const n of [72, 76, 79, 84]) addBrass(b, 1.16, note(n), 1.3, 0.2)
-      addBrass(b, 1.16, note(60), 1.3, 0.16)
-      return normalize(tailFade(b, 80))
-    },
-    reverb: true,
-  },
-  {
-    id: 'aplausos',
-    name: 'Aplausos',
-    category: 'aplausos-y-risas',
-    tags: ['público', 'bravo', 'final', 'aplauso'],
-    stereo: true,
-    synth() {
-      const len = 4.5
-      const n = Math.round(len * SR)
-      const L = new Float32Array(n)
-      const R = new Float32Array(n)
-      const r = rng(71)
-      // Unas 40 personas aplaudiendo, cada una a su ritmo, con palmadas de distinto timbre.
-      for (let p = 0; p < 40; p++) {
-        const rate = 3.2 + r() * 2.2
-        const pan = r()
-        const tone = 900 + r() * 1700
-        const loud = 0.5 + r() * 0.5
-        let t = r() * 0.4
-        while (t < len) {
-          const crowd = Math.min(1, t / 0.35) * (t > len - 1.6 ? Math.max(0, (len - t) / 1.6) : 1)
-          const s0 = Math.round(t * SR)
-          const clap = bandNoise(Math.round(0.03 * SR), r, () => tone, 1.4)
-          for (let i = 0; i < clap.length && s0 + i < n; i++) {
-            const env = Math.exp(-(i / SR) * 160) * loud * crowd
-            L[s0 + i] += clap[i] * env * Math.cos((pan * Math.PI) / 2)
-            R[s0 + i] += clap[i] * env * Math.sin((pan * Math.PI) / 2)
-          }
-          t += (1 / rate) * (0.88 + r() * 0.24)
-        }
-      }
-      const m = peakOf(L, R)
-      for (let i = 0; i < n; i++) {
-        L[i] *= 1.6 / m
-        R[i] *= 1.6 / m
-      }
-      return [L, R]
-    },
-    reverb: true,
-  },
-  {
     id: 'tic-tac',
-    name: 'Tic tac',
-    category: 'avisos',
-    tags: ['reloj', 'tiempo', 'espera', 'cuenta atrás'],
+    name: 'Tic tac de reloj',
+    category: 'redobles',
+    description: 'Un reloj que hace tic tac; se repite sin salto todo lo que haga falta.',
+    tags: ['reloj', 'tiempo', 'espera', 'cuenta atrás', 'tic tac', 'nervios'],
     repeat: true,
     synth() {
       // Dos segundos que repiten sin salto: tic (agudo) y tac (más grave) cada medio segundo.
@@ -983,10 +975,20 @@ const SOUNDS = [
 
 // ------------------------------------------------------------------------------------------------ catálogo
 
+// Categorías en el orden en que se enseñan. Las de sonidos, de lo más usado a lo menos.
 const CATEGORIES = [
-  { id: 'felicitaciones', kind: 'sound', name: 'Felicitaciones', icon: 'star' },
-  { id: 'aplausos-y-risas', kind: 'sound', name: 'Aplausos y risas', icon: 'clap' },
-  { id: 'avisos', kind: 'sound', name: 'Avisos', icon: 'bell' },
+  { id: 'aplausos-y-vitores', kind: 'sound', name: 'Aplausos y vítores', icon: 'clap' },
+  { id: 'risas', kind: 'sound', name: 'Risas', icon: 'laugh' },
+  { id: 'felicitaciones', kind: 'sound', name: 'Felicitaciones y fanfarrias', icon: 'star' },
+  { id: 'aciertos', kind: 'sound', name: 'Aciertos', icon: 'check' },
+  { id: 'fallos', kind: 'sound', name: 'Fallos y errores', icon: 'cross' },
+  { id: 'campanas', kind: 'sound', name: 'Campanas y avisos', icon: 'bell' },
+  { id: 'redobles', kind: 'sound', name: 'Redobles y suspense', icon: 'drum' },
+  { id: 'transiciones', kind: 'sound', name: 'Transiciones (zas, pop)', icon: 'whoosh' },
+  { id: 'fuegos-y-fiesta', kind: 'sound', name: 'Fuegos artificiales y fiesta', icon: 'party' },
+  { id: 'voces', kind: 'sound', name: 'Voces en inglés', icon: 'voice' },
+  { id: 'cuenta-atras', kind: 'sound', name: 'Cuenta atrás', icon: 'countdown' },
+  { id: 'objetos', kind: 'sound', name: 'Clics y objetos', icon: 'objects' },
   { id: 'musica', kind: 'sound', name: 'Música', icon: 'music' },
   { id: 'fiesta', kind: 'effect', name: 'Fiesta', icon: 'party' },
   { id: 'fuego-y-chispas', kind: 'effect', name: 'Fuego y chispas', icon: 'fire' },
@@ -1008,6 +1010,8 @@ function probeDurationMs(path) {
 const old = existsSync(CATALOG) ? JSON.parse(readFileSync(CATALOG, 'utf8')) : null
 const keep = new Map((old?.assets ?? []).map((a) => [a.id, a]))
 const assets = []
+const selection = readSelection(ROOT)
+const report = []
 
 function baseEntry(def, kind) {
   return {
@@ -1015,6 +1019,7 @@ function baseEntry(def, kind) {
     kind,
     name: def.name,
     category: def.category,
+    ...(def.description ? { description: def.description } : {}),
     tags: def.tags,
     license: 'own',
     author: AUTHOR,
@@ -1022,6 +1027,14 @@ function baseEntry(def, kind) {
     attribution: null,
   }
 }
+
+/** Lo propio que no se rehace se queda con su fichero, pero con el nombre, la categoría y las etiquetas de ahora. */
+function kept(def, kind) {
+  const k = keep.get(def.id)
+  return k ? { ...k, ...baseEntry(def, kind) } : null
+}
+
+const skipOwn = (id) => opts['import-only'] || (only.size > 0 && !only.has(id))
 
 async function review(path, id, alpha) {
   if (!opts.review) return
@@ -1031,15 +1044,31 @@ async function review(path, id, alpha) {
   await ffmpeg([...dec, '-i', path, '-vf', `fps=8/${Math.max(0.5, probeDurationMs(path) / 1000)},scale=480:-2,tile=4x2:padding=4:color=gray`, '-frames:v', '1', tile])
 }
 
+async function reviewSound(out, id) {
+  if (!opts.review) return
+  await ffmpeg(['-i', out, '-lavfi', 'showspectrumpic=s=800x300:legend=1:scale=log', join(REVIEW, `${id}-espectro.png`)])
+  await ffmpeg(['-i', out, '-lavfi', 'showwavespic=s=800x200:split_channels=1', '-frames:v', '1', join(REVIEW, `${id}-onda.png`)])
+}
+
+const particles = loadParticleSprites(ROOT)
+
 for (const def of EFFECTS) {
-  if (only.size && !only.has(def.id)) {
-    if (keep.has(def.id)) assets.push(keep.get(def.id))
+  if (def.needsParticles && !particles) {
+    // Sin los sprites del Particle Pack (library/sources/kenney/particle-pack) no se puede rehacer.
+    const k = kept(def, 'effect')
+    if (k) assets.push(k)
+    else console.warn(`efecto ${def.id}: faltan los sprites del Particle Pack; no se genera`)
+    continue
+  }
+  if (skipOwn(def.id)) {
+    const k = kept(def, 'effect')
+    if (k) assets.push(k)
     continue
   }
   const t0 = Date.now()
   const ext = def.alpha ? 'webm' : 'mp4'
   const out = join(DIST, `${def.id}.${ext}`)
-  await renderVideo({ out, seconds: def.seconds, draw: def.draw, alpha: def.alpha, scale: def.scale ?? 1, bloom: def.bloom ?? 0 })
+  await renderVideo({ out, seconds: def.seconds, draw: def.needsParticles ? def.draw(particles) : def.draw, alpha: def.alpha, scale: def.scale ?? 1, bloom: def.bloom ?? 0 })
   const preview = join(DIST, `${def.id}.preview.${ext}`)
   await makePreview(out, preview, def.alpha)
   await review(out, def.id, def.alpha)
@@ -1054,13 +1083,15 @@ for (const def of EFFECTS) {
     ...fileEntry(out),
     preview: fileEntry(preview),
     defaults: def.defaults,
+    ...(def.thanks ? { thanks: def.thanks } : {}),
   })
   console.log(`efecto ${def.id}: ${((Date.now() - t0) / 1000).toFixed(1)} s, ${(statSync(out).size / 1e6).toFixed(2)} MB`)
 }
 
 for (const def of STILLS) {
-  if (only.size && !only.has(def.id)) {
-    if (keep.has(def.id)) assets.push(keep.get(def.id))
+  if (skipOwn(def.id)) {
+    const k = kept(def, 'effect')
+    if (k) assets.push(k)
     continue
   }
   const buf = Buffer.alloc(W * H * 4)
@@ -1089,43 +1120,131 @@ for (const def of STILLS) {
 }
 
 for (const def of SOUNDS) {
-  if (only.size && !only.has(def.id)) {
-    if (keep.has(def.id)) assets.push(keep.get(def.id))
+  if (skipOwn(def.id)) {
+    const k = kept(def, 'sound')
+    if (k) assets.push(k)
     continue
   }
   const made = def.synth()
-  const [L, R] = Array.isArray(made) ? made : [made, made]
+  const stereo = Array.isArray(made)
   const wav = join(DIST, `${def.id}.wav`)
-  writeWav(wav, L, R)
-  const out = join(DIST, `${def.id}.m4a`)
-  // Un poco de sala a los que lo piden (eco corto y suave).
-  const af = def.reverb ? ['-af', 'aecho=0.8:0.6:37|61|89:0.22|0.16|0.1,alimiter=limit=0.95:level=0'] : []
-  await ffmpeg(['-i', wav, ...af, '-c:a', 'aac', '-b:a', '192k', '-ar', String(SR), '-ac', '2', '-movflags', '+faststart', out])
-  if (opts.review) {
-    await ffmpeg(['-i', out, '-lavfi', 'showspectrumpic=s=800x300:legend=1:scale=log', join(REVIEW, `${def.id}-espectro.png`)])
-    await ffmpeg(['-i', out, '-lavfi', 'showwavespic=s=800x200:split_channels=1', '-frames:v', '1', join(REVIEW, `${def.id}-onda.png`)])
+  writeWavChannels(wav, stereo ? made : [made])
+  let src = wav
+  if (def.reverb) {
+    // Un poco de sala a los que lo piden (eco corto y suave).
+    src = join(DIST, `${def.id}.reverb.wav`)
+    await ffmpeg(['-i', wav, '-af', 'aecho=0.8:0.6:37|61|89:0.22|0.16|0.1', '-c:a', 'pcm_f32le', src])
   }
+  const out = join(DIST, `${def.id}.m4a`)
+  // El mismo nivelado que la tanda de terceros, para que todo suene parecido de fuerte.
+  const m = await levelAndEncode(src, out, selection.level)
+  await reviewSound(out, def.id)
   rmSync(wav)
+  if (src !== wav) rmSync(src)
   assets.push({
     ...baseEntry(def, 'sound'),
     durationMs: probeDurationMs(out),
     format: 'm4a',
     hasAudio: true,
+    channels: stereo ? 2 : 1,
     ...fileEntry(out),
     defaults: def.repeat ? { repeat: true, durationMs: 8000, volume: 1 } : { volume: 1 },
   })
-  console.log(`sonido ${def.id}: ${probeDurationMs(out)} ms`)
+  report.push({ id: def.id, name: def.name, source: 'propio', ...m, durationMs: probeDurationMs(out) })
+  console.log(`sonido ${def.id}: ${probeDurationMs(out)} ms, ${m.lufs ?? '—'} LUFS, ${m.tp} dBTP`)
 }
 
-const order = [...EFFECTS, ...STILLS, ...SOUNDS].map((d) => d.id)
-assets.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id))
-const catalog = {
+// ------------------------------------------------------------------------------------------------ terceros
+
+const thirdParty = expandSelection(selection)
+const thirdIds = new Set()
+for (const e of thirdParty) {
+  if (e.own) continue
+  if (thirdIds.has(e.id)) throw new Error(`id repetido en third-party.json: ${e.id}`)
+  thirdIds.add(e.id)
+  if (only.size && !only.has(e.id)) {
+    if (keep.has(e.id)) assets.push(keep.get(e.id))
+    continue
+  }
+  const { entry, measured } = await importAsset(ROOT, DIST, selection, e, fileEntry)
+  await reviewSound(join(DIST, entry.file), entry.id)
+  assets.push(entry)
+  report.push({ id: e.id, name: e.name, source: entry.sourceUrl, author: entry.author, ...measured, durationMs: entry.durationMs })
+  console.log(`importado ${e.id}: ${entry.durationMs} ms, ${entry.channels} canal(es), ${measured.lufs ?? '—'} LUFS, ${measured.tp} dBTP${measured.limited ? ' (limitado)' : ''}${measured.byPeak ? ' (por pico)' : ''}`)
+}
+
+// ------------------------------------------------------------------------------------------------ orden y salida
+
+// Efectos en el orden del script; sonidos por categoría y, dentro, en el orden de third-party.json (los propios
+// donde los coloca su marca `own`; si no tienen, al final de su categoría).
+const effectOrder = [...EFFECTS, ...STILLS].map((d) => d.id)
+const soundOrder = thirdParty.map((e) => e.own ?? e.id)
+const catIndex = new Map(CATEGORIES.map((c, i) => [c.id, i]))
+const rank = (a) => (a.kind === 'effect' ? effectOrder.indexOf(a.id) : soundOrder.includes(a.id) ? soundOrder.indexOf(a.id) : 10_000)
+assets.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'effect' ? -1 : 1) || (a.kind === 'sound' ? catIndex.get(a.category) - catIndex.get(b.category) : 0) || rank(a) - rank(b))
+
+const withoutRevision = (c) => JSON.stringify({ ...c, revision: 0 })
+const draft = {
   schema: 1,
-  revision: (old?.revision ?? 0) + (only.size ? 0 : 1) || 1,
+  revision: old?.revision ?? 1,
   baseUrl: 'https://github.com/Krahegwen/easy-cut/releases/download/library-v1/',
   ownLicense: 'CC0-1.0',
   categories: CATEGORIES,
   assets,
 }
-writeFileSync(CATALOG, `${JSON.stringify(catalog, null, 2)}\n`)
-console.log(`Catálogo: ${assets.length} elementos en ${CATALOG}`)
+// La revisión sube solo si algo ha cambiado (así las apps instaladas cogen el catálogo nuevo de la release).
+const catalog = old && withoutRevision(old) === withoutRevision(draft) ? draft : { ...draft, revision: (old?.revision ?? 0) + 1 }
+const catalogText = `${JSON.stringify(catalog, null, 2)}\n`
+writeFileSync(CATALOG, catalogText)
+writeFileSync(join(DIST, 'catalog.json'), catalogText)
+writeFileSync(join(DIST, 'CREDITS.md'), creditsMarkdown(catalog))
+
+// Lo que ya no está en el catálogo sobra en dist/ (no se sube).
+if (!only.size) {
+  const wanted = new Set(['catalog.json', 'CREDITS.md', ...assets.flatMap((a) => [a.file, ...(a.preview ? [a.preview.file] : [])])])
+  for (const f of readdirSync(DIST, { withFileTypes: true })) {
+    if (f.isFile() && !wanted.has(f.name)) {
+      rmSync(join(DIST, f.name))
+      console.log(`quitado de dist/: ${f.name}`)
+    }
+  }
+}
+if (report.length) {
+  mkdirSync(REVIEW, { recursive: true })
+  writeFileSync(join(REVIEW, 'sound-levels.json'), `${JSON.stringify(report, null, 1)}\n`)
+}
+console.log(`Catálogo: ${assets.length} elementos (revisión ${catalog.revision}) en ${CATALOG}`)
+
+/** Créditos de la biblioteca para subirlos con los ficheros (library/dist/CREDITS.md). */
+function creditsMarkdown(c) {
+  const lines = [
+    '# Créditos de la biblioteca de Easy Cut',
+    '',
+    'Todo lo que hay en esta biblioteca se puede usar libremente en tus vídeos, también comerciales, sin nombrar a nadie.',
+    '',
+    `## Hecho por el proyecto Easy Cut (${c.assets.filter((a) => a.license === 'own').length} elementos)`,
+    '',
+    `Generado con \`scripts/build-library.mjs\` y publicado bajo ${c.ownLicense} (dominio público).`,
+    '',
+  ]
+  const needs = c.assets.filter((a) => a.attribution)
+  if (needs.length) {
+    lines.push('## Piden que se nombre a su autor', '')
+    for (const a of needs) lines.push(`- **${a.name}**: ${a.attribution}`)
+    lines.push('')
+  }
+  const thanks = c.assets.filter((a) => !a.attribution && a.thanks)
+  if (thanks.length) {
+    lines.push(`## De otras personas, en dominio público (CC0 1.0) — gracias (${thanks.length} elementos)`, '')
+    lines.push('No hace falta nombrarlas, pero aquí queda de dónde sale cada cosa:', '')
+    for (const cat of c.categories) {
+      const inCat = thanks.filter((a) => a.category === cat.id)
+      if (!inCat.length) continue
+      lines.push(`### ${cat.name}`, '')
+      for (const a of inCat) lines.push(`- **${a.name}**: ${a.thanks}`)
+      lines.push('')
+    }
+  }
+  return `${lines.join('\n').trimEnd()}\n`
+}
+

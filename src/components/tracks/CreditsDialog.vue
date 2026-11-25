@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // «Créditos de la biblioteca»: quién ha hecho cada cosa que pide que se le nombre, y la nota de lo propio.
 import { computed, ref } from 'vue'
-import { creditsText, libraryCredits } from '../../domain'
+import { creditsText, libraryCredits, libraryThanks } from '../../domain'
 import { copyText } from '../../lib/clipboard'
 import { LAYER_PRIORITY } from '../../lib/shortcuts'
 import { useShortcuts } from '../../lib/use-shortcuts'
@@ -12,6 +12,8 @@ import KeyHint from '../KeyHint.vue'
 const emit = defineEmits<{ close: [] }>()
 const credits = computed(() => libraryCredits(library.catalog.value))
 const own = computed(() => library.catalog.value.assets.filter((a) => a.license === 'own').length)
+/** Lo de otras personas en dominio público: no hace falta nombrarlas, pero se les agradece aquí. */
+const thanks = computed(() => libraryThanks(library.catalog.value))
 const copied = ref(false)
 
 async function copy() {
@@ -42,6 +44,16 @@ useShortcuts({
         </ul>
       </template>
       <p v-else class="muted">Por ahora no hay nada de otras personas que pida que se las nombre.</p>
+      <template v-if="thanks.length">
+        <h3>Gracias a</h3>
+        <p>
+          Estos {{ thanks.length }} los han hecho otras personas y los han regalado al dominio público (CC0): se pueden usar
+          sin nombrar a nadie, pero aquí queda de dónde sale cada uno.
+        </p>
+        <ul class="list thanks" data-testid="credits-thanks">
+          <li v-for="c in thanks" :key="c.assetId"><strong>{{ c.name }}</strong>: {{ c.text }}</li>
+        </ul>
+      </template>
       <div class="actions">
         <button v-if="credits.length" class="btn" type="button" @click="copy">
           <AppIcon :name="copied ? 'check' : 'copy'" />
@@ -80,6 +92,14 @@ useShortcuts({
 }
 h2 {
   font-size: 22px;
+}
+h3 {
+  font-size: 18px;
+  margin-top: 6px;
+}
+.thanks {
+  font-size: 14px;
+  overflow-wrap: anywhere;
 }
 .list {
   margin: 0;

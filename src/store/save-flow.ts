@@ -3,6 +3,7 @@
 import { ref, shallowRef } from 'vue'
 import {
   computeOutputSpec,
+  librarySaveMessage,
   normalizedExportFactor,
   type ProgressUpdate,
   type SaveTarget,
@@ -79,7 +80,7 @@ export function createSaveFlow(store: EditorStore, library: LibraryStore | null 
       } catch (e) {
         running.value = false
         store.go('save')
-        store.showError('Falta por descargar algo de la biblioteca y ahora no se puede. Mira si hay conexión a internet y vuelve a probar.', e)
+        store.showError(librarySaveMessage(e), e)
         return
       }
     }

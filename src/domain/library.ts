@@ -14,8 +14,26 @@ export type LibraryLicense = (typeof LIBRARY_LICENSES)[number]
 /** Hosts desde los que se descarga (las releases de GitHub redirigen a sus servidores de ficheros). */
 export const LIBRARY_HOSTS = ['github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com'] as const
 
-/** Iconos de las categorías (nombres de AppIcon). */
-export type LibraryIcon = 'party' | 'clap' | 'bell' | 'music' | 'fire' | 'light' | 'snow' | 'heart' | 'star' | 'frame' | 'whoosh'
+/** Iconos de las categorías (la interfaz los traduce a los de AppIcon). */
+export type LibraryIcon =
+  | 'party'
+  | 'clap'
+  | 'bell'
+  | 'music'
+  | 'fire'
+  | 'light'
+  | 'snow'
+  | 'heart'
+  | 'star'
+  | 'frame'
+  | 'whoosh'
+  | 'laugh'
+  | 'check'
+  | 'cross'
+  | 'drum'
+  | 'voice'
+  | 'countdown'
+  | 'objects'
 
 export interface LibraryCategory {
   id: string
@@ -33,9 +51,11 @@ export interface LibraryFile {
 export interface LibraryAsset extends LibraryFile {
   id: string
   kind: TrackKind
-  /** Nombre en castellano. */
+  /** Nombre en castellano: qué es y en qué se diferencia de los parecidos (único en el catálogo). */
   name: string
   category: string
+  /** Una línea que lo describe (se enseña en la tarjeta y cuenta para el buscador). */
+  description?: string
   tags: string[]
   /** 0 en una imagen fija. */
   durationMs: number
@@ -43,6 +63,8 @@ export interface LibraryAsset extends LibraryFile {
   width?: number
   height?: number
   hasAudio: boolean
+  /** Canales del sonido (1 = mono); si no lo dice, 2. */
+  channels?: 1 | 2
   hasAlpha?: boolean
   still?: boolean
   /** Vista previa pequeña (efectos): un vídeo corto y ligero que se repite en la tarjeta. */
@@ -53,6 +75,13 @@ export interface LibraryAsset extends LibraryFile {
   sourceUrl: string
   /** Texto exacto de créditos si la licencia lo pide (CC BY); null si no. */
   attribution: string | null
+  /**
+   * Agradecimiento a quien lo hizo («"título" por autor — url — CC0 1.0»), para «Créditos de la biblioteca».
+   * Obligatorio en lo que no es propio; no sale en los créditos del vídeo (eso es solo `attribution`).
+   */
+  thanks?: string
+  /** Día en que se comprobaron la licencia y la fuente (AAAA-MM-DD). Obligatorio en lo que no es propio. */
+  verifiedOn?: string
 }
 
 export interface LibraryCatalog {
@@ -72,7 +101,10 @@ const SHA256 = /^[0-9a-f]{64}$/
 export const SAFE_FILE_NAME = /^[a-z0-9][a-z0-9._-]{0,90}$/
 const SAFE_ID = /^[a-z0-9][a-z0-9-]{0,60}$/
 const FORMATS = ['m4a', 'mp4', 'webm', 'png'] as const
-const ICONS: readonly LibraryIcon[] = ['party', 'clap', 'bell', 'music', 'fire', 'light', 'snow', 'heart', 'star', 'frame', 'whoosh']
+const ICONS: readonly LibraryIcon[] = ['party', 'clap', 'bell', 'music', 'fire', 'light', 'snow', 'heart', 'star', 'frame', 'whoosh', 'laugh', 'check', 'cross', 'drum', 'voice', 'countdown', 'objects']
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/
+/** Largo máximo de la descripción de una línea. */
+export const MAX_DESCRIPTION_LENGTH = 120
 /** Tamaño máximo de un fichero de la biblioteca (para no descargar algo absurdo). */
 export const MAX_LIBRARY_FILE_BYTES = 200 * 1024 * 1024
 
@@ -187,8 +219,69 @@ export function validateCatalog(raw: unknown): { catalog: LibraryCatalog | null;
     const needs = typeof a.license === 'string' && a.license.startsWith('CC-BY')
     if (needs && (typeof a.attribution !== 'string' || a.attribution.trim() === '')) errors.push(`${w}: su licencia pide atribución y no la tiene`)
     if (!needs && a.attribution !== null) errors.push(`${w}: attribution tiene que ser null si la licencia no la pide`)
+    if (a.description !== undefined && (typeof a.description !== 'string' || a.description.trim() === '' || /[\r\n]/.test(a.description) || a.description.length > MAX_DESCRIPTION_LENGTH)) {
+      errors.push(`${w}: la descripción tiene que ser una línea de hasta ${MAX_DESCRIPTION_LENGTH} caracteres`)
+    }
+    if (a.channels !== undefined && (a.kind !== 'sound' || (a.channels !== 1 && a.channels !== 2))) errors.push(`${w}: channels tiene que ser 1 o 2 (solo en sonidos)`)
+    if (a.thanks !== undefined && (typeof a.thanks !== 'string' || a.thanks.trim() === '')) errors.push(`${w}: thanks vacío`)
+    if (a.license !== 'own') {
+      // Lo de terceros dice cuándo se comprobó su licencia; lo que no pide atribución, a quién se agradece.
+      if (typeof a.verifiedOn !== 'string' || !ISO_DAY.test(a.verifiedOn)) errors.push(`${w}: falta verifiedOn (AAAA-MM-DD)`)
+      if (!needs && (typeof a.thanks !== 'string' || a.thanks.trim() === '')) errors.push(`${w}: falta el agradecimiento (thanks)`)
+    }
   }
+  for (const clash of findNameClashes(assets.filter(isObject).map((a) => ({ id: String(a.id), name: String(a.name) })))) errors.push(clash)
   return { catalog: errors.length === 0 ? (raw as unknown as LibraryCatalog) : null, errors }
+}
+
+// ---------------------------------------------------------------------------
+// Nombres
+
+/** Nombre reducido para comparar: sin tildes, mayúsculas, comillas ni signos. */
+function nameKey(name: string): string {
+  return foldText(name)
+    .replace(/[^a-z0-9ñ]+/g, ' ')
+    .trim()
+}
+
+/** Distancia de edición (Levenshtein) entre dos textos cortos. */
+function editDistance(a: string, b: string): number {
+  if (Math.abs(a.length - b.length) > 2) return 3
+  const prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0]!
+    prev[0] = i
+    for (let j = 1; j <= b.length; j++) {
+      const up = prev[j]!
+      prev[j] = Math.min(up + 1, prev[j - 1]! + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1))
+      diag = up
+    }
+  }
+  return prev[b.length]!
+}
+
+/**
+ * Problemas de nombres: dos elementos que se llaman igual o casi igual (sin contar tildes, mayúsculas ni signos,
+ * o a una o dos letras de distancia) y nombres con número de serie al final («Aplausos 2»).
+ */
+export function findNameClashes(assets: readonly { id: string; name: string }[]): string[] {
+  const out: string[] = []
+  const keys = assets.map((a) => ({ ...a, key: nameKey(a.name) }))
+  for (const a of keys) {
+    if (/\s(n[ºo°.]?\s*)?\d+$/i.test(a.name.trim())) out.push(`elemento ${a.id}: el nombre acaba en un número de serie («${a.name}»)`)
+  }
+  for (let i = 0; i < keys.length; i++) {
+    for (let j = i + 1; j < keys.length; j++) {
+      const a = keys[i]!
+      const b = keys[j]!
+      const same = a.key === b.key
+      const near = !same && Math.min(a.key.length, b.key.length) >= 8 && editDistance(a.key, b.key) <= 2
+      // Igual salvo el número del final («Zas 1» / «Zas 2»).
+      const numbered = !same && a.key.replace(/\s?\d+$/, '') === b.key.replace(/\s?\d+$/, '') && /\d$/.test(a.key + b.key)
+      if (same || near || numbered) out.push(`elementos ${a.id} y ${b.id}: nombres iguales o casi iguales («${a.name}» / «${b.name}»)`)
+    }
+  }
+  return out
 }
 
 /** El catálogo que vale: el descargado si es válido y más nuevo que el empaquetado; si no, el empaquetado. */
@@ -210,17 +303,29 @@ export function foldText(s: string): string {
     .trim()
 }
 
-/** Elementos de un tipo, de una categoría (o todas) que casan con lo buscado (nombre, categoría o etiquetas). */
-export function searchLibrary(catalog: LibraryCatalog, kind: TrackKind, query: string, categoryId: string | null = null): LibraryAsset[] {
+/** ¿Casa un elemento con lo buscado? Cada palabra tiene que estar en el nombre, la descripción, la categoría o las etiquetas. */
+function matcher(catalog: LibraryCatalog, query: string): (a: LibraryAsset) => boolean {
   const words = foldText(query).split(/\s+/).filter(Boolean)
+  if (words.length === 0) return () => true
   const categoryName = new Map(catalog.categories.map((c) => [c.id, c.name]))
-  return catalog.assets.filter((a) => {
-    if (a.kind !== kind) return false
-    if (categoryId && a.category !== categoryId) return false
-    if (words.length === 0) return true
-    const hay = foldText([a.name, categoryName.get(a.category) ?? '', ...a.tags].join(' '))
+  return (a) => {
+    const hay = foldText([a.name, a.description ?? '', categoryName.get(a.category) ?? '', ...a.tags].join(' '))
     return words.every((w) => hay.includes(w))
-  })
+  }
+}
+
+/** Elementos de un tipo, de una categoría (o todas) que casan con lo buscado, en el orden del catálogo. */
+export function searchLibrary(catalog: LibraryCatalog, kind: TrackKind, query: string, categoryId: string | null = null): LibraryAsset[] {
+  const match = matcher(catalog, query)
+  return catalog.assets.filter((a) => a.kind === kind && (!categoryId || a.category === categoryId) && match(a))
+}
+
+/** Cuántos elementos de cada categoría (de un tipo) casan con lo buscado; para el contador de cada categoría. */
+export function countByCategory(catalog: LibraryCatalog, kind: TrackKind, query: string): Record<string, number> {
+  const match = matcher(catalog, query)
+  const out: Record<string, number> = {}
+  for (const a of catalog.assets) if (a.kind === kind && match(a)) out[a.category] = (out[a.category] ?? 0) + 1
+  return out
 }
 
 export function findAsset(catalog: LibraryCatalog, assetId: string): LibraryAsset | null {
@@ -263,12 +368,64 @@ export function projectCredits(project: Project, catalog: LibraryCatalog): Credi
   return creditsOf(catalog, used)
 }
 
-/** Todos los créditos de la biblioteca (pantalla «Créditos de la biblioteca»). */
+/** Todos los créditos de la biblioteca que piden atribución (pantalla «Créditos de la biblioteca»). */
 export function libraryCredits(catalog: LibraryCatalog): Credit[] {
   return creditsOf(
     catalog,
     catalog.assets.map((a) => a.id),
   )
+}
+
+/**
+ * Agradecimientos de lo que no pide atribución (CC0 de terceros y lo propio hecho con material de terceros),
+ * en el orden del catálogo: solo para «Créditos de la biblioteca», nunca para los créditos de un vídeo.
+ */
+export function libraryThanks(catalog: LibraryCatalog): Credit[] {
+  return catalog.assets.filter((a) => !requiresAttribution(a) && a.thanks).map((a) => ({ assetId: a.id, name: a.name, text: a.thanks! }))
+}
+
+// ---------------------------------------------------------------------------
+// Errores al traer un fichero
+
+/**
+ * Qué ha fallado al traer un fichero de la biblioteca. Rust (`library_fetch`) empieza sus mensajes con una
+ * marca: «offline:» (no hay conexión o el servidor no responde), «missing:» (ese fichero no está publicado: 404
+ * y parecidos) o «mismatch:» (lo descargado no es lo que dice el catálogo: tamaño o SHA-256).
+ */
+export type LibraryFetchFailure = 'offline' | 'missing' | 'mismatch' | 'other'
+
+export function libraryFetchFailure(error: unknown): LibraryFetchFailure {
+  const text = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  const m = /^(offline|missing|mismatch):/.exec(text.trim())
+  return m ? (m[1] as LibraryFetchFailure) : 'other'
+}
+
+/** Mensaje llano para la persona, según lo que haya fallado. */
+export function libraryFetchMessage(assetName: string, error: unknown): string {
+  switch (libraryFetchFailure(error)) {
+    case 'offline':
+      return `No se ha podido traer «${assetName}»: parece que no hay conexión a internet. Mira la conexión y vuelve a probar.`
+    case 'missing':
+      return `«${assetName}» todavía no está disponible para descargar. Prueba con otro sonido o efecto, o vuelve a intentarlo más adelante.`
+    case 'mismatch':
+      return `«${assetName}» se ha descargado mal (el fichero no es el que tenía que ser). Vuelve a probar dentro de un rato.`
+    default:
+      return `No se ha podido traer «${assetName}» de la biblioteca. Vuelve a probar dentro de un rato.`
+  }
+}
+
+/** Mensaje para cuando, al guardar, falta algo de la biblioteca que no se ha podido traer. */
+export function librarySaveMessage(error: unknown): string {
+  switch (libraryFetchFailure(error)) {
+    case 'offline':
+      return 'Falta por descargar algo de la biblioteca y ahora no hay conexión a internet. Mira la conexión y vuelve a probar.'
+    case 'missing':
+      return 'El vídeo usa algo de la biblioteca que todavía no está disponible para descargar. Quítalo o cámbialo por otro y vuelve a guardar.'
+    case 'mismatch':
+      return 'Algo de la biblioteca se ha descargado mal. Vuelve a probar dentro de un rato.'
+    default:
+      return 'Falta por descargar algo de la biblioteca y ahora no se puede. Vuelve a probar dentro de un rato.'
+  }
 }
 
 /** Texto para pegar en la descripción del vídeo. */

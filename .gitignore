@@ -14,6 +14,8 @@ coverage/
 
 # Ficheros de la biblioteca (se publican en la release library-v1; el catálogo sí va en el repo)
 library/dist/
+# Originales de terceros (Freesound, Kenney) de los que sale la tanda importada; no se versionan
+library/sources/
 
 # Tauri
 src-tauri/target/

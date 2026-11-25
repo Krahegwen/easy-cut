@@ -7,6 +7,7 @@ import {
   assetDefaults,
   baseName,
   createItem,
+  libraryFetchMessage,
   defaultIdFactory,
   displayName,
   duplicateItem,
@@ -112,7 +113,7 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
       await library.ensureAsset(asset)
     } catch (e) {
       adding.value = null
-      editor.showError(`No se ha podido traer «${asset.name}» de la biblioteca. Mira si hay conexión a internet y vuelve a probar.`, e)
+      editor.showError(libraryFetchMessage(asset.name, e), e)
       return null
     }
     adding.value = null

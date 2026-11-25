@@ -48,7 +48,7 @@ export function mediaFromAsset(asset: LibraryAsset, path: string): MediaInfo {
     colorSpace: null,
     audioCodec: asset.hasAudio ? 'aac' : null,
     audioSampleRate: asset.hasAudio ? 48_000 : null,
-    audioChannels: asset.hasAudio ? 2 : null,
+    audioChannels: asset.hasAudio ? asset.channels ?? 2 : null,
     sizeBytes: asset.bytes,
     ...(asset.still ? { isStill: true } : {}),
     ...(asset.hasAlpha ? { hasAlpha: true } : {}),

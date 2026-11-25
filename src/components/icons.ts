@@ -85,3 +85,5 @@ export type IconName =
   | 'whoosh'
   | 'up'
   | 'down'
+  | 'laugh'
+  | 'drum'

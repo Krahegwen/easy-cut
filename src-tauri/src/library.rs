@@ -177,6 +177,42 @@ fn client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Clase de fallo al traer un fichero: va como marca al principio del mensaje («offline: …») para que la
+/// interfaz diga algo distinto en cada caso (src/domain/library.ts, `libraryFetchFailure`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// Sin conexión, o el servidor no responde bien (5xx).
+    Offline,
+    /// El fichero no está publicado (404 y demás 4xx).
+    Missing,
+    /// Lo descargado no es lo que dice el catálogo (tamaño o SHA-256).
+    Mismatch,
+}
+
+impl FailureKind {
+    pub fn tag(self) -> &'static str {
+        match self {
+            FailureKind::Offline => "offline",
+            FailureKind::Missing => "missing",
+            FailureKind::Mismatch => "mismatch",
+        }
+    }
+}
+
+/// Mensaje con su marca: «missing: Este elemento…».
+pub fn tagged(kind: FailureKind, msg: &str) -> String {
+    format!("{}: {msg}", kind.tag())
+}
+
+/// Qué hacer con un código HTTP: nada (2xx), no reintentar (4xx: no está) o reintentar (lo demás).
+pub fn status_failure(status: u16) -> Option<FailureKind> {
+    match status {
+        200..=299 => None,
+        400..=499 => Some(FailureKind::Missing),
+        _ => Some(FailureKind::Offline),
+    }
+}
+
 enum Failure {
     /// Merece otro intento (red, servidor ocupado, fichero que no cuadra).
     Retry(String),
@@ -193,16 +229,15 @@ async fn download_once(
     on_progress: &Channel<FetchProgress>,
 ) -> Result<(), Failure> {
     let client = client().map_err(Failure::Fatal)?;
-    let mut response = client.get(url.clone()).send().await.map_err(|e| Failure::Retry(format!("No hay conexión con el servidor de la biblioteca ({e}).")))?;
+    let mut response = client.get(url.clone()).send().await.map_err(|e| Failure::Retry(tagged(FailureKind::Offline, &format!("No hay conexión con el servidor de la biblioteca ({e})."))))?;
     let status = response.status();
-    if status.is_client_error() {
-        return Err(Failure::Fatal(format!("Este elemento de la biblioteca no está disponible ({status}).")));
-    }
-    if !status.is_success() {
-        return Err(Failure::Retry(format!("El servidor de la biblioteca ha respondido {status}.")));
+    match status_failure(status.as_u16()) {
+        None => {}
+        Some(FailureKind::Missing) => return Err(Failure::Fatal(tagged(FailureKind::Missing, &format!("Este elemento de la biblioteca no está disponible ({status}).")))),
+        Some(kind) => return Err(Failure::Retry(tagged(kind, &format!("El servidor de la biblioteca ha respondido {status}.")))),
     }
     if response.content_length().map(|n| n > MAX_FILE_BYTES).unwrap_or(false) {
-        return Err(Failure::Fatal("El fichero de la biblioteca es demasiado grande.".into()));
+        return Err(Failure::Fatal(tagged(FailureKind::Mismatch, "El fichero de la biblioteca es demasiado grande.")));
     }
     let mut file = fs::File::create(tmp).map_err(|e| Failure::Fatal(format!("No se puede guardar el fichero de la biblioteca: {e}")))?;
     let mut hasher = Sha256::new();
@@ -212,11 +247,11 @@ async fn download_once(
         if cancelled.load(Ordering::Relaxed) {
             return Err(Failure::Fatal(CANCELLED.into()));
         }
-        let chunk = response.chunk().await.map_err(|e| Failure::Retry(format!("Se ha cortado la descarga ({e}).")))?;
+        let chunk = response.chunk().await.map_err(|e| Failure::Retry(tagged(FailureKind::Offline, &format!("Se ha cortado la descarga ({e})."))))?;
         let Some(chunk) = chunk else { break };
         received += chunk.len() as u64;
         if received > MAX_FILE_BYTES || received > expected_bytes {
-            return Err(Failure::Retry("El fichero descargado no es el que dice el catálogo (tamaño).".into()));
+            return Err(Failure::Retry(tagged(FailureKind::Mismatch, "El fichero descargado no es el que dice el catálogo (tamaño).")));
         }
         hasher.update(&chunk);
         file.write_all(&chunk).map_err(|e| Failure::Fatal(format!("No se puede guardar el fichero de la biblioteca: {e}")))?;
@@ -229,10 +264,10 @@ async fn download_once(
     file.flush().map_err(|e| Failure::Fatal(e.to_string()))?;
     drop(file);
     if received != expected_bytes {
-        return Err(Failure::Retry("El fichero descargado está incompleto.".into()));
+        return Err(Failure::Retry(tagged(FailureKind::Offline, "El fichero descargado está incompleto.")));
     }
     if format!("{:x}", hasher.finalize()) != expected_sha {
-        return Err(Failure::Retry("El fichero descargado no es el que dice el catálogo (SHA-256).".into()));
+        return Err(Failure::Retry(tagged(FailureKind::Mismatch, "El fichero descargado no es el que dice el catálogo (SHA-256).")));
     }
     Ok(())
 }
@@ -269,7 +304,7 @@ pub async fn library_fetch(
         let got = sha256_of(&tmp)?;
         if got != sha256 {
             let _ = fs::remove_file(&tmp);
-            return Err(format!("El fichero local {file} no es el del catálogo (SHA-256): vuelve a generar la biblioteca."));
+            return Err(tagged(FailureKind::Mismatch, &format!("El fichero local {file} no es el del catálogo (SHA-256): vuelve a generar la biblioteca.")));
         }
         fs::rename(&tmp, &dest).map_err(|e| e.to_string())?;
         let _ = on_progress.send(FetchProgress { received: bytes, total: bytes });
@@ -337,7 +372,26 @@ pub async fn library_catalog(app: AppHandle, url: String) -> Result<Option<Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_file_name, is_allowed_url, is_safe_file_name, is_sha256};
+    use super::{cache_file_name, is_allowed_url, is_safe_file_name, is_sha256, status_failure, tagged, FailureKind};
+
+    #[test]
+    fn http_status_says_what_failed() {
+        assert_eq!(status_failure(200), None);
+        assert_eq!(status_failure(206), None);
+        assert_eq!(status_failure(404), Some(FailureKind::Missing));
+        assert_eq!(status_failure(403), Some(FailureKind::Missing));
+        assert_eq!(status_failure(410), Some(FailureKind::Missing));
+        assert_eq!(status_failure(500), Some(FailureKind::Offline));
+        assert_eq!(status_failure(503), Some(FailureKind::Offline));
+    }
+
+    #[test]
+    fn failure_messages_carry_their_tag() {
+        // La interfaz distingue los casos por estas marcas (src/domain/library.ts).
+        assert_eq!(tagged(FailureKind::Offline, "x"), "offline: x");
+        assert_eq!(tagged(FailureKind::Missing, "x"), "missing: x");
+        assert_eq!(tagged(FailureKind::Mismatch, "x"), "mismatch: x");
+    }
 
     #[test]
     fn only_safe_file_names() {

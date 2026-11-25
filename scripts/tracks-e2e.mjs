@@ -4,15 +4,18 @@
 // mover, recortar, partir, duplicar, volumen, entrada suave, repetir, silenciar/ocultar pista y fila principal,
 // quitar pista y deshacer; quitar pausas en un trozo anterior, reordenar un trozo y quitar el trozo ancla (lo
 // pegado va con su trozo o se queda en su sitio); zoom; tarjetas/pistas; «Tamaño y sitio»; reproducir midiendo
-// la sincronía; guardar «Para WhatsApp» y comprobarlo con ffprobe; créditos en «¡Listo!»; y el rendimiento con
-// un montaje de 5 minutos, 20 trozos, 3 pistas y 30 elementos. Capturas tracks-*.png en test-output/screenshots/.
+// la sincronía; guardar «Para WhatsApp» y comprobarlo con ffprobe; créditos en «¡Listo!»; el buscador
+// («aplauso», «palmas», sin tildes), cada categoría de sonidos con su contador y nombres legibles; un sonido de
+// Freesound y uno de Kenney en un vídeo guardado, midiendo en el fichero dónde suenan; y el rendimiento con un
+// montaje de 5 minutos, 20 trozos, 3 pistas y 30 elementos. Capturas tracks-*.png y lib-*.png (biblioteca por
+// categorías y búsqueda, a 1280×800 y 1100×700) en test-output/screenshots/.
 //
 // PowerShell (con Rust/cargo en el PATH, la app cerrada, los ficheros de `pnpm test:ffmpeg` en test-output y
 // la biblioteca generada con `node scripts/build-library.mjs`):
 //   node scripts/tracks-e2e.mjs
 // Con la app ya abierta a mano: --no-launch. Borra al acabar lo que ha guardado. Sale con 1 si algo falla.
 
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -183,6 +186,48 @@ async function visibleKeyHintsAreShortcuts(where) {
   check(`Cada tecla dibujada vale (${where})`, res.missing.length === 0, res.missing.length ? `sin atajo: ${res.missing.join(', ')}` : res.drawn.join(' '))
 }
 
+/** Escribe en el buscador de la biblioteca (de golpe, como si se pegara). */
+async function setSearch(text) {
+  await app.evaluate('const i = document.querySelector("[data-testid=library-search]"); i.value = args.text; i.dispatchEvent(new Event("input")); return true', { text })
+  await sleep(150)
+}
+const clearSearch = () => setSearch('')
+
+/** Los nombres de las tarjetas de la biblioteca se leen enteros o, si no caben, se cortan con «…» y el título los da enteros. */
+async function namesAreReadable(where) {
+  const res = await app.evaluate(`return [...document.querySelectorAll('[data-testid=library-asset]')].map((card) => {
+      const el = card.querySelector('.asset-name'); const cut = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
+      const listen = card.querySelector('.listen');
+      return { id: card.dataset.assetId, text: el.textContent.trim(), cut, ellipsis: getComputedStyle(el).textOverflow === 'ellipsis' || getComputedStyle(el).webkitLineClamp !== 'none', title: el.title, aria: listen?.getAttribute('aria-label') ?? '' } })`)
+  const bad = res.filter((r) => r.cut && !(r.ellipsis && r.title === r.text) || (r.aria && !r.aria.includes(r.text)))
+  const cut = res.filter((r) => r.cut)
+  check(`Nombres de la biblioteca enteros o con «…» y el título completo (${where})`, res.length > 0 && bad.length === 0, bad.length ? bad.map((b) => b.id).join(', ') : `${res.length} tarjetas, ${cut.length} cortadas con «…»${cut.length ? ` (${cut.slice(0, 4).map((c) => c.text).join(' | ')}${cut.length > 4 ? '…' : ''})` : ''}`)
+}
+
+/** Elige una categoría de la biblioteca en su desplegable (null = «Todo»), como al elegirla con el ratón. */
+async function selectCategory(id) {
+  await app.evaluate('const s = document.querySelector("[data-testid=library-category]"); const i = [...s.options].findIndex((o) => o.dataset.category === (args.id ?? "")); if (i < 0) throw new Error("no está la categoría " + args.id); s.selectedIndex = i; s.dispatchEvent(new Event("change")); return true', { id })
+  await sleep(200)
+}
+
+/** Captura de la biblioteca de sonidos con cada categoría (lib-<categoría>-<ancho>.png), comprobando los nombres. */
+async function libraryCategoryShots(size) {
+  const cats = await S('return library.categories.value.filter((c) => c.kind === "sound").map((c) => c.id)')
+  const counts = []
+  for (const id of cats) {
+    await selectCategory(id)
+    const n = await app.evaluate('return document.querySelectorAll("[data-testid=library-asset]").length')
+    const label = await app.evaluate('const s = document.querySelector("[data-testid=library-category]"); return s.options[s.selectedIndex].textContent.trim()')
+    counts.push(`${id} ${n}`)
+    if (!label.endsWith(`(${n})`)) check(`El contador de «${id}» dice lo que hay`, false, `«${label}» y ${n} tarjetas`)
+    await app.evaluate('const g = document.querySelector("[data-testid=library-grid]"); g.scrollTop = 0; return true')
+    await shot(`lib-${id}-${size}.png`)
+    await namesAreReadable(`«${id}» a ${size}`)
+  }
+  await selectCategory(null)
+  check(`Cada categoría de sonidos se elige y su contador cuadra (${size})`, cats.length >= 10, counts.join(' · '))
+}
+
 /** Nada cortado ni tapado en la vista de pistas, la barra del elemento y la biblioteca. */
 async function layoutIsClean(where) {
   const res = await app.evaluate(`const bad = [];
@@ -237,14 +282,27 @@ try {
   const listening = await app.waitFor('const a = document.querySelector("[data-testid=library-panel] audio"); return a && !a.paused && a.currentTime > 0 ? a.currentTime : null', { timeoutMs: 10_000, what: 'probar un sonido' })
   check('Al pulsar su tarjeta, el sonido suena (para probarlo antes de poner)', listening > 0, `${listening} s`)
   await app.click('[data-testid=library-listen-ding]')
-  await app.click('[data-testid=library-search]')
-  await app.key('a')
-  await app.key('p')
-  await app.key('l')
-  const found = await app.evaluate('return [...document.querySelectorAll("[data-testid=library-asset]")].map((a) => a.dataset.assetId)')
-  check('El buscador encuentra «aplausos» escribiendo «apl»', found.length === 1 && found[0] === 'aplausos', found.join(', '))
-  await app.key('Escape')
-  await app.evaluate('const i = document.querySelector("[data-testid=library-search]"); i.value = ""; i.dispatchEvent(new Event("input")); return true')
+  {
+    const applause = ['aplausos-auditorio', 'ovacion-teatro', 'ovacion-teatro-larga', 'aplausos-gimnasio']
+    const shown = () => app.evaluate('return [...document.querySelectorAll("[data-testid=library-asset]")].map((a) => a.dataset.assetId)')
+    const inApplause = (ids) => S('return args.ids.every((id) => library.asset(id)?.category === "aplausos-y-vitores")', { ids })
+    for (const word of ['aplauso', 'palmas']) {
+      await app.click('[data-testid=library-search]')
+      for (const ch of word) await app.key(ch)
+      const found = await shown()
+      check(`El buscador encuentra los aplausos escribiendo «${word}»`, applause.every((id) => found.includes(id)) && (await inApplause(found)), found.join(', '))
+      await clearSearch()
+    }
+    await setSearch('ÁPLAUSO')
+    const upper = await shown()
+    check('Y sin mirar tildes ni mayúsculas («ÁPLAUSO»)', applause.every((id) => upper.includes(id)), upper.join(', '))
+    await setSearch('aplauso')
+    await shot('lib-busqueda-aplauso-1280.png')
+    await namesAreReadable('búsqueda «aplauso» a 1280×800')
+    await clearSearch()
+    await app.evaluate('document.activeElement?.blur(); return true')
+  }
+  await libraryCategoryShots('1280')
   await shot('tracks-01-biblioteca-sonidos.png')
 
   await seekTo(12_000)
@@ -537,7 +595,7 @@ try {
     await seekTo(4000)
     await app.click('[data-testid=add-sounds-effects]')
     await app.click('[data-testid=library-tab-effects]')
-    await app.click('[data-testid=library-category-amor]')
+    await selectCategory('amor')
     await app.click('[data-testid=library-put-corazones]')
     await app.waitFor('return window.__easyCut.store.project.value.tracks.flatMap((t) => t.items).some((i) => i.source.assetId === "corazones")', { timeoutMs: 20_000, what: 'corazones puestos' })
     await closeLibraryWithEsc()
@@ -561,6 +619,11 @@ try {
     await app.click('[data-testid=library-tab-sounds]')
     await shot('tracks-12-biblioteca-sonidos-1100.png')
     await layoutIsClean('biblioteca a 1100×700')
+    await libraryCategoryShots('1100')
+    await setSearch('aplauso')
+    await shot('lib-busqueda-aplauso-1100.png')
+    await namesAreReadable('búsqueda «aplauso» a 1100×700')
+    await clearSearch()
     await app.click('[data-testid=library-tab-effects]')
     await sleep(1200)
     await shot('tracks-13-biblioteca-efectos-1100.png')
@@ -607,6 +670,46 @@ try {
     await app.click('[data-testid=back-to-editor]')
     await waitScreen('editor')
     await S('library.catalog.value = window.__easyCut.domain.validateCatalog(library.catalog.value).catalog ?? library.catalog.value; return true')
+  }
+
+  // --- Un sonido de Freesound y uno de Kenney en un vídeo guardado, medidos en el fichero
+  {
+    await S(`const d = domain; let p = d.createProject('16:9'); p = d.addClip(p, d.createClip(store.media.value[args.h], 'tp-c1'));
+      store.commit(d.setMainMuted(p, true)); return true`, { h: media.horizontal })
+    await sleep(600)
+    await seekTo(2000)
+    await app.click('[data-testid=add-sounds-effects]')
+    await waitScreen('library-panel')
+    await app.click('[data-testid=library-tab-sounds]')
+    await setSearch('recepcion')
+    await app.click('[data-testid=library-put-campanita-recepcion]')
+    await app.waitFor('return window.__easyCut.store.project.value.tracks.flatMap((t) => t.items).some((i) => i.source.assetId === "campanita-recepcion")', { timeoutMs: 20_000, what: 'campanita de Freesound puesta' })
+    await noErrorDialog('poner la campanita de Freesound')
+    await clearSearch()
+    await seekTo(6000)
+    await selectCategory('cuenta-atras')
+    await app.click('[data-testid=library-put-voz-mujer-3]')
+    await app.waitFor('return window.__easyCut.store.project.value.tracks.flatMap((t) => t.items).some((i) => i.source.assetId === "voz-mujer-3")', { timeoutMs: 20_000, what: 'voz de Kenney puesta' })
+    await noErrorDialog('poner la voz de Kenney')
+    await closeLibraryWithEsc()
+    const placed = Object.fromEntries((await items()).map((i) => [i.item.source.assetId, i.start]))
+    check('Freesound a los 2 s y Kenney a los 6 s', Math.abs(placed['campanita-recepcion'] - 2000) < 50 && Math.abs(placed['voz-mujer-3'] - 6000) < 50, JSON.stringify(placed))
+    await app.click('[data-testid=save-video]')
+    await waitScreen('save-view')
+    await app.click('[data-testid=preset-whatsapp]')
+    await app.waitFor('return !!document.querySelector("[data-testid=done-view]")', { timeoutMs: 180_000, what: 'vídeo con terceros guardado' })
+    await noErrorDialog('guardar con terceros')
+    const out = await S('return store.lastExport.value.path')
+    // Dónde suena algo en el fichero (el sonido de los trozos está silenciado: solo suenan los dos de la biblioteca).
+    const errLog = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', out, '-vn', '-af', 'silencedetect=n=-50dB:d=0.3', '-f', 'null', '-'], { encoding: 'utf8' }).stderr ?? ''
+    const ends = [...errLog.matchAll(/silence_end: ([\d.]+)/g)].map((m) => Math.round(Number(m[1]) * 1000))
+    const starts = [...errLog.matchAll(/silence_start: ([\d.]+)/g)].map((m) => Math.round(Number(m[1]) * 1000))
+    const onsets = ends.slice(0, 2)
+    check('En el fichero, la campanita (Freesound) empieza a sonar a los 2 s y la voz (Kenney) a los 6 s (±40 ms)', onsets.length === 2 && Math.abs(onsets[0] - placed['campanita-recepcion']) <= 40 && Math.abs(onsets[1] - placed['voz-mujer-3']) <= 40, `suena desde ${onsets.join(' y ')} ms; silencios desde ${starts.join(', ')} ms`)
+    const credits = await app.text('[data-testid=done-credits]')
+    check('Lo CC0 no pide créditos en «¡Listo!»', !credits, credits ?? '')
+    await app.click('[data-testid=back-to-editor]')
+    await waitScreen('editor')
   }
 
   // --- Rendimiento: 5 minutos, 20 trozos, 3 pistas y 30 elementos

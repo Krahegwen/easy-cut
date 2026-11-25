@@ -89,6 +89,8 @@ const ICONS: Record<IconName, string> = {
   snow: '<path d="M12 2.5v19M3.8 7.25l16.4 9.5M3.8 16.75l16.4-9.5"/><path d="m9.5 4 2.5 2.5L14.5 4M9.5 20l2.5-2.5 2.5 2.5"/>',
   heart: '<path d="M12 20s-7.5-4.6-7.5-10A4.3 4.3 0 0 1 12 7.3 4.3 4.3 0 0 1 19.5 10c0 5.4-7.5 10-7.5 10z"/>',
   whoosh: '<path d="M3 8h11a3 3 0 1 0-3-3M3 12h15a3 3 0 1 1-3 3M3 16h7"/>',
+  laugh: '<circle cx="12" cy="12" r="8.5"/><path d="M8 9.5l1.6 1.2L8 11.9M16 9.5l-1.6 1.2 1.6 1.2"/><path d="M7.5 14h9a4.5 4.5 0 0 1-9 0z"/>',
+  drum: '<ellipse cx="12" cy="9" rx="7.5" ry="3"/><path d="M4.5 9v6.5c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V9"/><path d="M8 12.2v6M16 12.2v6M14.5 2.5 18 6.5M9.5 2.5 6 6.5"/>',
   up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
   down: '<path d="M12 5v14M6 13l6 6 6-6"/>',
   drag: '<circle cx="9" cy="7" r="1.2" fill="currentColor"/><circle cx="15" cy="7" r="1.2" fill="currentColor"/><circle cx="9" cy="12" r="1.2" fill="currentColor"/><circle cx="15" cy="12" r="1.2" fill="currentColor"/><circle cx="9" cy="17" r="1.2" fill="currentColor"/><circle cx="15" cy="17" r="1.2" fill="currentColor"/>',
