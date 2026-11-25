@@ -14,6 +14,7 @@ import {
   type ProgressUpdate,
   type Project,
   type SaveTarget,
+  type TrackItem,
   type VideoEncoder,
 } from '../domain'
 import { CancelledError, type NativeBridge, type RunningProcess } from '../native/bridge'
@@ -57,6 +58,8 @@ export interface ExportRequest {
   /** Se avisa al pasar a otro encoder tras un fallo (para el registro). */
   onRetry?: (failed: VideoEncoder, next: VideoEncoder, stderr: string) => void
   now?: () => Date
+  /** Fichero de cada elemento de las pistas (los de la biblioteca, ya descargados; null = no está). */
+  itemPath?: (item: TrackItem) => string | null
 }
 
 function tail(text: string, lines = 25): string {
@@ -90,8 +93,17 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
     const { project, media, preset } = request
     if (project.clips.length === 0) throw new ExportError('El vídeo no tiene ningún trozo.', 'proyecto vacío')
 
-    // Todos los originales tienen que seguir ahí (los vídeos de encima solo si se guarda un vídeo).
-    const paths = [...new Set(project.clips.flatMap((c) => (preset === 'sound' ? [c.sourcePath] : clipPaths(c))))]
+    // Todos los originales tienen que seguir ahí (los vídeos de encima solo si se guarda un vídeo), también
+    // los sonidos y efectos de las pistas que suenan o se ven.
+    const itemPath = request.itemPath ?? ((i: TrackItem) => (i.source.type === 'file' ? i.source.path : null))
+    const trackPaths = project.tracks
+      .filter((t) => !(t.kind === 'sound' ? t.muted : t.hidden))
+      .flatMap((t) => t.items)
+      .map((i) => itemPath(i))
+    if (trackPaths.some((p) => p === null)) {
+      throw new ExportError('Falta por descargar algo de la biblioteca. Mira si hay conexión a internet y vuelve a probar.', 'elemento de la biblioteca sin fichero')
+    }
+    const paths = [...new Set([...project.clips.flatMap((c) => (preset === 'sound' ? [c.sourcePath] : clipPaths(c))), ...(trackPaths as string[])])]
     const exists = await Promise.all(paths.map((p) => bridge.exists(p).catch(() => false)))
     const lost = paths.filter((_, i) => !exists[i] || !media[paths[i]!])
     if (lost.length > 0) {
@@ -109,10 +121,10 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
       const folder = await bridge.getOutputFolder()
       const out = bridge.joinPath(folder, buildOutputFileName(request.now?.() ?? new Date(), 'sound', await bridge.listFileNames(folder)))
       throwIfCancelled()
-      const draft = buildSoundExportCommand(project, media, out)
+      const draft = buildSoundExportCommand(project, media, out, { itemPath })
       const filterScriptPath = await bridge.writeTempTextFile('filtro-sonido.txt', draft.filterComplex)
       throwIfCancelled()
-      const cmd = buildSoundExportCommand(project, media, out, { filterScriptPath })
+      const cmd = buildSoundExportCommand(project, media, out, { filterScriptPath, itemPath })
       const startedAt = Date.now()
       const parser = createProgressParser(cmd.expectedDurationMs, startedAt)
       outputPath = out
@@ -149,14 +161,14 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
     throwIfCancelled()
 
     // El filtro va en un fichero: con muchos trozos pasaría del límite de la línea de comandos.
-    const draft = buildExportCommand(project, media, preset, chain[0]!, out)
+    const draft = buildExportCommand(project, media, preset, chain[0]!, out, { itemPath })
     const filterScriptPath = await bridge.writeTempTextFile('filtro-exportacion.txt', draft.filterComplex)
     throwIfCancelled()
 
     const failures: string[] = []
     for (let i = 0; i < chain.length; i++) {
       const encoder = chain[i]!
-      const cmd = buildExportCommand(project, media, preset, encoder, out, { filterScriptPath })
+      const cmd = buildExportCommand(project, media, preset, encoder, out, { filterScriptPath, itemPath })
       const startedAt = Date.now()
       const parser = createProgressParser(cmd.expectedDurationMs, startedAt)
       outputPath = out

@@ -2,7 +2,7 @@
 // La tira de trozos: tarjetas numeradas con miniatura y duración. Se pulsa para elegir y se arrastra
 // para cambiar el orden (con eventos de puntero: con dragDropEnabled, el arrastre HTML5 no va en WebView2).
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { clipDurationMs, clipInOut, formatDuration, type Clip } from '../domain'
+import { attachedCounts, clipDurationMs, clipInOut, formatDuration, type Clip } from '../domain'
 import { store } from '../store'
 import AppIcon from './AppIcon.vue'
 import ThumbImage from './ThumbImage.vue'
@@ -10,6 +10,16 @@ import ThumbImage from './ThumbImage.vue'
 const emit = defineEmits<{ add: []; record: [] }>()
 
 const clips = computed(() => store.project.value.clips)
+/** Cuántos sonidos y efectos lleva pegados cada trozo (se ve en su tarjeta). */
+const attached = computed(() => attachedCounts(store.project.value))
+function attachedText(clip: Clip): string | null {
+  const c = attached.value.get(clip.id)
+  if (!c) return null
+  const parts: string[] = []
+  if (c.sounds) parts.push(c.sounds === 1 ? '1 sonido' : `${c.sounds} sonidos`)
+  if (c.effects) parts.push(c.effects === 1 ? '1 efecto' : `${c.effects} efectos`)
+  return parts.join(' · ')
+}
 const scroller = ref<HTMLDivElement | null>(null)
 const cardEls = new Map<string, HTMLElement>()
 
@@ -204,7 +214,8 @@ const slotBefore = computed<string | null>(() => {
         </span>
         <span class="badges">
           <span v-for="b in badges(clip)" :key="b.text" class="badge"><AppIcon :name="b.icon" :size="16" />{{ b.text }}</span>
-          <span v-if="badges(clip).length === 0" class="badge plain">Sin cambios</span>
+          <span v-if="attachedText(clip)" class="badge attached" data-testid="clip-attached" :title="`Lleva pegado: ${attachedText(clip)}`"><AppIcon name="tracks" :size="16" />{{ attachedText(clip) }}</span>
+          <span v-if="badges(clip).length === 0 && !attachedText(clip)" class="badge plain">Sin cambios</span>
         </span>
       </button>
     </template>
@@ -330,6 +341,10 @@ const slotBefore = computed<string | null>(() => {
   color: var(--accent-hover);
   font-size: 14px;
   font-weight: 600;
+}
+.badge.attached {
+  background: #efe7f8;
+  color: #5b3590;
 }
 .badge.plain {
   background: transparent;

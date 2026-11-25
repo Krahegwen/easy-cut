@@ -29,6 +29,9 @@ const COMMANDS: &[&str] = &[
     "recording_append",
     "recording_finish",
     "recording_cleanup",
+    "library_status",
+    "library_fetch",
+    "library_catalog",
 ];
 
 fn main() {

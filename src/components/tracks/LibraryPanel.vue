@@ -1,0 +1,521 @@
+<script setup lang="ts">
+// «Añadir sonidos y efectos»: la biblioteca (Sonidos / Efectos, por categorías y con buscador) y «De mi
+// ordenador». Se prueba antes de poner: los sonidos suenan al pulsar su tarjeta; los efectos se ven en su
+// tarjeta (en bucle) y, con «Probar sobre mi vídeo», en la vista previa. «Poner aquí» lo pone donde está la línea.
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { formatClock, formatDuration, searchLibrary, type LibraryAsset, type LibraryCategory, type LibraryIcon } from '../../domain'
+import { LAYER_PRIORITY } from '../../lib/shortcuts'
+import { useShortcuts } from '../../lib/use-shortcuts'
+import { library, store, tracks } from '../../store'
+import AppIcon from '../AppIcon.vue'
+import type { IconName } from '../icons'
+import KeyHint from '../KeyHint.vue'
+import CreditsDialog from './CreditsDialog.vue'
+
+const tab = computed(() => tracks.libraryTab.value)
+const query = ref('')
+const category = ref<string | null>(null)
+const creditsOpen = ref(false)
+
+const kind = computed(() => (tab.value === 'effect' ? 'effect' : 'sound'))
+const categories = computed<LibraryCategory[]>(() => library.categories.value.filter((c) => c.kind === kind.value))
+const results = computed(() => (tab.value === 'computer' ? [] : searchLibrary(library.catalog.value, kind.value, query.value, category.value)))
+
+watch(tab, () => {
+  category.value = null
+  stopSound()
+})
+
+const ICONS: Record<LibraryIcon, IconName> = {
+  party: 'party',
+  clap: 'clap',
+  bell: 'bell',
+  music: 'music',
+  fire: 'fire',
+  light: 'light',
+  snow: 'snow',
+  heart: 'heart',
+  star: 'star',
+  frame: 'frame',
+  whoosh: 'whoosh',
+}
+function iconOf(id: string): IconName {
+  const c = library.catalog.value.categories.find((x) => x.id === id)
+  return c ? ICONS[c.icon] : 'star'
+}
+
+// ------------------------------------------------------------------ probar un sonido
+
+const audio = ref<HTMLAudioElement | null>(null)
+const playingId = ref<string | null>(null)
+async function toggleSound(a: LibraryAsset) {
+  if (playingId.value === a.id) {
+    stopSound()
+    return
+  }
+  stopSound()
+  try {
+    const path = await library.ensureAsset(a)
+    const el = audio.value
+    if (!el) return
+    el.src = store.mediaSrc(path)
+    playingId.value = a.id
+    await el.play()
+  } catch (e) {
+    playingId.value = null
+    store.showError(`No se ha podido traer «${a.name}» de la biblioteca. Mira si hay conexión a internet.`, e)
+  }
+}
+function stopSound() {
+  const el = audio.value
+  if (el && !el.paused) el.pause()
+  playingId.value = null
+}
+
+// ------------------------------------------------------------------ vistas previas de los efectos
+
+const previews = ref<Record<string, string>>({})
+watch(
+  [tab, results],
+  () => {
+    if (tab.value !== 'effect') return
+    for (const a of results.value) {
+      if (previews.value[a.id]) continue
+      void library.ensurePreview(a).then((p) => {
+        if (p) previews.value = { ...previews.value, [a.id]: store.mediaSrc(p) }
+      })
+    }
+  },
+  { immediate: true },
+)
+
+async function put(a: LibraryAsset) {
+  stopSound()
+  if (tracks.trying.value?.asset.id === a.id) tracks.trying.value = null
+  await tracks.addAsset(a, tracks.playheadMs.value)
+}
+
+function close() {
+  stopSound()
+  tracks.closeLibrary()
+}
+
+const searchInput = ref<HTMLInputElement | null>(null)
+
+useShortcuts({
+  id: 'library',
+  title: 'Biblioteca',
+  priority: LAYER_PRIORITY.overlay,
+  active: () => tracks.libraryOpen.value && !creditsOpen.value,
+  shortcuts: () => [
+    { id: 'library-close', keys: ['Escape'], label: 'Esc', description: 'cerrar la biblioteca', run: close },
+    { id: 'library-search', keys: ['/'], label: '/', description: 'buscar', run: () => searchInput.value?.focus() },
+  ],
+})
+
+onBeforeUnmount(stopSound)
+
+function progressOf(a: LibraryAsset): number | null {
+  return library.downloadProgress(a)
+}
+</script>
+
+<template>
+  <aside class="library" data-testid="library-panel" aria-label="Añadir sonidos y efectos">
+    <header class="head">
+      <h2><AppIcon name="library" /> Añadir sonidos y efectos</h2>
+      <button class="btn quiet small" type="button" data-testid="library-close" @click="close">
+        <AppIcon name="close" />
+        Cerrar
+        <KeyHint k="Esc" />
+      </button>
+    </header>
+    <div class="tabs" role="tablist" aria-label="Qué añadir">
+      <button role="tab" :aria-selected="tab === 'sound'" class="tab" :class="{ on: tab === 'sound' }" type="button" data-testid="library-tab-sounds" @click="tracks.libraryTab.value = 'sound'">
+        <AppIcon name="sound" :size="20" /> Sonidos
+      </button>
+      <button role="tab" :aria-selected="tab === 'effect'" class="tab" :class="{ on: tab === 'effect' }" type="button" data-testid="library-tab-effects" @click="tracks.libraryTab.value = 'effect'">
+        <AppIcon name="light" :size="20" /> Efectos
+      </button>
+      <button role="tab" :aria-selected="tab === 'computer'" class="tab" :class="{ on: tab === 'computer' }" type="button" data-testid="library-tab-computer" @click="tracks.libraryTab.value = 'computer'">
+        <AppIcon name="folder" :size="20" /> De mi ordenador
+      </button>
+    </div>
+
+    <template v-if="tab !== 'computer'">
+      <div class="filters">
+        <label class="search">
+          <AppIcon name="search" :size="20" />
+          <input ref="searchInput" v-model="query" type="search" :placeholder="tab === 'sound' ? 'Buscar: aplausos, campana…' : 'Buscar: luz, nieve, confeti…'" aria-label="Buscar en la biblioteca" data-testid="library-search" />
+        </label>
+        <div class="chips" role="group" aria-label="Categorías">
+          <button class="chip" :class="{ on: category === null }" type="button" @click="category = null">Todo</button>
+          <button v-for="c in categories" :key="c.id" class="chip" :class="{ on: category === c.id }" type="button" :data-testid="`library-category-${c.id}`" @click="category = category === c.id ? null : c.id">
+            <AppIcon :name="ICONS[c.icon]" :size="18" />
+            {{ c.name }}
+          </button>
+        </div>
+      </div>
+      <div class="grid" :class="tab" data-testid="library-grid">
+        <p v-if="results.length === 0" class="empty muted">No hay nada con «{{ query }}». Prueba con otra palabra.</p>
+        <article
+          v-for="a in results"
+          :key="a.id"
+          class="asset"
+          :class="{ playing: playingId === a.id, trying: tracks.trying.value?.asset.id === a.id }"
+          :data-asset-id="a.id"
+          data-testid="library-asset"
+        >
+          <button v-if="a.kind === 'sound'" class="listen" type="button" :aria-label="playingId === a.id ? `Parar «${a.name}»` : `Escuchar «${a.name}»`" :data-testid="`library-listen-${a.id}`" @click="toggleSound(a)">
+            <AppIcon :name="playingId === a.id ? 'stop' : 'play'" :size="22" />
+          </button>
+          <div v-else class="preview">
+            <img v-if="a.still && previews[a.id]" :src="previews[a.id]" alt="" draggable="false" />
+            <video v-else-if="previews[a.id]" :src="previews[a.id]" muted loop autoplay playsinline disablepictureinpicture />
+            <span v-else class="spinner" />
+          </div>
+          <div class="info">
+            <strong class="asset-name">{{ a.name }}</strong>
+            <span class="meta muted">
+              <AppIcon :name="iconOf(a.category)" :size="15" />
+              {{ a.still ? 'Imagen' : formatDuration(a.durationMs) }}
+              <template v-if="a.defaults.repeat"> · se repite</template>
+              <template v-if="a.defaults.look?.mix === 'light'"> · como luz</template>
+            </span>
+          </div>
+          <div class="buttons">
+            <button
+              v-if="a.kind === 'effect'"
+              class="btn small"
+              :class="{ selected: tracks.trying.value?.asset.id === a.id }"
+              type="button"
+              :data-testid="`library-try-${a.id}`"
+              :aria-pressed="tracks.trying.value?.asset.id === a.id"
+              @click="tracks.tryEffect(a)"
+            >
+              <AppIcon name="eye" />
+              {{ tracks.trying.value?.asset.id === a.id ? 'Dejar de probar' : 'Probar sobre mi vídeo' }}
+            </button>
+            <button class="btn small primary" type="button" :data-testid="`library-put-${a.id}`" @click="put(a)">
+              <AppIcon name="plus" />
+              Poner aquí
+            </button>
+          </div>
+          <div v-if="progressOf(a) !== null" class="progress" :style="{ width: `${Math.round((progressOf(a) ?? 0) * 100)}%` }" />
+        </article>
+      </div>
+    </template>
+
+    <div v-else class="computer" data-testid="library-computer">
+      <p>Sonidos (MP3, M4A, WAV…), vídeos o imágenes (PNG, JPG): un logo, una pegatina, un marco.</p>
+      <button class="btn primary large" type="button" data-testid="library-pick-files" @click="tracks.pickFiles(tracks.playheadMs.value)">
+        <AppIcon name="folder" />
+        Elegir del ordenador
+      </button>
+      <p class="muted">
+        También puedes soltarlos aquí o pegarlos con <KeyHint k="Ctrl V" />. Se ponen donde está la línea: los sonidos en una pista de sonido; los vídeos y las imágenes, en una de efectos.
+      </p>
+    </div>
+
+    <footer class="foot">
+      <span v-if="tracks.adding.value" class="adding"><span class="spinner" /> Trayendo «{{ tracks.adding.value }}»…</span>
+      <span v-else class="where muted" data-testid="library-where">«Poner aquí» lo pone donde está la línea: {{ formatClock(tracks.playheadMs.value) }}</span>
+      <button class="link" type="button" data-testid="library-credits" @click="creditsOpen = true">Créditos de la biblioteca</button>
+    </footer>
+    <audio ref="audio" @ended="playingId = null" />
+    <CreditsDialog v-if="creditsOpen" @close="creditsOpen = false" />
+  </aside>
+</template>
+
+<style scoped>
+.library {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 4px 14px;
+}
+.head h2 {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 18px;
+}
+.btn.small {
+  min-height: 40px;
+  padding: 0 12px;
+  gap: 6px;
+  font-size: 15px;
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: none;
+  border-bottom: 3px solid transparent;
+  background: none;
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tab.on {
+  color: var(--accent-hover);
+  border-bottom-color: var(--accent);
+}
+.filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 6px;
+}
+.search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  min-height: 42px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 10px;
+  color: var(--text-muted);
+}
+.search input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font: inherit;
+  font-size: 16px;
+  background: none;
+  min-width: 0;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 17px;
+  border: 1.5px solid var(--border);
+  background: var(--surface);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 12px 12px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  align-content: start;
+  /* Las tarjetas recortan su contenido (overflow): sin esto, sus filas se encogerían hasta cero. */
+  grid-auto-rows: max-content;
+}
+.grid.effect {
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+.empty {
+  padding: 20px 4px;
+}
+.asset {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    'pic info'
+    'buttons buttons';
+  align-items: center;
+  gap: 8px 10px;
+  padding: 8px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.grid.sound .asset {
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas: 'pic info buttons';
+}
+.grid.effect .asset {
+  grid-template-columns: 1fr;
+  grid-template-areas:
+    'pic'
+    'info'
+    'buttons';
+}
+.asset.playing,
+.asset.trying {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.listen {
+  grid-area: pic;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.preview {
+  grid-area: pic;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #111;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  /* Las de mezcla normal con transparencia se ven sobre un gris (como sobre un vídeo). */
+  background-image: linear-gradient(45deg, #2a2f36 25%, transparent 25%), linear-gradient(-45deg, #2a2f36 25%, transparent 25%);
+  background-size: 16px 16px;
+}
+.preview video,
+.preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.info {
+  grid-area: info;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.asset-name {
+  font-size: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 14px;
+}
+.buttons {
+  grid-area: buttons;
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.grid.effect .buttons .btn {
+  flex: 1;
+}
+.progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 4px;
+  background: var(--accent);
+  transition: width 0.15s;
+}
+.computer {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 18px 16px;
+  font-size: 16px;
+}
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+}
+.where,
+.adding {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.link {
+  border: none;
+  background: none;
+  color: var(--accent-hover);
+  text-decoration: underline;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+/* Panel estrecho (ventana de 1100 px): todo un poco más compacto para que quepa en una línea. */
+@container (max-width: 440px) {
+  .head h2 {
+    font-size: 16.5px;
+    white-space: nowrap;
+  }
+  .tabs {
+    gap: 0;
+    padding: 4px 6px 0;
+  }
+  .tab {
+    padding: 0 8px;
+    gap: 5px;
+    font-size: 15px;
+  }
+  .grid.sound .buttons .btn {
+    padding: 0 10px;
+  }
+  .grid.effect {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .grid.effect .buttons {
+    flex-direction: column;
+  }
+  .grid.effect .buttons .btn {
+    white-space: normal;
+    line-height: 1.15;
+    padding: 4px 8px;
+  }
+}
+@media (max-height: 760px) {
+  .filters {
+    padding-top: 6px;
+  }
+  .tab {
+    min-height: 38px;
+  }
+}
+</style>

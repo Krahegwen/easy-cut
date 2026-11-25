@@ -30,6 +30,20 @@ export interface PickVideosOptions {
   defaultFolder?: string
   /** Aceptar también ficheros de sonido (m4a, mp3, wav…), para añadirlos al montaje. */
   sounds?: boolean
+  /** Para las pistas: sonidos, vídeos e imágenes (PNG, JPG, WebP), con su propio título. */
+  forTracks?: boolean
+}
+
+/** Un fichero de la biblioteca: nombre (seguro), SHA-256 y tamaño, tal como vienen en el catálogo. */
+export interface LibraryFileRef {
+  file: string
+  sha256: string
+  bytes: number
+}
+
+export interface DownloadProgress {
+  received: number
+  total: number
 }
 
 export interface WaveformRequest {
@@ -96,8 +110,11 @@ export interface NativeBridge {
   /** Diálogo para elegir vídeos. Devuelve las rutas elegidas (vacío si se cancela). */
   pickVideos(options?: PickVideosOptions): Promise<string[]>
 
-  /** Ejecuta ffprobe sobre el fichero y devuelve su información (ver domain/probe.ts). */
-  probe(path: string): Promise<MediaInfo>
+  /**
+   * Ejecuta ffprobe sobre el fichero y devuelve su información (ver domain/probe.ts). Con `still`, es una
+   * imagen fija (PNG, JPG, WebP) para una pista de efectos: no hace falta que dure.
+   */
+  probe(path: string, options?: { still?: boolean }): Promise<MediaInfo>
 
   /** ¿Sigue existiendo el fichero? (para avisar de originales movidos o borrados). */
   exists(path: string): Promise<boolean>
@@ -201,6 +218,20 @@ export interface NativeBridge {
    * la carpeta de getOutputFolder(). No falla si ya no existe.
    */
   deleteRecording(path: string): Promise<void>
+
+  /**
+   * Biblioteca: qué ficheros ya están descargados (su ruta en la caché, o null). Sin red: lo descargado se
+   * puede usar sin conexión.
+   */
+  libraryStatus(files: readonly Pick<LibraryFileRef, 'file' | 'sha256'>[]): Promise<(string | null)[]>
+  /**
+   * Trae un fichero de la biblioteca a la caché (descarga de `url`, solo de las releases de GitHub, con
+   * reintentos y comprobación del SHA-256) y devuelve su ruta. Si ya estaba, al momento. En desarrollo usa la
+   * carpeta library/dist si lo tiene. Cancelable.
+   */
+  libraryFetch(ref: LibraryFileRef, url: string, onProgress?: (p: DownloadProgress) => void): RunningProcess<string>
+  /** El catálogo de la release (texto JSON) si hay red; si no, el último descargado; si nunca, null. */
+  libraryCatalog(url: string): Promise<string | null>
 
   /** Ficheros arrastrados a la ventana. Devuelve la función para dejar de escuchar. */
   onFilesDropped(handlers: FileDropHandlers): () => void

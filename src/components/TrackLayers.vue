@@ -1,0 +1,412 @@
+<script setup lang="ts">
+// Pistas en la vista previa. Los sonidos van en elementos <audio> que siguen el reloj del montaje (como el
+// vídeo de encima: se recolocan si se separan más de 150 ms), con su volumen y sus entradas y salidas suaves
+// aplicados en vivo; solo se montan los que suenan o van a sonar en los próximos segundos (como mucho 8). Los
+// efectos son <video>/<img> colocados sobre el marco (mix-blend-mode: screen para «Como luz»), con su
+// transparencia y sus suaves. Silenciar u ocultar una pista se nota al momento. Con «Tamaño y sitio», el efecto
+// elegido se mueve y se cambia de tamaño arrastrando sobre la vista previa.
+
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import {
+  audibleOrVisible,
+  COVER_DRIFT_TOLERANCE_MS,
+  effectRect,
+  itemFadeAt,
+  itemLengthMs,
+  itemSourceTimeAt,
+  MAX_EFFECT_SCALE,
+  MIN_EFFECT_SCALE,
+  moveEffectBox,
+  projectTiming,
+  resolveTracks,
+  type EffectLook,
+  type Project,
+  type ResolvedItem,
+  type TrackItem,
+} from '../domain'
+import { library, store, tracks } from '../store'
+
+const props = defineProps<{
+  project: Project
+  currentMs: number
+  playing: boolean
+  frameWidth: number
+  frameHeight: number
+}>()
+
+/** Sonidos montados a la vez, como mucho. */
+const SOUND_POOL = 8
+const EFFECT_POOL = 6
+/** Se carga lo que empieza en los próximos segundos, para que no tarde en sonar. */
+const AHEAD_MS = 3000
+
+function pathOf(item: TrackItem): string | null {
+  const p = library.itemPath(item)
+  if (!p || store.missing.value[p] || !store.media.value[p]) return null
+  return p
+}
+
+const resolved = computed(() => {
+  const timing = projectTiming(props.project)
+  return audibleOrVisible(resolveTracks(props.project, timing)).filter((r) => pathOf(r.item) !== null)
+})
+
+// La lista de montados cambia cada cuarto de segundo como mucho (no en cada fotograma).
+const coarseMs = computed(() => Math.floor(props.currentMs / 250) * 250)
+
+const sounds = computed(() => {
+  const t = coarseMs.value
+  return resolved.value.filter((r) => r.track.kind === 'sound' && r.startMs <= t + AHEAD_MS && r.shownEndMs > t - 250).slice(0, SOUND_POOL)
+})
+
+const selectedId = computed(() => tracks.selectedItemId.value)
+const editingBox = computed(() => tracks.boxEditing.value && !!selectedEffect.value)
+
+/** El efecto elegido (aunque no toque en este instante): para «Tamaño y sitio». */
+const selectedEffect = computed<ResolvedItem | null>(() => {
+  const id = selectedId.value
+  if (!id) return null
+  const timing = projectTiming(props.project)
+  return resolveTracks(props.project, timing).find((r) => r.item.id === id && r.track.kind === 'effect' && pathOf(r.item) !== null) ?? null
+})
+
+const effects = computed(() => {
+  const t = coarseMs.value
+  const list = resolved.value.filter((r) => r.track.kind === 'effect' && r.startMs <= t + 2000 && r.shownEndMs > t - 250).slice(0, EFFECT_POOL)
+  const sel = selectedEffect.value
+  if (editingBox.value && sel && !list.some((r) => r.item.id === sel.item.id)) list.push(sel)
+  // De abajo arriba: la primera pista de efectos es la de encima.
+  const order = props.project.tracks.filter((x) => x.kind === 'effect').map((x) => x.id)
+  return list.sort((a, b) => order.indexOf(b.track.id) - order.indexOf(a.track.id))
+})
+
+const elements = new Map<string, HTMLMediaElement>()
+const sync = ref<Record<string, { expected: number; actual: number | null; active: boolean }>>({})
+
+function register(id: string, el: unknown) {
+  if (el instanceof HTMLMediaElement) elements.set(id, el)
+  else elements.delete(id)
+}
+
+function srcOf(item: TrackItem): string {
+  return store.mediaSrc(pathOf(item) ?? '')
+}
+
+function rectStyle(item: TrackItem, look: EffectLook) {
+  const p = pathOf(item)
+  const m = p ? store.media.value[p] : null
+  const r = effectRect(look, m?.width ?? 0, m?.height ?? 0, props.frameWidth, props.frameHeight)
+  return { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` }
+}
+
+function isActive(r: ResolvedItem, t: number): boolean {
+  return t >= r.startMs && t < r.shownEndMs
+}
+
+function effectStyle(r: ResolvedItem) {
+  const look = r.item.look!
+  const t = props.currentMs
+  const forced = editingBox.value && r.item.id === selectedId.value
+  const active = isActive(r, t) || forced
+  const fade = isActive(r, t) ? itemFadeAt(r.item, t - r.startMs, r.shownEndMs - r.startMs) : 1
+  return {
+    ...rectStyle(r.item, look),
+    mixBlendMode: look.mix === 'light' ? ('screen' as const) : ('normal' as const),
+    opacity: String(active ? look.opacity * fade : 0),
+    visibility: active ? ('visible' as const) : ('hidden' as const),
+  }
+}
+
+/** Lleva un elemento a donde le toca, con su volumen; lo pone a sonar o en pausa. */
+function syncOne(r: ResolvedItem, exact: boolean) {
+  const el = elements.get(r.item.id)
+  const t = props.currentMs
+  const local = t - r.startMs
+  const length = r.shownEndMs - r.startMs
+  const forced = editingBox.value && r.item.id === selectedId.value
+  const active = isActive(r, t)
+  const expected = itemSourceTimeAt(r.item, Math.max(0, local))
+  const record = { expected: Math.round(expected), actual: el && el.readyState >= 1 ? Math.round(el.currentTime * 1000) : null, active }
+  sync.value[r.item.id] = record
+  if (!el || el.readyState < 1 || r.item.still) return
+  const sounding = r.track.kind === 'sound' || (r.item.volume > 0 && r.item.hasAudio)
+  // El navegador no pasa de 1: lo que esté por encima del 100 % solo se oye más fuerte al guardar.
+  el.volume = sounding && active ? Math.min(1, Math.max(0, r.item.volume * itemFadeAt(r.item, local, length))) : 0
+  el.muted = !sounding
+  if (!active) {
+    if (!el.paused) el.pause()
+    // Lo que va a empezar, ya colocado en su principio (o el elegido en «Tamaño y sitio», en su primer instante).
+    if ((local < 0 || forced) && !el.seeking && Math.abs(el.currentTime * 1000 - itemSourceTimeAt(r.item, 0)) > 45) {
+      el.currentTime = itemSourceTimeAt(r.item, 0) / 1000
+    }
+    return
+  }
+  if (props.playing) {
+    if (el.paused) {
+      el.currentTime = expected / 1000
+      void el.play().catch(() => {})
+    } else if (!el.seeking && Math.abs(el.currentTime * 1000 - expected) > COVER_DRIFT_TOLERANCE_MS) {
+      el.currentTime = expected / 1000
+    }
+  } else {
+    if (!el.paused) el.pause()
+    if (!el.seeking && (exact || Math.abs(el.currentTime * 1000 - expected) > 45)) {
+      if (Math.abs(el.currentTime * 1000 - expected) > 20) el.currentTime = expected / 1000
+    }
+  }
+}
+
+function syncAll(exact = false) {
+  for (const r of sounds.value) syncOne(r, exact)
+  for (const r of effects.value) syncOne(r, exact)
+  syncTrying(exact)
+}
+
+watch(() => props.currentMs, () => syncAll(false))
+watch(
+  () => props.playing,
+  () => syncAll(true),
+)
+// Silenciar u ocultar una pista, cambiar el volumen…: al momento.
+watch([sounds, effects, () => props.project], () => void nextTick(() => syncAll(true)))
+
+function onMetadata(r: ResolvedItem) {
+  syncOne(r, true)
+}
+
+// ------------------------------------------------------------------ «Probar sobre mi vídeo»
+
+const tryingEl = ref<HTMLVideoElement | null>(null)
+const trying = computed(() => tracks.trying.value)
+const tryingLook = computed<EffectLook>(() => {
+  const d = trying.value?.asset.defaults.look
+  return { mix: d?.mix ?? 'normal', opacity: d?.opacity ?? 1, fit: d?.fit ?? 'cover', box: { x: 0.5, y: 0.5, scale: 1, ...d?.box } }
+})
+const tryingStyle = computed(() => {
+  const t = trying.value
+  if (!t) return {}
+  const r = effectRect(tryingLook.value, t.asset.width ?? 0, t.asset.height ?? 0, props.frameWidth, props.frameHeight)
+  return {
+    left: `${r.left}px`,
+    top: `${r.top}px`,
+    width: `${r.width}px`,
+    height: `${r.height}px`,
+    mixBlendMode: tryingLook.value.mix === 'light' ? ('screen' as const) : ('normal' as const),
+    opacity: String(tryingLook.value.opacity),
+  }
+})
+
+function syncTrying(_exact: boolean) {
+  const el = tryingEl.value
+  if (!el) return
+  // Se repite solo mientras se prueba, siga o no el vídeo.
+  if (el.paused) void el.play().catch(() => {})
+}
+
+// ------------------------------------------------------------------ «Tamaño y sitio»
+
+/**
+ * El recuadro de «Tamaño y sitio»: la parte del efecto que cae dentro del marco (si se sale, las esquinas se
+ * quedan dentro y se pueden seguir cogiendo). El tamaño depende de la distancia al centro de verdad.
+ */
+const editRect = computed(() => {
+  const r = selectedEffect.value
+  if (!r || !editingBox.value) return null
+  const p = pathOf(r.item)
+  const m = p ? store.media.value[p] : null
+  const e = effectRect(r.item.look!, m?.width ?? 0, m?.height ?? 0, props.frameWidth, props.frameHeight)
+  const left = Math.max(0, e.left)
+  const top = Math.max(0, e.top)
+  const right = Math.min(props.frameWidth, e.left + e.width)
+  const bottom = Math.min(props.frameHeight, e.top + e.height)
+  if (right - left < 12 || bottom - top < 12) return { left: '0px', top: '0px', width: `${props.frameWidth}px`, height: `${props.frameHeight}px` }
+  return { left: `${left}px`, top: `${top}px`, width: `${right - left}px`, height: `${bottom - top}px` }
+})
+
+let drag: { mode: 'move' | 'scale'; x: number; y: number; box: EffectLook['box']; cx: number; cy: number; dist: number } | null = null
+
+function boxDown(mode: 'move' | 'scale', e: PointerEvent) {
+  const r = selectedEffect.value
+  if (!r || e.button !== 0) return
+  e.preventDefault()
+  e.stopPropagation()
+  const host = (e.currentTarget as HTMLElement).closest('.track-layers') as HTMLElement
+  const rect = host.getBoundingClientRect()
+  const box = r.item.look!.box
+  const cx = rect.left + box.x * props.frameWidth
+  const cy = rect.top + box.y * props.frameHeight
+  drag = { mode, x: e.clientX, y: e.clientY, box: { ...box }, cx, cy, dist: Math.max(8, Math.hypot(e.clientX - cx, e.clientY - cy)) }
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+}
+
+function boxMove(e: PointerEvent) {
+  const r = selectedEffect.value
+  if (!drag || !r) return
+  if (drag.mode === 'move') {
+    tracks.previewLook(r.item.id, { box: moveEffectBox(drag.box, props.frameWidth, props.frameHeight, e.clientX - drag.x, e.clientY - drag.y) })
+  } else {
+    // El tamaño sigue a la distancia del puntero al centro.
+    const k = Math.hypot(e.clientX - drag.cx, e.clientY - drag.cy) / drag.dist
+    const scale = Math.min(MAX_EFFECT_SCALE, Math.max(MIN_EFFECT_SCALE, Math.round(drag.box.scale * k * 100) / 100))
+    tracks.previewLook(r.item.id, { box: { scale } })
+  }
+}
+
+function boxUp() {
+  if (!drag) return
+  drag = null
+  store.commitPreview()
+}
+
+onBeforeUnmount(() => {
+  for (const el of elements.values()) {
+    el.pause()
+    el.removeAttribute('src')
+    el.load()
+  }
+})
+
+defineExpose({ sync })
+
+/** Para las pruebas: cuánto dura en pantalla cada elemento montado. */
+function lengthOf(r: ResolvedItem): number {
+  return itemLengthMs(r.item, r.startMs, Number.POSITIVE_INFINITY)
+}
+</script>
+
+<template>
+  <div class="track-layers" :class="{ editing: editingBox }" data-testid="track-layers" :data-sync="JSON.stringify(sync)">
+    <template v-for="r in effects" :key="r.item.id">
+      <img
+        v-if="r.item.still"
+        class="fx"
+        :src="srcOf(r.item)"
+        :style="effectStyle(r)"
+        :data-item-id="r.item.id"
+        data-testid="track-effect"
+        alt=""
+        draggable="false"
+      />
+      <video
+        v-else
+        :ref="(el) => register(r.item.id, el)"
+        class="fx"
+        :src="srcOf(r.item)"
+        :style="effectStyle(r)"
+        :data-item-id="r.item.id"
+        :data-start-ms="r.startMs"
+        :data-length-ms="lengthOf(r)"
+        data-testid="track-effect"
+        muted
+        preload="auto"
+        playsinline
+        disablepictureinpicture
+        disableremoteplayback
+        @loadedmetadata="onMetadata(r)"
+      />
+    </template>
+    <video
+      v-if="trying"
+      ref="tryingEl"
+      class="fx trying"
+      :src="store.mediaSrc(trying.path)"
+      :style="tryingStyle"
+      data-testid="trying-effect"
+      muted
+      loop
+      autoplay
+      playsinline
+    />
+    <audio
+      v-for="r in sounds"
+      :key="r.item.id"
+      :ref="(el) => register(r.item.id, el)"
+      :src="srcOf(r.item)"
+      :data-item-id="r.item.id"
+      :data-start-ms="r.startMs"
+      data-testid="track-sound"
+      preload="auto"
+      @loadedmetadata="onMetadata(r)"
+    />
+    <div
+      v-if="editRect"
+      class="box-editor"
+      :style="editRect"
+      data-testid="box-editor"
+      @pointerdown="boxDown('move', $event)"
+      @pointermove="boxMove"
+      @pointerup="boxUp"
+      @pointercancel="boxUp"
+    >
+      <span
+        v-for="corner in ['tl', 'tr', 'bl', 'br']"
+        :key="corner"
+        class="handle"
+        :class="corner"
+        :data-testid="`box-handle-${corner}`"
+        @pointerdown="boxDown('scale', $event)"
+        @pointermove="boxMove"
+        @pointerup="boxUp"
+        @pointercancel="boxUp"
+      />
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.track-layers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* El recuadro de «Tamaño y sitio» puede salirse del marco: se recorta como al guardar. */
+  overflow: hidden;
+}
+.track-layers.editing {
+  pointer-events: auto;
+}
+.fx {
+  position: absolute;
+  object-fit: fill;
+  pointer-events: none;
+}
+.box-editor {
+  position: absolute;
+  outline: 2px dashed #fff;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.6),
+    0 0 0 9999px rgb(0 0 0 / 0.18);
+  cursor: move;
+  touch-action: none;
+}
+.handle {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--accent);
+  box-shadow: 0 1px 6px rgb(0 0 0 / 0.5);
+  touch-action: none;
+}
+/* Las esquinas, hacia dentro: así no las recorta el borde del marco. */
+.handle.tl {
+  left: 2px;
+  top: 2px;
+  cursor: nwse-resize;
+}
+.handle.tr {
+  right: 2px;
+  top: 2px;
+  cursor: nesw-resize;
+}
+.handle.bl {
+  left: 2px;
+  bottom: 2px;
+  cursor: nesw-resize;
+}
+.handle.br {
+  right: 2px;
+  bottom: 2px;
+  cursor: nwse-resize;
+}
+</style>

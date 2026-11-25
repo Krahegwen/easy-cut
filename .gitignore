@@ -12,6 +12,9 @@ coverage/
 .idea/
 *.local
 
+# Ficheros de la biblioteca (se publican en la release library-v1; el catálogo sí va en el repo)
+library/dist/
+
 # Tauri
 src-tauri/target/
 src-tauri/gen/

@@ -18,6 +18,9 @@ export interface FakeBridgeState {
   encoders: Record<string, boolean>
   /** Portapapeles del sistema: secuencia y ficheros copiados en el Explorador. */
   clipboard: { sequence: number; paths: string[] }
+  /** Biblioteca: ficheros ya descargados (nombre → ruta) y descargas pedidas. */
+  library: Record<string, string>
+  libraryFetches: string[]
 }
 
 export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { bridge: NativeBridge; state: FakeBridgeState } {
@@ -33,6 +36,8 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     ffmpegHangs: false,
     encoders: { h264_nvenc: true, libx264: true },
     clipboard: { sequence: 1, paths: [] },
+    library: {},
+    libraryFetches: [],
     ...initial,
   }
   for (const p of Object.keys(state.media)) state.existing.add(p)
@@ -107,6 +112,15 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     deleteRecording: async (path) => {
       state.deleted.push(path)
     },
+    libraryStatus: async (files) => files.map((f) => state.library[f.file] ?? null),
+    libraryFetch: (ref) => {
+      state.libraryFetches.push(ref.file)
+      const path = `C:\\cache\\library\\${ref.file}`
+      state.library[ref.file] = path
+      state.existing.add(path)
+      return done(path)
+    },
+    libraryCatalog: async () => null,
     onFilesDropped: () => () => {},
   }
   return { bridge, state }

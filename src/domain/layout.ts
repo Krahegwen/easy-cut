@@ -1,7 +1,7 @@
 // Forma de los trozos y del vídeo, y cómo colocar un trozo dentro del marco de la vista previa.
 // Es el mismo cálculo que planFraming (ffmpeg-args.ts), en píxeles de pantalla y sin redondear a pares.
 
-import { clipDisplaySize, type AspectRatio, type Inset, type InsetSize, type MediaInfo, type Viewable } from './project'
+import { clipDisplaySize, type AspectRatio, type EffectBox, type EffectLook, type Inset, type InsetSize, type MediaInfo, type Viewable } from './project'
 
 export const ASPECT_VALUES: Record<AspectRatio, number> = {
   '16:9': 16 / 9,
@@ -137,6 +137,47 @@ export function computeFramingLayout(
     canPanX: bw > W + tolerance,
     canPanY: bh > H + tolerance,
   }
+}
+
+export interface EffectRect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+/**
+ * Dónde va un efecto (de srcWidth × srcHeight) en un marco de frameWidth × frameHeight según su tamaño y
+ * sitio: a tamaño 1 llena el marco (`cover`, recortando lo que sobre) o cabe entero (`contain`), y se
+ * centra en (x, y). Puede salirse del marco. Con `even`, en píxeles pares (para ffmpeg).
+ */
+export function effectRect(
+  look: Pick<EffectLook, 'box' | 'fit'>,
+  srcWidth: number,
+  srcHeight: number,
+  frameWidth: number,
+  frameHeight: number,
+  even = false,
+): EffectRect {
+  const w0 = srcWidth > 0 ? srcWidth : frameWidth
+  const h0 = srcHeight > 0 ? srcHeight : frameHeight
+  const base = look.fit === 'contain' ? Math.min(frameWidth / w0, frameHeight / h0) : Math.max(frameWidth / w0, frameHeight / h0)
+  const s = base * look.box.scale
+  const round = (n: number) => (even ? Math.max(2, Math.round(n / 2) * 2) : n)
+  const width = round(w0 * s)
+  const height = round(h0 * s)
+  const left = frameWidth * look.box.x - width / 2
+  const top = frameHeight * look.box.y - height / 2
+  return { left: even ? Math.round(left) : left, top: even ? Math.round(top) : top, width, height }
+}
+
+/**
+ * Tamaño y sitio nuevos al arrastrar un efecto dx/dy píxeles (en un marco de frameWidth × frameHeight):
+ * su centro se mueve con el puntero, sin salirse del todo del marco.
+ */
+export function moveEffectBox(box: EffectBox, frameWidth: number, frameHeight: number, dx: number, dy: number): EffectBox {
+  const clamp = (v: number) => Math.min(1, Math.max(0, v))
+  return { ...box, x: clamp(box.x + dx / Math.max(1, frameWidth)), y: clamp(box.y + dy / Math.max(1, frameHeight)) }
 }
 
 /**

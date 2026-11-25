@@ -28,6 +28,8 @@ pub const CANCELLED: &str = "__cancelled__";
 pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "mkv", "avi", "webm", "m4v", "3gp", "mts", "m2ts", "mpg", "wmv"];
 /// Extensiones de sonido que se pueden añadir al montaje (las mismas que domain/file-name.ts).
 pub const AUDIO_EXTENSIONS: &[&str] = &["m4a", "mp3", "wav", "aac", "ogg", "opus", "flac", "wma"];
+/// Imágenes fijas que se pueden poner en una pista de efectos (logo, pegatina, marco).
+pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp"];
 
 /// Procesos de miniaturas a la vez.
 const THUMBNAIL_CONCURRENCY: usize = 3;
@@ -53,6 +55,8 @@ struct Recording {
 
 pub struct AppState {
     pub registry: Arc<ProcessRegistry>,
+    /// Descargas de la biblioteca en marcha (se cancelan con cancel_job, como los procesos).
+    pub downloads: crate::library::Downloads,
     thumbnail_slots: Semaphore,
     recordings: Mutex<HashMap<String, Recording>>,
     counter: AtomicU64,
@@ -62,6 +66,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             registry: Arc::new(ProcessRegistry::default()),
+            downloads: crate::library::Downloads::default(),
             thumbnail_slots: Semaphore::new(THUMBNAIL_CONCURRENCY),
             recordings: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(1),
@@ -169,6 +174,7 @@ pub async fn run_tool(
 #[tauri::command]
 pub fn cancel_job(state: State<'_, AppState>, job_id: String) {
     state.registry.cancel(&job_id);
+    state.downloads.cancel(&job_id);
 }
 
 // ---------------------------------------------------------------- miniaturas y caché
@@ -391,17 +397,27 @@ pub async fn pick_videos(
     multiple: bool,
     default_folder: Option<String>,
     sounds: Option<bool>,
+    for_tracks: Option<bool>,
 ) -> Result<Vec<String>, String> {
     let folder = default_folder.map(PathBuf::from).filter(|p| p.is_dir()).or_else(|| app.path().video_dir().ok());
     let sounds = sounds.unwrap_or(false);
+    let for_tracks = for_tracks.unwrap_or(false);
     let title = match (multiple, sounds) {
+        _ if for_tracks => "Elige sonidos, vídeos o imágenes para las pistas",
         (true, true) => "Elige los vídeos o sonidos",
         (false, true) => "Elige un vídeo o un sonido",
         (true, false) => "Elige los vídeos",
         (false, false) => "Elige un vídeo",
     };
     let mut dialog = app.dialog().file().set_parent(&window).set_title(title);
-    if sounds {
+    if for_tracks {
+        let all: Vec<&str> = AUDIO_EXTENSIONS.iter().chain(VIDEO_EXTENSIONS.iter()).chain(IMAGE_EXTENSIONS.iter()).copied().collect();
+        dialog = dialog
+            .add_filter("Sonidos, vídeos e imágenes", &all)
+            .add_filter("Sonidos", AUDIO_EXTENSIONS)
+            .add_filter("Vídeos", VIDEO_EXTENSIONS)
+            .add_filter("Imágenes", IMAGE_EXTENSIONS);
+    } else if sounds {
         let both: Vec<&str> = VIDEO_EXTENSIONS.iter().chain(AUDIO_EXTENSIONS.iter()).copied().collect();
         dialog = dialog
             .add_filter("Vídeos y sonidos", &both)

@@ -2,7 +2,7 @@
 // No corre en `pnpm test`; se lanza con `pnpm test:ffmpeg`. Genera todo en test-output/.
 
 import { execFile, spawn } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { beforeAll, describe, expect, it } from 'vitest'
@@ -109,8 +109,9 @@ let detectedKeep: { startMs: number; endMs: number }[] | null = null
 const encoderProbe: Record<string, boolean> = {}
 
 beforeAll(async () => {
-  rmSync(OUT, { recursive: true, force: true })
+  // Todo menos tracks/ (de tracks.itest.ts, que puede haber corrido antes).
   mkdirSync(OUT, { recursive: true })
+  for (const entry of readdirSync(OUT)) if (entry !== 'tracks') rmSync(join(OUT, entry), { recursive: true, force: true })
   await ffmpeg(['-y', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', lavfiVideo(1920, 1080, 30, 10), '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=10', ...commonEnc, files.horizontal])
   await ffmpeg(['-y', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', lavfiVideo(1080, 1920, 60, 8), '-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=44100:duration=8', ...commonEnc, files.vertical])
   await ffmpeg(['-y', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', lavfiVideo(1280, 720, 30, 6), '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', files.noAudio])

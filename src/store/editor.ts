@@ -15,11 +15,15 @@ import {
   createHistory,
   createProject,
   defaultPicture,
+  describeReanchored,
   dominantAspect,
   duplicateClip,
   findClip,
   insertClipAfter,
+  isImagePath,
   isMediaPath,
+  itemsAnchoredTo,
+  trackFilePaths,
   moveClip,
   parseProject,
   projectDurationMs,
@@ -150,8 +154,14 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
       })
     return clips.length === p.clips.length && !changed ? p : { ...p, clips }
   })
-  const hasMissing = computed(() =>
-    project.value.clips.some((c) => missing.value[c.sourcePath] || !media.value[c.sourcePath] || coverMissing(c)),
+  /** Sonidos y efectos de fichero cuyo original no se encuentra (o no se ha podido leer). */
+  const missingItems = computed(() =>
+    project.value.tracks.flatMap((t) => t.items).filter((i) => i.source.type === 'file' && (!!missing.value[i.source.path] || !media.value[i.source.path])),
+  )
+  const hasMissing = computed(
+    () =>
+      project.value.clips.some((c) => missing.value[c.sourcePath] || !media.value[c.sourcePath] || coverMissing(c)) ||
+      missingItems.value.length > 0,
   )
 
   // ------------------------------------------------------------------ historial
@@ -302,7 +312,8 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
    * (al seguir con un autoguardado).
    */
   async function refreshOriginals() {
-    const paths = [...new Set(history.value.present.clips.flatMap(clipPaths))]
+    const present = history.value.present
+    const paths = [...new Set([...present.clips.flatMap(clipPaths), ...trackFilePaths(present)])]
     await Promise.all(
       paths.map(async (path) => {
         let exists = false
@@ -316,7 +327,7 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
           return
         }
         try {
-          setMedia(await bridge.probe(path))
+          setMedia(await bridge.probe(path, { still: isImagePath(path) }))
           setMissing(path, false)
         } catch {
           setMissing(path, true)
@@ -424,10 +435,12 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
   function removeClip(clipId: string) {
     const index = history.value.present.clips.findIndex((c) => c.id === clipId)
     if (index < 0) return
+    // Lo pegado a este trozo se queda en el mismo sitio del vídeo (removeClip lo vuelve a pegar): se avisa.
+    const moved = describeReanchored(itemsAnchoredTo(history.value.present, clipId))
     apply((p) => removeClipFromProject(p, clipId))
     const clips = history.value.present.clips
     selectedClipId.value = clips[Math.min(index, clips.length - 1)]?.id ?? null
-    showToast('Trozo quitado. El original sigue en tu ordenador.', { label: 'Deshacer', run: undo })
+    showToast(moved ? `Trozo quitado. ${moved}` : 'Trozo quitado. El original sigue en tu ordenador.', { label: 'Deshacer', run: undo })
   }
 
   function openClipEditor(clipId: string, start: ClipEditorStart | null = null) {
@@ -693,7 +706,10 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     redoable,
     playableProject,
     hasMissing,
+    missingItems,
     coverMissing,
+    setMedia,
+    setMissing,
     visibleClip,
     bridge,
     // acciones

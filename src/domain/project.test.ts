@@ -313,7 +313,7 @@ describe('serialización', () => {
     p = setTargetDuration(setAspect(p, '1:1'), 60_000)
     const json = serializeProject(p)
     expect(JSON.parse(json).app).toBe('easy-cut')
-    expect(JSON.parse(json).version).toBe(2)
+    expect(JSON.parse(json).version).toBe(3)
     expect(parseProject(json)).toEqual(p)
   })
 

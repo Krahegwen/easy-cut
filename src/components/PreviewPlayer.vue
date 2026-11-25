@@ -37,6 +37,7 @@ import AppIcon from './AppIcon.vue'
 import KeyHint from './KeyHint.vue'
 import type { PanEvent, PlayerTime } from './player-types'
 import PositionBar from './PositionBar.vue'
+import TrackLayers from './TrackLayers.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -48,8 +49,10 @@ const props = withDefaults(
     clockLabel?: string
     /** Qué se conserva al editar: el instante del vídeo (por defecto) o el del original (al arreglar un trozo). */
     anchor?: 'project' | 'source'
+    /** Con las pistas de sonidos y efectos (y la fila principal silenciada si lo está): «Tu vídeo». */
+    tracks?: boolean
   }>(),
-  { loop: false, pannable: false, clockLabel: 'Posición en el vídeo', anchor: 'project' },
+  { loop: false, pannable: false, clockLabel: 'Posición en el vídeo', anchor: 'project', tracks: false },
 )
 
 const emit = defineEmits<{ time: [t: PlayerTime]; pan: [e: PanEvent] }>()
@@ -175,7 +178,7 @@ function coverStyle(clip: Clip) {
 
 function isMutedClip(clip: Clip): boolean {
   const m = mediaOf(clip.sourcePath)
-  return clip.muted || clip.speed === 4 || !m?.hasAudio
+  return clip.muted || clip.speed === 4 || !m?.hasAudio || (props.tracks && props.project.mainMuted)
 }
 
 function register(clipId: string, el: unknown) {
@@ -495,6 +498,16 @@ watch(plan, () => {
 })
 
 watch(mountedClips, () => void nextTick(prepareElements))
+// Silenciar la fila principal se oye al momento.
+watch(
+  () => props.project.mainMuted,
+  () => {
+    for (const clip of mountedClips.value) {
+      const el = elements.get(clip.id)
+      if (el) configure(el, clip, clip.id === activeClip.value?.id)
+    }
+  },
+)
 // Cambiar la imagen (p. ej. «Empieza en…» o quitar la esquina) no cambia el plan: se recoloca igualmente.
 watch(
   () => activeClip.value?.picture,
@@ -643,6 +656,7 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
     :data-picture="activeKind ?? ''"
     :data-cover-ms="coverActualMs ?? ''"
     :data-cover-expected-ms="coverExpectedMs ?? ''"
+    :data-main-muted="tracks && project.mainMuted ? '1' : '0'"
   >
     <div ref="stage" class="stage">
       <div
@@ -705,6 +719,14 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
           @loadedmetadata="onLoadedMetadata(clip, $event)"
           @error="onError(clip)"
           @seeked="onSeeked(clip)"
+        />
+        <TrackLayers
+          v-if="tracks && frame.width > 0"
+          :project="project"
+          :current-ms="currentMs"
+          :playing="playing"
+          :frame-width="frame.width"
+          :frame-height="frame.height"
         />
         <div v-if="project.clips.length === 0" class="empty">Aquí verás tu vídeo</div>
         <div v-if="preparingPreview" class="notice">

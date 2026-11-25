@@ -10,7 +10,7 @@ import ToastBar from './components/ToastBar.vue'
 import { addVideos } from './lib/add-videos'
 import { installShortcutListener } from './lib/use-shortcuts'
 import UpdateDialog from './components/UpdateDialog.vue'
-import { store, updater, updaterEnabled } from './store'
+import { store, tracks, updater, updaterEnabled } from './store'
 import ClipEditorView from './views/ClipEditorView.vue'
 import DoneView from './views/DoneView.vue'
 import EditorView from './views/EditorView.vue'
@@ -21,6 +21,7 @@ import SavingView from './views/SavingView.vue'
 import TeleprompterView from './views/TeleprompterView.vue'
 
 const hovering = ref(false)
+const toTracks = () => tracks.view.value === 'tracks' || tracks.libraryOpen.value
 
 let stopDrop: (() => void) | null = null
 let stopKeys: (() => void) | null = null
@@ -32,7 +33,9 @@ onMounted(() => {
   stopDrop = store.bridge.onFilesDropped({
     onDrop: (paths) => {
       const screen = store.screen.value
-      if (screen === 'pick' || screen === 'editor') void addVideos(paths)
+      // Con la vista de pistas o la biblioteca abierta, lo que se suelta va a las pistas, donde está la línea.
+      if (screen === 'editor' && toTracks()) void tracks.addFiles(paths, tracks.playheadMs.value)
+      else if (screen === 'pick' || screen === 'editor') void addVideos(paths)
       else if (screen === 'home') {
         store.startNewProject()
         store.go('pick')
@@ -63,7 +66,7 @@ onBeforeUnmount(() => {
   <DoneView v-else-if="store.screen.value === 'done'" />
   <TeleprompterView v-else-if="store.screen.value === 'teleprompter'" />
 
-  <div v-if="hovering && store.screen.value === 'editor'" class="drop-hint">Suelta los vídeos o sonidos para añadirlos al final</div>
+  <div v-if="hovering && store.screen.value === 'editor'" class="drop-hint">{{ toTracks() ? 'Suelta los sonidos, vídeos o imágenes para ponerlos en las pistas, donde está la línea' : 'Suelta los vídeos o sonidos para añadirlos al final' }}</div>
   <PreparingOverlay />
   <ToastBar />
   <ConfirmDialog />

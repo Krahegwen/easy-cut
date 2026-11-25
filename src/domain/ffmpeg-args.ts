@@ -2,7 +2,7 @@
 // Siempre un array de argumentos (para spawn/execFile), nunca una cadena para el shell.
 
 import { encoderVideoArgs, type VideoEncoder } from './encoders'
-import { insetRect, PLAIN_BACKGROUND_HEX } from './layout'
+import { effectRect, insetRect, PLAIN_BACKGROUND_HEX } from './layout'
 import { computeOutputSpec, even, SOUND_BITRATE_KBPS, type OutputSpec, type PresetId } from './output'
 import {
   clipDisplaySize,
@@ -13,8 +13,11 @@ import {
   type MediaInfo,
   type Project,
   type Speed,
+  type TrackItem,
+  type TrackKind,
   type Viewable,
 } from './project'
+import { audibleOrVisible, effectiveFades, projectTiming, resolveTracks, type ProjectTiming } from './tracks'
 
 export const AUDIO_SAMPLE_RATE = 48_000
 /** Microfundido en los bordes de cada rango conservado, para evitar clics. */
@@ -181,6 +184,11 @@ export interface ExportOptions {
    * de comandos: con muchos trozos y pausas quitadas se pasaría del límite de 32 767 caracteres de Windows.
    */
   filterScriptPath?: string
+  /**
+   * Fichero de cada elemento de las pistas (los de la biblioteca, ya descargados). null = no se pone. Sin
+   * esta opción, solo los elementos que son ficheros del ordenador.
+   */
+  itemPath?: (item: TrackItem) => string | null
 }
 
 // setparams etiqueta cada fotograma como BT.709: las opciones de salida -color_trc/-color_primaries
@@ -198,8 +206,15 @@ function createInputs() {
       args.push(...extra, '-ss', sec(startMs), '-t', sec(lengthMs), '-i', path)
       return count++
     },
+    /** Una entrada con sus opciones tal cual (antes de -i). */
+    raw(path: string, options: string[]): number {
+      args.push(...options, '-i', path)
+      return count++
+    },
   }
 }
+
+type Inputs = ReturnType<typeof createInputs>
 
 /** Rangos conservados relativos a la entrada del trozo (la entrada ya empieza en su punto de entrada). */
 function relativeSegments(clip: Clip) {
@@ -271,9 +286,9 @@ export function roundedMaskExpression(radius: number): string {
   return `255*lte(pow(max(0,abs(X-(W-1)/2)-(W/2-${r})),2)+pow(max(0,abs(Y-(H-1)/2)-(H/2-${r})),2),${r * r})`
 }
 
-/** Cadenas de audio de un trozo, con el número exacto de muestras: deja [a{i}]. */
-function audioChains(clip: Clip, media: MediaInfo, i: number, input: number, samples: number): string[] {
-  if (!clipKeepsAudio(clip, media)) {
+/** Cadenas de audio de un trozo, con el número exacto de muestras: deja [a{i}]. `silent` = fila principal silenciada. */
+function audioChains(clip: Clip, media: MediaInfo, i: number, input: number, samples: number, silent = false): string[] {
+  if (silent || !clipKeepsAudio(clip, media)) {
     return [`anullsrc=channel_layout=stereo:sample_rate=${AUDIO_SAMPLE_RATE},atrim=end_sample=${samples},${AUDIO_FORMAT}[a${i}]`]
   }
   const rel = relativeSegments(clip)
@@ -364,6 +379,274 @@ function pictureChains(
   return chains
 }
 
+// ---------------------------------------------------------------------------
+// Pistas de sonidos y efectos
+
+/** Techo del limitador de la mezcla (lineal): no satura aunque se sumen la voz y la música. */
+export const MIX_LIMIT = 0.97
+
+/** Un elemento de las pistas listo para guardarse: su tiempo en el fichero, su ruta y su información. */
+export interface PlannedItem {
+  item: TrackItem
+  kind: TrackKind
+  path: string
+  media: MediaInfo
+  /** Tiempo en el fichero (ms, con los tiempos de fotogramas enteros de cada trozo). */
+  startMs: number
+  /** Lo que dura dentro del vídeo (lo que sobresale del final se corta). */
+  lengthMs: number
+}
+
+/**
+ * Los elementos que cuentan al guardar: sin pistas silenciadas u ocultas, sin lo que cae fuera del vídeo y
+ * solo los que tienen fichero (`itemPath`; los de la biblioteca ya descargados).
+ */
+export function planTrackItems(
+  project: Project,
+  mediaByPath: MediaLookup,
+  timing: ProjectTiming,
+  itemPath: (item: TrackItem) => string | null,
+): PlannedItem[] {
+  const planned: PlannedItem[] = []
+  for (const r of audibleOrVisible(resolveTracks(project, timing))) {
+    const path = itemPath(r.item)
+    if (!path) continue
+    const media = lookup(mediaByPath, path)
+    planned.push({ item: r.item, kind: r.track.kind, path, media, startMs: r.startMs, lengthMs: r.shownEndMs - r.startMs })
+  }
+  return planned
+}
+
+/** Ruta de un elemento de fichero (los de la biblioteca necesitan `itemPath`). */
+function defaultItemPath(item: TrackItem): string | null {
+  return item.source.type === 'file' ? item.source.path : null
+}
+
+/** ¿Este elemento suena? Los sonidos con volumen y los efectos que traen sonido y se les ha subido. */
+function itemSounds(p: PlannedItem): boolean {
+  return p.item.volume > 0 && p.media.hasAudio && !p.item.still
+}
+
+/** ¿Se repite el fichero entero? Entonces basta -stream_loop (no hay que guardar la vuelta en memoria). */
+function loopsWholeFile(item: TrackItem): boolean {
+  return item.inMs <= 0 && item.outMs >= item.sourceDurationMs - 1
+}
+
+/** Cadena de sonido de un elemento: recorte, vueltas, volumen, suaves y retraso hasta su sitio. Deja [t{n}]. */
+function itemAudioChains(p: PlannedItem, n: number, inputs: Inputs): string[] {
+  const item = p.item
+  const samples = Math.max(1, Math.round((p.lengthMs * AUDIO_SAMPLE_RATE) / 1000))
+  const startSample = Math.max(0, Math.round((p.startMs * AUDIO_SAMPLE_RATE) / 1000))
+  const parts: string[] = []
+  let input: number
+  if (!item.repeat) {
+    input = inputs.add(p.path, item.inMs, Math.min(item.outMs - item.inMs, p.lengthMs) + 100, ['-vn'])
+    parts.push('asetpts=PTS-STARTPTS', `aresample=${AUDIO_SAMPLE_RATE}`, AUDIO_FORMAT)
+  } else if (loopsWholeFile(item)) {
+    input = inputs.raw(p.path, ['-vn', '-stream_loop', '-1', '-t', sec(item.phaseMs + p.lengthMs + 500)])
+    parts.push(`aresample=${AUDIO_SAMPLE_RATE}`, AUDIO_FORMAT, `atrim=start=${sec(item.phaseMs)}`, 'asetpts=PTS-STARTPTS')
+  } else {
+    // Un trozo del original que se repite: se guarda una vuelta y aloop la repite.
+    const loopSamples = Math.max(1, Math.round(((item.outMs - item.inMs) * AUDIO_SAMPLE_RATE) / 1000))
+    input = inputs.add(p.path, item.inMs, item.outMs - item.inMs, ['-vn'])
+    parts.push(
+      `aresample=${AUDIO_SAMPLE_RATE}`,
+      AUDIO_FORMAT,
+      `atrim=end_sample=${loopSamples}`,
+      `aloop=loop=-1:size=${loopSamples}`,
+      'asetpts=N/SR/TB',
+      `atrim=start=${sec(item.phaseMs)}`,
+      'asetpts=PTS-STARTPTS',
+    )
+  }
+  const fades = effectiveFades(item, p.lengthMs)
+  const fadeIn = Math.round((fades.inMs * AUDIO_SAMPLE_RATE) / 1000)
+  const fadeOut = Math.round((fades.outMs * AUDIO_SAMPLE_RATE) / 1000)
+  parts.push(`apad=whole_len=${samples}`, `atrim=end_sample=${samples}`)
+  if (Math.abs(item.volume - 1) > 1e-6) parts.push(`volume=${Number(item.volume.toFixed(3))}`)
+  if (fadeIn > 0) parts.push(`afade=t=in:ss=0:ns=${fadeIn}`)
+  if (fadeOut > 0) parts.push(`afade=t=out:ss=${samples - fadeOut}:ns=${fadeOut}`)
+  if (startSample > 0) parts.push(`adelay=delays=${startSample}S:all=1`)
+  return [`[${input}:a:0]${parts.join(',')}[t${n}]`]
+}
+
+/**
+ * Mezcla el sonido de la fila principal [amain] con los elementos que suenan: amix con normalize=0 (la voz no
+ * baja de volumen por añadir música) y un limitador suave al final, con su retraso compensado. Deja
+ * exactamente `totalSamples` muestras en [out].
+ */
+function mixChains(planned: readonly PlannedItem[], inputs: Inputs, totalSamples: number, out: string): string[] {
+  const sounding = planned.filter(itemSounds)
+  if (sounding.length === 0) return [`[amain]anull[${out}]`]
+  const chains = sounding.flatMap((p, n) => itemAudioChains(p, n, inputs))
+  const labels = sounding.map((_, n) => `[t${n}]`).join('')
+  chains.push(
+    `[amain]${labels}amix=inputs=${sounding.length + 1}:normalize=0:duration=first:dropout_transition=0,` +
+      `alimiter=limit=${MIX_LIMIT}:level=0:latency=1,apad=whole_len=${totalSamples},atrim=end_sample=${totalSamples},${AUDIO_FORMAT}[${out}]`,
+  )
+  return chains
+}
+
+/** Opciones de entrada para leer la transparencia de un WebM (el decoder nativo de VP9/VP8 la descarta). */
+function alphaDecoder(media: MediaInfo): string[] {
+  if (!media.hasAlpha) return []
+  if (media.videoCodec === 'vp9') return ['-c:v', 'libvpx-vp9']
+  if (media.videoCodec === 'vp8') return ['-c:v', 'libvpx']
+  return []
+}
+
+interface EffectRegion {
+  startFrame: number
+  endFrame: number
+  /** De abajo arriba (la primera, la que va más abajo). */
+  effects: { p: PlannedItem; startFrame: number; endFrame: number; layer: number }[]
+}
+
+/**
+ * Tramos del vídeo con algún efecto (los efectos que se solapan van en el mismo tramo). Solo esos tramos
+ * pasan a RGB y se procesan: el resto del vídeo no se toca.
+ */
+export function effectRegions(planned: readonly PlannedItem[], project: Project, fps: number, totalFrames: number): EffectRegion[] {
+  const effectTracks = project.tracks.filter((t) => t.kind === 'effect')
+  const layerOf = (item: TrackItem) => effectTracks.length - 1 - effectTracks.findIndex((t) => t.items.some((i) => i.id === item.id))
+  const list = planned
+    .filter((p) => p.kind === 'effect')
+    .map((p) => ({
+      p,
+      startFrame: Math.min(totalFrames, Math.max(0, Math.round((p.startMs * fps) / 1000))),
+      endFrame: Math.min(totalFrames, Math.max(0, Math.round(((p.startMs + p.lengthMs) * fps) / 1000))),
+      layer: layerOf(p.item),
+    }))
+    .filter((e) => e.endFrame > e.startFrame)
+    .sort((a, b) => a.startFrame - b.startFrame)
+  const regions: EffectRegion[] = []
+  for (const e of list) {
+    const last = regions[regions.length - 1]
+    if (last && e.startFrame < last.endFrame) {
+      last.endFrame = Math.max(last.endFrame, e.endFrame)
+      last.effects.push(e)
+    } else {
+      regions.push({ startFrame: e.startFrame, endFrame: e.endFrame, effects: [e] })
+    }
+  }
+  // Dentro de cada tramo, de abajo arriba; a igual pista, por tiempo.
+  for (const r of regions) r.effects.sort((a, b) => a.layer - b.layer || a.startFrame - b.startFrame)
+  return regions
+}
+
+/** Cadena de imagen de un efecto, ya escalado, colocado y desplazado a su instante dentro del tramo: deja [label]. */
+function effectChains(
+  e: EffectRegion['effects'][number],
+  region: EffectRegion,
+  inputs: Inputs,
+  spec: OutputSpec,
+  label: string,
+): string[] {
+  const { p } = e
+  const item = p.item
+  const look = item.look!
+  const F = spec.fps
+  const W = spec.width
+  const H = spec.height
+  const frames = e.endFrame - e.startFrame
+  const lengthMs = (frames * 1000) / F
+  const pre: string[] = []
+  let input: number
+  if (item.still) {
+    input = inputs.raw(p.path, ['-loop', '1', '-framerate', String(F), '-t', sec(lengthMs + 500)])
+  } else if (item.repeat) {
+    // Un efecto que se repite da vueltas al fichero entero (las vueltas no se guardan en memoria).
+    input = inputs.raw(p.path, [...alphaDecoder(p.media), '-an', '-stream_loop', '-1', '-t', sec(item.phaseMs + lengthMs + 1000)])
+    if (item.phaseMs > 0) pre.push(`trim=start=${sec(item.phaseMs)}`)
+  } else {
+    input = inputs.add(p.path, item.inMs, Math.min(item.outMs - item.inMs, lengthMs) + 500, [...alphaDecoder(p.media), '-an'])
+  }
+  const rect = effectRect(look, p.media.width, p.media.height, W, H, true)
+  const fades = effectiveFades(item, lengthMs)
+  const offset = sec(((e.startFrame - region.startFrame) * 1000) / F)
+  const timing = [...pre, 'setpts=PTS-STARTPTS', `fps=${F}`, `tpad=stop_mode=clone:stop=${frames}`, `trim=end_frame=${frames}`]
+  const scale = `scale=${rect.width}:${rect.height}:flags=bicubic`
+  const tail = [`setpts=PTS-STARTPTS+${offset}/TB`]
+  if (look.mix === 'light') {
+    // «Como luz»: lo que se ve del recuadro, sobre negro a pantalla completa (el negro no cambia nada en
+    // modo screen). La transparencia la pone blend (all_opacity); las suaves, fundiendo a negro.
+    const cx = Math.max(0, -rect.left)
+    const cy = Math.max(0, -rect.top)
+    const cw = Math.min(rect.width, W - rect.left) - cx
+    const ch = Math.min(rect.height, H - rect.top) - cy
+    if (cw <= 0 || ch <= 0) return []
+    const parts = [...timing, scale]
+    if (cx > 0 || cy > 0 || cw < rect.width || ch < rect.height) parts.push(`crop=${cw}:${ch}:${cx}:${cy}`)
+    if (cw < W || ch < H) parts.push(`pad=${W}:${H}:${Math.max(0, rect.left)}:${Math.max(0, rect.top)}:black`)
+    parts.push('format=gbrp')
+    if (fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}`)
+    if (fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}`)
+    return [`[${input}:v:0]${[...parts, ...tail].join(',')}[${label}]`]
+  }
+  // Normal: encima, con su transparencia; la del efecto y las suaves, en el canal alfa.
+  const parts = [...timing, scale, 'format=gbrap']
+  if (look.opacity < 1) parts.push(`colorchannelmixer=aa=${Number(look.opacity.toFixed(3))}`)
+  if (fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}:alpha=1`)
+  if (fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}:alpha=1`)
+  return [`[${input}:v:0]${[...parts, ...tail].join(',')}[${label}]`]
+}
+
+/**
+ * Pone los efectos sobre el vídeo ya montado [vmain] → [out]. El vídeo se parte en tramos: los que no tienen
+ * efectos pasan tal cual; los que sí, a RGB (gbrp), con cada efecto encima por orden de pista (overlay para
+ * «Normal», blend=screen para «Como luz») y de vuelta a yuv420p BT.709. Cada efecto solo se lee y procesa
+ * durante su tramo (empieza con setpts en su instante; fuera, overlay/blend dejan pasar la imagen).
+ */
+function effectLayerChains(planned: readonly PlannedItem[], project: Project, inputs: Inputs, spec: OutputSpec, totalFrames: number, out: string): string[] {
+  const regions = effectRegions(planned, project, spec.fps, totalFrames)
+  if (regions.length === 0) return [`[vmain]null[${out}]`]
+  type Piece = { startFrame: number; endFrame: number; region: EffectRegion | null }
+  const pieces: Piece[] = []
+  let cursor = 0
+  for (const r of regions) {
+    if (r.startFrame > cursor) pieces.push({ startFrame: cursor, endFrame: r.startFrame, region: null })
+    pieces.push({ startFrame: r.startFrame, endFrame: r.endFrame, region: r })
+    cursor = r.endFrame
+  }
+  if (cursor < totalFrames) pieces.push({ startFrame: cursor, endFrame: totalFrames, region: null })
+
+  const chains: string[] = []
+  const pieceLabels = pieces.map((_, k) => `fxp${k}`)
+  const toRgb = 'scale=in_color_matrix=bt709:in_range=tv:flags=bicubic,format=gbrp'
+  const toYuv = `scale=out_color_matrix=bt709:out_range=tv:flags=bicubic,${VIDEO_TAIL.join(',')}`
+  if (pieces.length === 1) chains.push(`[vmain]null[fxs0]`)
+  else chains.push(`[vmain]split=${pieces.length}${pieces.map((_, k) => `[fxs${k}]`).join('')}`)
+  pieces.forEach((piece, k) => {
+    const trim = pieces.length === 1 ? [] : [`trim=start_frame=${piece.startFrame}:end_frame=${piece.endFrame}`, 'setpts=PTS-STARTPTS']
+    if (!piece.region) {
+      chains.push(`[fxs${k}]${trim.join(',') || 'null'}[${pieceLabels[k]}]`)
+      return
+    }
+    let base = `fxb${k}_0`
+    chains.push(`[fxs${k}]${[...trim, toRgb].join(',')}[${base}]`)
+    piece.region.effects.forEach((e, j) => {
+      const fx = `fxe${k}_${j}`
+      const made = effectChains(e, piece.region!, inputs, spec, fx)
+      if (made.length === 0) return
+      chains.push(...made)
+      const next = `fxb${k}_${j + 1}`
+      const look = e.p.item.look!
+      if (look.mix === 'light') {
+        const opacity = look.opacity < 1 ? `:all_opacity=${Number(look.opacity.toFixed(3))}` : ''
+        chains.push(`[${base}][${fx}]blend=all_mode=screen${opacity}:eof_action=pass:shortest=0[${next}]`)
+      } else {
+        const rect = effectRect(look, e.p.media.width, e.p.media.height, spec.width, spec.height, true)
+        chains.push(`[${base}][${fx}]overlay=x=${rect.left}:y=${rect.top}:format=gbrp:eof_action=pass:shortest=0[${next}]`)
+      }
+      base = next
+    })
+    chains.push(`[${base}]${toYuv}[${pieceLabels[k]}]`)
+  })
+  if (pieces.length === 1) chains.push(`[${pieceLabels[0]}]null[${out}]`)
+  else chains.push(`${pieceLabels.map((l) => `[${l}]`).join('')}concat=n=${pieces.length}:v=1:a=0[${out}]`)
+  return chains
+}
+
 /** Construye la orden de exportación completa. */
 export function buildExportCommand(
   project: Project,
@@ -379,6 +662,12 @@ export function buildExportCommand(
   const inputs = createInputs()
   const chains: string[] = []
   const concatInputs: string[] = []
+  // Los elementos de las pistas, con los tiempos que tendrá cada trozo en el fichero (fotogramas enteros).
+  const timing = projectTiming(project, project.clips.map((c) => exportedClipDurationMs(c, F)))
+  const planned = planTrackItems(project, mediaByPath, timing, options.itemPath ?? defaultItemPath)
+  const withTracks = planned.length > 0
+  let totalFrames = 0
+  let totalSamples = 0
 
   project.clips.forEach((clip, i) => {
     const media = lookup(mediaByPath, clip.sourcePath)
@@ -396,11 +685,19 @@ export function buildExportCommand(
     }
 
     chains.push(...pictureChains(clip, i, mainInput, coverInput, media, coverMedia, spec, frames))
-    chains.push(...audioChains(clip, media, i, mainInput, samples))
+    chains.push(...audioChains(clip, media, i, mainInput, samples, project.mainMuted))
     concatInputs.push(`[v${i}][a${i}]`)
+    totalFrames += frames
+    totalSamples += samples
   })
 
-  chains.push(`${concatInputs.join('')}concat=n=${project.clips.length}:v=1:a=1[vout][aout]`)
+  if (!withTracks) {
+    chains.push(`${concatInputs.join('')}concat=n=${project.clips.length}:v=1:a=1[vout][aout]`)
+  } else {
+    chains.push(`${concatInputs.join('')}concat=n=${project.clips.length}:v=1:a=1[vmain][amain]`)
+    chains.push(...effectLayerChains(planned, project, inputs, spec, totalFrames, 'vout'))
+    chains.push(...mixChains(planned, inputs, totalSamples, 'aout'))
+  }
   const filterComplex = chains.join(';\n')
 
   const args = [
@@ -483,9 +780,17 @@ export function buildSoundExportCommand(
     const input = inputs.add(clip.sourcePath, io.startMs, io.endMs - io.startMs, ['-vn'])
     const samples = soundSampleCount(clip)
     totalSamples += samples
-    chains.push(...audioChains(clip, media, i, input, samples))
+    chains.push(...audioChains(clip, media, i, input, samples, project.mainMuted))
   })
-  chains.push(`${project.clips.map((_, i) => `[a${i}]`).join('')}concat=n=${project.clips.length}:v=0:a=1[aout]`)
+  // Las pistas de sonido (y el sonido de los efectos) también van en «Solo el sonido».
+  const timing = projectTiming(project, project.clips.map((c) => (soundSampleCount(c) * 1000) / AUDIO_SAMPLE_RATE))
+  const sounding = planTrackItems(project, mediaByPath, timing, options.itemPath ?? defaultItemPath).filter(itemSounds)
+  if (sounding.length === 0) {
+    chains.push(`${project.clips.map((_, i) => `[a${i}]`).join('')}concat=n=${project.clips.length}:v=0:a=1[aout]`)
+  } else {
+    chains.push(`${project.clips.map((_, i) => `[a${i}]`).join('')}concat=n=${project.clips.length}:v=0:a=1[amain]`)
+    chains.push(...mixChains(sounding, inputs, totalSamples, 'aout'))
+  }
   const filterComplex = chains.join(';\n')
   const args = [
     '-hide_banner',

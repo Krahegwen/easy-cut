@@ -73,8 +73,20 @@ export function readRotation(stream: RawStream): 0 | 90 | 180 | 270 {
   return normalized as 0 | 90 | 180 | 270
 }
 
-/** Convierte la salida JSON de ffprobe en MediaInfo. Acepta el texto o el objeto ya leído. */
-export function parseProbeOutput(output: string | object, path: string): MediaInfo {
+/** Formatos de píxel con transparencia. */
+const ALPHA_PIXEL_FORMAT = /^(yuva|gbrap|rgba|bgra|argb|abgr|ya8|ya16|rgba64|bgra64|pal8)/
+
+/** ¿La pista de vídeo trae transparencia? (WebM la marca con la etiqueta alpha_mode; el resto, en pix_fmt). */
+export function streamHasAlpha(stream: { pix_fmt?: string; tags?: Record<string, string> }): boolean {
+  const tag = stream.tags?.alpha_mode ?? stream.tags?.ALPHA_MODE
+  return tag === '1' || ALPHA_PIXEL_FORMAT.test(stream.pix_fmt ?? '')
+}
+
+/**
+ * Convierte la salida JSON de ffprobe en MediaInfo. Acepta el texto o el objeto ya leído.
+ * Con `still`, es una imagen fija (efecto): no hace falta que dure nada (durationMs = 0).
+ */
+export function parseProbeOutput(output: string | object, path: string, options: { still?: boolean } = {}): MediaInfo {
   let raw: RawProbe
   if (typeof output === 'string') {
     try {
@@ -92,6 +104,34 @@ export function parseProbeOutput(output: string | object, path: string): MediaIn
   const audio = streams.find((s) => s.codec_type === 'audio')
   if (!video && !audio) {
     throw new ProbeError('Este fichero no tiene ni imagen ni sonido.')
+  }
+
+  if (options.still) {
+    if (!video) throw new ProbeError('Esta imagen no se puede leer.')
+    return {
+      path,
+      durationMs: 0,
+      hasVideo: true,
+      width: video.width!,
+      height: video.height!,
+      codedWidth: video.width!,
+      codedHeight: video.height!,
+      rotation: 0,
+      fps: 0,
+      hasAudio: false,
+      isHdr: false,
+      videoCodec: video.codec_name ?? 'desconocido',
+      pixelFormat: video.pix_fmt ?? null,
+      colorTransfer: null,
+      colorPrimaries: null,
+      colorSpace: null,
+      audioCodec: null,
+      audioSampleRate: null,
+      audioChannels: null,
+      sizeBytes: Number.isFinite(Number(raw.format?.size)) && Number(raw.format?.size) > 0 ? Number(raw.format?.size) : null,
+      isStill: true,
+      hasAlpha: streamHasAlpha(video),
+    }
   }
 
   const durationSec = Number(raw.format?.duration ?? video?.duration ?? audio?.duration)
@@ -155,5 +195,6 @@ export function parseProbeOutput(output: string | object, path: string): MediaIn
     audioSampleRate: audio?.sample_rate ? Number(audio.sample_rate) : null,
     audioChannels: audio?.channels ?? null,
     sizeBytes: Number.isFinite(size) && size > 0 ? size : null,
+    ...(streamHasAlpha(video) ? { hasAlpha: true } : {}),
   }
 }

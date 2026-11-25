@@ -27,6 +27,7 @@ import {
 import {
   CancelledError,
   joinWindowsPath,
+  type DownloadProgress,
   type FileDropHandlers,
   type NativeBridge,
   type PickVideosOptions,
@@ -138,13 +139,13 @@ function throwIfCancelled(output: ToolOutput): void {
 export function createTauriBridge(): NativeBridge {
   let encoderResults: Promise<EncoderProbeResults> | null = null
 
-  async function probe(path: string, jobId = newJobId('probe')): Promise<MediaInfo> {
+  async function probe(path: string, jobId = newJobId('probe'), still = false): Promise<MediaInfo> {
     const output = await runTool('ffprobe', buildProbeArgs(path), jobId)
     throwIfCancelled(output)
     if (output.exitCode !== 0) {
       throw new ProbeError(`No se ha podido leer el vídeo: ${lastLine(output.stderr) || 'error desconocido'}`)
     }
-    return parseProbeOutput(output.stdout, path)
+    return parseProbeOutput(output.stdout, path, { still })
   }
 
   function probeEncoders(): Promise<EncoderProbeResults> {
@@ -198,10 +199,11 @@ export function createTauriBridge(): NativeBridge {
         multiple: options.multiple ?? true,
         defaultFolder: options.defaultFolder ?? null,
         sounds: options.sounds ?? false,
+        forTracks: options.forTracks ?? false,
       })
     },
 
-    probe: (path) => probe(path),
+    probe: (path, options) => probe(path, undefined, options?.still ?? false),
 
     exists: (path) => invoke<boolean>('path_exists', { path }),
 
@@ -430,6 +432,18 @@ export function createTauriBridge(): NativeBridge {
         },
       }
     },
+
+    libraryStatus: (files) => invoke<(string | null)[]>('library_status', { entries: files.map((f) => ({ file: f.file, sha256: f.sha256 })) }),
+
+    libraryFetch(ref, url, onProgress) {
+      return cancellable('library', async (jobId) => {
+        const channel = new Channel<DownloadProgress>()
+        channel.onmessage = (p) => onProgress?.(p)
+        return invoke<string>('library_fetch', { file: ref.file, sha256: ref.sha256, bytes: ref.bytes, url, jobId, onProgress: channel })
+      })
+    },
+
+    libraryCatalog: (url) => invoke<string | null>('library_catalog', { url }),
 
     onFilesDropped(handlers: FileDropHandlers) {
       let disposed = false

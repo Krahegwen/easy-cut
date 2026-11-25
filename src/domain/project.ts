@@ -57,6 +57,10 @@ export interface MediaInfo {
   audioSampleRate: number | null
   audioChannels: number | null
   sizeBytes: number | null
+  /** ¿Es una imagen fija (PNG, JPG, WebP)? Entonces durationMs vale 0. Solo para los efectos. */
+  isStill?: boolean
+  /** ¿La imagen trae transparencia (PNG con alfa, WebM VP9/VP8 con alfa, ProRes 4444)? */
+  hasAlpha?: boolean
 }
 
 export type InsetCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
@@ -107,8 +111,104 @@ export interface Clip {
   picture: Picture
 }
 
-/** Versión 2: los trozos llevan `picture` y `sourceHasVideo` (la 1 se migra al leerla). */
-export const PROJECT_VERSION = 2 as const
+// ---------------------------------------------------------------------------
+// Pistas de sonidos y efectos (debajo de la fila de trozos)
+
+export type TrackKind = 'sound' | 'effect'
+export const TRACK_KINDS: readonly TrackKind[] = ['sound', 'effect']
+/** Hasta cuántas pistas de cada tipo (más no se entiende en la pantalla). */
+export const MAX_TRACKS: Record<TrackKind, number> = { sound: 4, effect: 3 }
+
+/**
+ * Dónde está pegado un elemento: a un trozo (`offsetMs` en tiempo de salida de ese trozo) o, con
+ * `clipId: null`, al principio del vídeo. El tiempo absoluto se calcula con la fila de trozos: si se
+ * reordena un trozo, lo que lleva pegado va con él; si a uno anterior se le quitan pausas, lo de después
+ * sigue en su sitio respecto a su trozo.
+ */
+export interface ItemAnchor {
+  clipId: string | null
+  offsetMs: number
+}
+
+/** De dónde sale el elemento: un fichero del ordenador o un elemento de la biblioteca. */
+export type ItemSource = { type: 'file'; path: string } | { type: 'library'; assetId: string }
+
+/** normal: se pone encima (con su transparencia, si la trae) · light: «como luz», el negro desaparece. */
+export type EffectMix = 'normal' | 'light'
+export const EFFECT_MIXES: readonly EffectMix[] = ['normal', 'light']
+/** Cómo llena su sitio a tamaño 1: cubriendo el marco (recorta lo que sobra) o entero dentro. */
+export type EffectFit = 'cover' | 'contain'
+
+/**
+ * Tamaño y sitio de un efecto, relativos al marco: (x, y) es su centro (0..1) y scale el tamaño
+ * (1 = lo que da `fit` en el marco entero). Por defecto, a pantalla completa.
+ */
+export interface EffectBox {
+  x: number
+  y: number
+  scale: number
+}
+
+export interface EffectLook {
+  mix: EffectMix
+  /** 0 (no se ve) a 1. */
+  opacity: number
+  box: EffectBox
+  fit: EffectFit
+}
+
+/** Un sonido o un efecto colocado en el tiempo en una pista. */
+export interface TrackItem {
+  id: string
+  source: ItemSource
+  /** Nombre que se enseña («Aplausos», o el nombre del fichero). */
+  name: string
+  /** Duración del original (0 si es una imagen fija). */
+  sourceDurationMs: number
+  /** ¿Es una imagen fija (PNG, JPG, WebP)? */
+  still: boolean
+  /** ¿El original tiene sonido? (un efecto puede traerlo). */
+  hasAudio: boolean
+  anchor: ItemAnchor
+  /** Trozo del original que se usa (ms del original). En una imagen fija, 0 y 0. */
+  inMs: number
+  outMs: number
+  /** Si repite: por qué punto de la vuelta empieza (ms desde inMs; al partir o recortar por delante). */
+  phaseMs: number
+  /** Se repite el trozo [inMs, outMs) hasta llenar `durationMs`. */
+  repeat: boolean
+  /**
+   * Cuánto dura en pantalla si repite (o si es una imagen fija). null = hasta el final del vídeo.
+   * Sin repetir, dura outMs − inMs y esto no se usa.
+   */
+  durationMs: number | null
+  /** 0 a 1,5 (1 = como viene). En los efectos, el sonido que traigan; por defecto 0. */
+  volume: number
+  /** Entrada y salida suaves (ms; 0 = no). */
+  fadeInMs: number
+  fadeOutMs: number
+  /** Solo en los efectos: cómo se ve. */
+  look: EffectLook | null
+}
+
+export interface Track {
+  id: string
+  kind: TrackKind
+  /** Nombre editable («Música», «Sonidos», «Efectos»). */
+  name: string
+  /** Pista de sonido silenciada. */
+  muted: boolean
+  /** Pista de efectos ocultada. */
+  hidden: boolean
+  /** Elementos de la pista, sin solaparse (se ordenan por tiempo al resolverlos). */
+  items: TrackItem[]
+}
+
+/**
+ * Versión 3: el proyecto lleva `mainMuted` y `tracks` (pistas de sonidos y efectos). La 2 (trozos con
+ * `picture` y `sourceHasVideo`) y la 1 se migran al leerlas.
+ */
+export const PROJECT_VERSION = 3 as const
 
 export interface Project {
   version: typeof PROJECT_VERSION
@@ -116,6 +216,10 @@ export interface Project {
   clips: Clip[]
   /** Duración objetivo opcional («que no pase de 5 minutos»). */
   targetDurationMs: number | null
+  /** Silencia el sonido de todos los trozos de la fila principal (sin tocar cada uno). */
+  mainMuted: boolean
+  /** Pistas de sonidos y efectos. El orden de las de efectos es el de apilado: la primera, encima. */
+  tracks: Track[]
 }
 
 /** Ningún trozo ni parte de un corte puede quedar más corto que esto (tiempo de salida). */
@@ -130,7 +234,7 @@ export const MAX_ZOOM = 4
 // Creación
 
 export function createProject(aspect: AspectRatio = '16:9'): Project {
-  return { version: PROJECT_VERSION, aspect, clips: [], targetDurationMs: null }
+  return { version: PROJECT_VERSION, aspect, clips: [], targetDurationMs: null, mainMuted: false, tracks: [] }
 }
 
 export type IdFactory = () => string
@@ -257,6 +361,68 @@ export function locateInProject(
   return null
 }
 
+/**
+ * Anclaje para un instante del vídeo: el trozo que hay debajo (en la frontera exacta, el que empieza ahí)
+ * con el tiempo dentro de él. Pasado el final, el último trozo; sin trozos, el principio del vídeo.
+ */
+export function anchorAt(project: Project, projectMs: number, starts: readonly number[] = clipStartTimes(project)): ItemAnchor {
+  const t = Math.max(0, Math.round(projectMs))
+  const clips = project.clips
+  if (clips.length === 0) return { clipId: null, offsetMs: t }
+  for (let i = clips.length - 1; i >= 0; i--) {
+    if (t >= starts[i]!) return { clipId: clips[i]!.id, offsetMs: t - starts[i]! }
+  }
+  return { clipId: clips[0]!.id, offsetMs: 0 }
+}
+
+/**
+ * Instante del vídeo donde cae un anclaje. Si el trozo se ha acortado y el punto queda fuera, se sujeta a
+ * su final; si el trozo ya no está, cuenta desde el principio del vídeo.
+ */
+export function anchorTimeMs(
+  project: Project,
+  anchor: ItemAnchor,
+  starts: readonly number[] = clipStartTimes(project),
+  lengths: readonly number[] = project.clips.map(clipOutputMs),
+): number {
+  const offset = Math.max(0, Math.round(anchor.offsetMs))
+  if (anchor.clipId === null) return offset
+  const i = project.clips.findIndex((c) => c.id === anchor.clipId)
+  if (i < 0) return offset
+  return starts[i]! + Math.min(offset, lengths[i]!)
+}
+
+/** Cambia los elementos de todas las pistas (mismo objeto si no cambia ninguno). */
+function mapTrackItems(project: Project, fn: (item: TrackItem) => TrackItem): Project {
+  let changed = false
+  const tracks = project.tracks.map((track) => {
+    let trackChanged = false
+    const items = track.items.map((item) => {
+      const next = fn(item)
+      if (next !== item) trackChanged = true
+      return next
+    })
+    if (!trackChanged) return track
+    changed = true
+    return { ...track, items }
+  })
+  return changed ? { ...project, tracks } : project
+}
+
+/** Cuántos elementos (sonidos y efectos) van pegados a este trozo. */
+export function itemsAnchoredTo(project: Project, clipId: string): { sounds: number; effects: number } {
+  let sounds = 0
+  let effects = 0
+  for (const track of project.tracks) {
+    for (const item of track.items) {
+      if (item.anchor.clipId !== clipId) continue
+      if (track.kind === 'sound') sounds++
+      else effects++
+    }
+  }
+  return { sounds, effects }
+}
+
 // ---------------------------------------------------------------------------
 // Normalización de rangos
 
@@ -328,9 +494,21 @@ export function insertClipAfter(project: Project, afterClipId: string | null, cl
   return addClip(project, clip, index < 0 ? project.clips.length : index + 1)
 }
 
+/**
+ * Quita un trozo. Lo que llevaba pegado se queda en el mismo sitio del vídeo: pasa a pegarse al trozo que
+ * quede en ese instante (o al principio del vídeo). Lo pegado a otros trozos va con ellos, como siempre.
+ */
 export function removeClip(project: Project, clipId: string): Project {
   if (!project.clips.some((c) => c.id === clipId)) return project
-  return { ...project, clips: project.clips.filter((c) => c.id !== clipId) }
+  const before = clipStartTimes(project)
+  const lengths = project.clips.map(clipOutputMs)
+  const next: Project = { ...project, clips: project.clips.filter((c) => c.id !== clipId) }
+  const after = clipStartTimes(next)
+  return mapTrackItems(next, (item) => {
+    if (item.anchor.clipId !== clipId) return item
+    const at = anchorTimeMs(project, item.anchor, before, lengths)
+    return { ...item, anchor: anchorAt(next, at, after) }
+  })
 }
 
 export function moveClip(project: Project, clipId: string, toIndex: number): Project {
@@ -422,7 +600,13 @@ export function splitClip(
   }
   const clips = project.clips.slice()
   clips.splice(index, 1, first, second)
-  return { ...project, clips }
+  // Lo pegado al trozo se queda con la parte donde cae su inicio.
+  const firstMs = clipOutputMs(first)
+  return mapTrackItems({ ...project, clips }, (item) =>
+    item.anchor.clipId === clipId && item.anchor.offsetMs >= firstMs
+      ? { ...item, anchor: { clipId: newId, offsetMs: item.anchor.offsetMs - firstMs } }
+      : item,
+  )
 }
 
 export function setSpeed(project: Project, clipId: string, speed: Speed): Project {
@@ -653,7 +837,13 @@ export function serializeProject(project: Project): string {
   const file: ProjectFile = {
     app: PROJECT_FILE_APP,
     version: PROJECT_VERSION,
-    project: { aspect: project.aspect, clips: project.clips, targetDurationMs: project.targetDurationMs },
+    project: {
+      aspect: project.aspect,
+      clips: project.clips,
+      targetDurationMs: project.targetDurationMs,
+      mainMuted: project.mainMuted,
+      tracks: project.tracks,
+    },
   }
   return JSON.stringify(file, null, 2)
 }
@@ -686,7 +876,107 @@ export function parseProject(json: string): Project {
   const version = data.version
   const clips = p.clips.map((c, i) => parseClip(c, i, version))
   const target = typeof p.targetDurationMs === 'number' && p.targetDurationMs > 0 ? Math.round(p.targetDurationMs) : null
-  return { version: PROJECT_VERSION, aspect, clips, targetDurationMs: target }
+  // Migración 1/2 → 3: sin pistas y con el sonido de la fila principal puesto.
+  const tracks = version < 3 || !Array.isArray(p.tracks) ? [] : parseTracks(p.tracks)
+  return { version: PROJECT_VERSION, aspect, clips, targetDurationMs: target, mainMuted: version >= 3 && p.mainMuted === true, tracks }
+}
+
+/** Límites de los valores de un elemento. */
+export const MAX_ITEM_VOLUME = 1.5
+export const MIN_EFFECT_SCALE = 0.05
+export const MAX_EFFECT_SCALE = 3
+
+function finiteOr(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback
+}
+
+function clampNumber(v: number, lo: number, hi: number): number {
+  return Math.min(Math.max(v, lo), hi)
+}
+
+/** Deja un aspecto de efecto en valores válidos. */
+export function normalizeLook(raw: unknown): EffectLook {
+  const l = isObject(raw) ? raw : {}
+  const box = isObject(l.box) ? l.box : {}
+  return {
+    mix: l.mix === 'light' ? 'light' : 'normal',
+    opacity: clampNumber(finiteOr(l.opacity, 1), 0, 1),
+    box: {
+      x: clampNumber(finiteOr(box.x, 0.5), 0, 1),
+      y: clampNumber(finiteOr(box.y, 0.5), 0, 1),
+      scale: clampNumber(finiteOr(box.scale, 1), MIN_EFFECT_SCALE, MAX_EFFECT_SCALE),
+    },
+    fit: l.fit === 'contain' ? 'contain' : 'cover',
+  }
+}
+
+/**
+ * Elementos de las pistas guardadas. Lo que no se entienda se descarta (el elemento o la pista entera),
+ * nunca el proyecto: las pistas son un añadido sobre los trozos.
+ */
+function parseTracks(raw: unknown[]): Track[] {
+  const tracks: Track[] = []
+  const count: Record<TrackKind, number> = { sound: 0, effect: 0 }
+  for (const t of raw) {
+    if (!isObject(t) || typeof t.id !== 'string' || t.id === '') continue
+    const kind: TrackKind | null = t.kind === 'sound' || t.kind === 'effect' ? t.kind : null
+    if (!kind || count[kind] >= MAX_TRACKS[kind]) continue
+    count[kind]++
+    const items = Array.isArray(t.items) ? t.items.flatMap((i) => parseTrackItem(i, kind)) : []
+    tracks.push({
+      id: t.id,
+      kind,
+      name: typeof t.name === 'string' && t.name.trim() !== '' ? t.name.slice(0, 40) : kind === 'sound' ? 'Sonidos' : 'Efectos',
+      muted: kind === 'sound' && t.muted === true,
+      hidden: kind === 'effect' && t.hidden === true,
+      items,
+    })
+  }
+  return tracks
+}
+
+function parseTrackItem(raw: unknown, kind: TrackKind): TrackItem[] {
+  if (!isObject(raw) || typeof raw.id !== 'string' || raw.id === '') return []
+  const s = raw.source
+  let source: ItemSource
+  if (isObject(s) && s.type === 'file' && typeof s.path === 'string' && s.path !== '') source = { type: 'file', path: s.path }
+  else if (isObject(s) && s.type === 'library' && typeof s.assetId === 'string' && s.assetId !== '') source = { type: 'library', assetId: s.assetId }
+  else return []
+  const still = kind === 'effect' && raw.still === true
+  const sourceDurationMs = still ? 0 : Math.round(finiteOr(raw.sourceDurationMs, 0))
+  if (!still && sourceDurationMs <= 0) return []
+  const a = isObject(raw.anchor) ? raw.anchor : {}
+  const anchor: ItemAnchor = {
+    clipId: typeof a.clipId === 'string' && a.clipId !== '' ? a.clipId : null,
+    offsetMs: Math.max(0, Math.round(finiteOr(a.offsetMs, 0))),
+  }
+  const inMs = still ? 0 : Math.round(clampNumber(finiteOr(raw.inMs, 0), 0, sourceDurationMs))
+  const outMs = still ? 0 : Math.round(clampNumber(finiteOr(raw.outMs, sourceDurationMs), 0, sourceDurationMs))
+  if (!still && outMs - inMs < MIN_SEGMENT_MS) return []
+  const duration = raw.durationMs === null ? null : Math.round(finiteOr(raw.durationMs, NaN))
+  const repeat = !still && raw.repeat === true
+  const durationMs = repeat || still ? (duration === null || !Number.isFinite(duration) ? null : Math.max(MIN_SEGMENT_MS, duration)) : null
+  const loopMs = Math.max(1, outMs - inMs)
+  return [
+    {
+      id: raw.id,
+      source,
+      name: typeof raw.name === 'string' ? raw.name.slice(0, 80) : '',
+      sourceDurationMs,
+      still,
+      hasAudio: !still && raw.hasAudio !== false,
+      anchor,
+      inMs,
+      outMs,
+      phaseMs: repeat ? Math.round(clampNumber(finiteOr(raw.phaseMs, 0), 0, loopMs - 1)) : 0,
+      repeat,
+      durationMs,
+      volume: clampNumber(finiteOr(raw.volume, kind === 'sound' ? 1 : 0), 0, MAX_ITEM_VOLUME),
+      fadeInMs: Math.max(0, Math.round(finiteOr(raw.fadeInMs, 0))),
+      fadeOutMs: Math.max(0, Math.round(finiteOr(raw.fadeOutMs, 0))),
+      look: kind === 'effect' ? normalizeLook(raw.look) : null,
+    },
+  ]
 }
 
 function parseFraming(raw: unknown): Framing {

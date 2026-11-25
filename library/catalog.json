@@ -1,0 +1,773 @@
+{
+  "schema": 1,
+  "revision": 2,
+  "baseUrl": "https://github.com/Krahegwen/easy-cut/releases/download/library-v1/",
+  "ownLicense": "CC0-1.0",
+  "categories": [
+    {
+      "id": "felicitaciones",
+      "kind": "sound",
+      "name": "Felicitaciones",
+      "icon": "star"
+    },
+    {
+      "id": "aplausos-y-risas",
+      "kind": "sound",
+      "name": "Aplausos y risas",
+      "icon": "clap"
+    },
+    {
+      "id": "avisos",
+      "kind": "sound",
+      "name": "Avisos",
+      "icon": "bell"
+    },
+    {
+      "id": "musica",
+      "kind": "sound",
+      "name": "Música",
+      "icon": "music"
+    },
+    {
+      "id": "fiesta",
+      "kind": "effect",
+      "name": "Fiesta",
+      "icon": "party"
+    },
+    {
+      "id": "fuego-y-chispas",
+      "kind": "effect",
+      "name": "Fuego y chispas",
+      "icon": "fire"
+    },
+    {
+      "id": "luz",
+      "kind": "effect",
+      "name": "Luz",
+      "icon": "light"
+    },
+    {
+      "id": "tiempo",
+      "kind": "effect",
+      "name": "Tiempo",
+      "icon": "snow"
+    },
+    {
+      "id": "amor",
+      "kind": "effect",
+      "name": "Amor",
+      "icon": "heart"
+    },
+    {
+      "id": "marcos",
+      "kind": "effect",
+      "name": "Marcos",
+      "icon": "frame"
+    }
+  ],
+  "assets": [
+    {
+      "id": "confeti",
+      "kind": "effect",
+      "name": "Confeti",
+      "category": "fiesta",
+      "tags": [
+        "fiesta",
+        "cumpleaños",
+        "celebración",
+        "colores"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 6000,
+      "format": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "hasAudio": false,
+      "file": "confeti.mp4",
+      "sha256": "1acbc855dfc46f20127ff952df8072235b094aac14555fd587fe23130b7d7122",
+      "bytes": 4632883,
+      "preview": {
+        "file": "confeti.preview.mp4",
+        "sha256": "090091aec54dceb77c89ecdbcd8de7fd8178ffaeb7623ba34d91bb2a41b518ab",
+        "bytes": 256158
+      },
+      "defaults": {
+        "repeat": true,
+        "durationMs": 6000,
+        "look": {
+          "mix": "light"
+        }
+      }
+    },
+    {
+      "id": "chispas",
+      "kind": "effect",
+      "name": "Chispas que brillan",
+      "category": "fuego-y-chispas",
+      "tags": [
+        "destellos",
+        "brillo",
+        "magia",
+        "estrellas"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 6000,
+      "format": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "hasAudio": false,
+      "file": "chispas.mp4",
+      "sha256": "dd3365b01082b0de3499976a15e82dad992f45e86249bfe6b5cfec60c02f2310",
+      "bytes": 864964,
+      "preview": {
+        "file": "chispas.preview.mp4",
+        "sha256": "c74a5c2ae8bc9e15b1e48b4c7e2ff7cf471ba521f6b49e2d7ee91de352885d99",
+        "bytes": 43903
+      },
+      "defaults": {
+        "repeat": true,
+        "durationMs": 6000,
+        "look": {
+          "mix": "light"
+        }
+      }
+    },
+    {
+      "id": "fuegos-artificiales",
+      "kind": "effect",
+      "name": "Fuegos artificiales",
+      "category": "fiesta",
+      "tags": [
+        "fiesta",
+        "noche",
+        "celebración",
+        "año nuevo"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 8000,
+      "format": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "hasAudio": false,
+      "file": "fuegos-artificiales.mp4",
+      "sha256": "33661f7c5ab2544f28aab9644bb7f5124192742a873d29582e71d98c90527198",
+      "bytes": 3628422,
+      "preview": {
+        "file": "fuegos-artificiales.preview.mp4",
+        "sha256": "85cff1aad3a27cfc3355910efb9233176b57386575deb979ad1c75f4144330c1",
+        "bytes": 130381
+      },
+      "defaults": {
+        "repeat": true,
+        "durationMs": 8000,
+        "look": {
+          "mix": "light"
+        }
+      }
+    },
+    {
+      "id": "nieve",
+      "kind": "effect",
+      "name": "Nieve",
+      "category": "tiempo",
+      "tags": [
+        "invierno",
+        "navidad",
+        "frío",
+        "copos"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 8000,
+      "format": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "hasAudio": false,
+      "file": "nieve.mp4",
+      "sha256": "084b419c76bd718c7cd2a49e2e74629c02b7fed0a2e09283f98eb8e25914f58a",
+      "bytes": 2852266,
+      "preview": {
+        "file": "nieve.preview.mp4",
+        "sha256": "f07e6dd9a01e3aee7c3a59eee316ad5848f4e850d7a0096c471b9cbb4c1ab284",
+        "bytes": 229214
+      },
+      "defaults": {
+        "repeat": true,
+        "durationMs": 8000,
+        "look": {
+          "mix": "light"
+        }
+      }
+    },
+    {
+      "id": "lluvia",
+      "kind": "effect",
+      "name": "Lluvia",
+      "category": "tiempo",
+      "tags": [
+        "agua",
+        "tormenta",
+        "otoño",
+        "gris"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 4000,
+      "format": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "hasAudio": false,
+      "file": "lluvia.mp4",
+      "sha256": "ef6465a124fc09a416ba966d744e17699de2951494ebfda7c3ab26c9c7e9e0c1",
+      "bytes": 4494820,
+      "preview": {
+        "file": "lluvia.preview.mp4",
+        "sha256": "5aa4ea14812e7f36d952a85631f8e3b84a1e561502fd823f5a3de363d833cd73",
+        "bytes": 259395
+      },
+      "defaults": {
+        "repeat": true,
+        "durationMs": 8000,
+        "look": {
+          "mix": "light",
+          "opacity": 0.85
+        }
+      }
+    },
+    {
+      "id": "luz-calida",
+      "kind": "effect",
+      "name": "Luz cálida",
+      "category": "luz",
+      "tags": [
+        "fuga de luz",
+        "atardecer",
+        "naranja",
+        "película"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 8000,
+      "format": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "hasAudio": false,
+      "file": "luz-calida.mp4",
+      "sha256": "0bac455b2ffe05a72db8552fe69be53dab9d15dd4491658ed2881e36c3061bbc",
+      "bytes": 3597935,
+      "preview": {
+        "file": "luz-calida.preview.mp4",
+        "sha256": "809f2bfa783e7208851f29aff2e0b2d5acb418c0421fa25d7db84415a1518181",
+        "bytes": 47680
+      },
+      "defaults": {
+        "repeat": true,
+        "durationMs": 8000,
+        "look": {
+          "mix": "light",
+          "opacity": 0.9
+        }
+      }
+    },
+    {
+      "id": "luz-rosa",
+      "kind": "effect",
+      "name": "Luz rosa",
+      "category": "luz",
+      "tags": [
+        "fuga de luz",
+        "romántico",
+        "rosa",
+        "morado"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 8000,
+      "format": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "hasAudio": false,
+      "file": "luz-rosa.mp4",
+      "sha256": "c7b50c037f6b9019feb25b402cc4397e1061c6819d2011916cfa0942f17d7df2",
+      "bytes": 3106842,
+      "preview": {
+        "file": "luz-rosa.preview.mp4",
+        "sha256": "4610e931b5659b547d201c5fce338f7eb8fb89e92c01432ae94099d8b9e20255",
+        "bytes": 44891
+      },
+      "defaults": {
+        "repeat": true,
+        "durationMs": 8000,
+        "look": {
+          "mix": "light",
+          "opacity": 0.9
+        }
+      }
+    },
+    {
+      "id": "luz-azul",
+      "kind": "effect",
+      "name": "Luz azul",
+      "category": "luz",
+      "tags": [
+        "fuga de luz",
+        "frío",
+        "azul",
+        "turquesa"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 8000,
+      "format": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "hasAudio": false,
+      "file": "luz-azul.mp4",
+      "sha256": "add57059358fd9e9af395a58feff3f75026f39b251f1bec811febd7c6ef05c2c",
+      "bytes": 2827642,
+      "preview": {
+        "file": "luz-azul.preview.mp4",
+        "sha256": "a6aafa9a2fe92ab96135112b61f70e53d4a959072d89c6ef1f545483554a97a8",
+        "bytes": 43490
+      },
+      "defaults": {
+        "repeat": true,
+        "durationMs": 8000,
+        "look": {
+          "mix": "light",
+          "opacity": 0.9
+        }
+      }
+    },
+    {
+      "id": "brillo-que-cruza",
+      "kind": "effect",
+      "name": "Brillo que cruza",
+      "category": "luz",
+      "tags": [
+        "destello",
+        "barrido",
+        "transición",
+        "brillo"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 2500,
+      "format": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "hasAudio": false,
+      "file": "brillo-que-cruza.mp4",
+      "sha256": "304626d9b147b984ff45b78f58566ebe031cf39266baa944ab77a23761f1a555",
+      "bytes": 484610,
+      "preview": {
+        "file": "brillo-que-cruza.preview.mp4",
+        "sha256": "b570e7f527e788ac714f2b384a71e977fb832a1145116bd2aaa661a64be66274",
+        "bytes": 15430
+      },
+      "defaults": {
+        "repeat": false,
+        "look": {
+          "mix": "light"
+        }
+      }
+    },
+    {
+      "id": "flash",
+      "kind": "effect",
+      "name": "Flash",
+      "category": "luz",
+      "tags": [
+        "foto",
+        "destello",
+        "blanco",
+        "cambio"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 1000,
+      "format": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "hasAudio": false,
+      "file": "flash.mp4",
+      "sha256": "394ff0c926f70bfc730bb0744edae7988594bd332ee89b530dc9f3d15b89b815",
+      "bytes": 8930,
+      "preview": {
+        "file": "flash.preview.mp4",
+        "sha256": "0cc5f248c1aa8e73338b409ce0ae1a315c56c8bc96bc207e0b010ed53717ba50",
+        "bytes": 2916
+      },
+      "defaults": {
+        "repeat": false,
+        "look": {
+          "mix": "light"
+        }
+      }
+    },
+    {
+      "id": "corazones",
+      "kind": "effect",
+      "name": "Corazones flotando",
+      "category": "amor",
+      "tags": [
+        "amor",
+        "san valentín",
+        "boda",
+        "rojo"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 6000,
+      "format": "webm",
+      "width": 1920,
+      "height": 1080,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "file": "corazones.webm",
+      "sha256": "b95fd289dc4d4e48e4dd97a09a05d0f68901ac05479f8e45a643d14208e736ec",
+      "bytes": 459884,
+      "preview": {
+        "file": "corazones.preview.webm",
+        "sha256": "7a6a9f789d8306bd5efec48cda87ecaa6998ceef526a0f8d5b7600f848f7b595",
+        "bytes": 204951
+      },
+      "defaults": {
+        "repeat": true,
+        "durationMs": 6000,
+        "look": {
+          "mix": "normal"
+        }
+      }
+    },
+    {
+      "id": "vineta",
+      "kind": "effect",
+      "name": "Viñeta (bordes oscuros)",
+      "category": "marcos",
+      "tags": [
+        "bordes",
+        "oscuro",
+        "cine",
+        "antiguo"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1920,
+      "height": 1080,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "vineta.png",
+      "sha256": "21e1ad13df16f1cb126570c9aa61cfdedfc3982757d6b31ba72ba01f837803e0",
+      "bytes": 124301,
+      "preview": {
+        "file": "vineta.preview.png",
+        "sha256": "449d7612c95f78223989d475f266c36ae8bc43e44e0646a9a849d05f5cd36fa5",
+        "bytes": 18976
+      },
+      "defaults": {
+        "durationMs": null,
+        "look": {
+          "mix": "normal",
+          "fit": "cover",
+          "opacity": 0.85
+        }
+      }
+    },
+    {
+      "id": "marco-dorado",
+      "kind": "effect",
+      "name": "Marco dorado",
+      "category": "marcos",
+      "tags": [
+        "borde",
+        "oro",
+        "elegante",
+        "foto"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1920,
+      "height": 1080,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "marco-dorado.png",
+      "sha256": "bced2d434744414632449f628ca65554374a2c32d9fbd09a66123cfff766d6cf",
+      "bytes": 79798,
+      "preview": {
+        "file": "marco-dorado.preview.png",
+        "sha256": "15574a94b74107b2744e4019b3c5bc36c76e2d4986e9d59ae5466e5f9d0e18bc",
+        "bytes": 8969
+      },
+      "defaults": {
+        "durationMs": null,
+        "look": {
+          "mix": "normal",
+          "fit": "cover"
+        }
+      }
+    },
+    {
+      "id": "ding",
+      "kind": "sound",
+      "name": "Campanita (ding)",
+      "category": "avisos",
+      "tags": [
+        "campana",
+        "aviso",
+        "notificación",
+        "ding"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 1800,
+      "format": "m4a",
+      "hasAudio": true,
+      "file": "ding.m4a",
+      "sha256": "2023cb07364477feaa2d99a83c5c566ae05632ece879637aae8d78b0d96c3eb5",
+      "bytes": 15173,
+      "defaults": {
+        "volume": 1
+      }
+    },
+    {
+      "id": "acierto",
+      "kind": "sound",
+      "name": "Acierto",
+      "category": "avisos",
+      "tags": [
+        "correcto",
+        "bien",
+        "premio",
+        "positivo"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 900,
+      "format": "m4a",
+      "hasAudio": true,
+      "file": "acierto.m4a",
+      "sha256": "65abd3f1b305ed1e9d1419005053950c6004de2cf9fa6a87fd24c7d7b62f209f",
+      "bytes": 8495,
+      "defaults": {
+        "volume": 1
+      }
+    },
+    {
+      "id": "error",
+      "kind": "sound",
+      "name": "Error",
+      "category": "avisos",
+      "tags": [
+        "fallo",
+        "mal",
+        "incorrecto",
+        "negativo"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 620,
+      "format": "m4a",
+      "hasAudio": true,
+      "file": "error.m4a",
+      "sha256": "fda5d759db5dae462a2f5f31468a981e08bf864b0020b015545b80f745b4e9fc",
+      "bytes": 7199,
+      "defaults": {
+        "volume": 1
+      }
+    },
+    {
+      "id": "pop",
+      "kind": "sound",
+      "name": "Pop",
+      "category": "avisos",
+      "tags": [
+        "burbuja",
+        "aparecer",
+        "corto",
+        "globo"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 220,
+      "format": "m4a",
+      "hasAudio": true,
+      "file": "pop.m4a",
+      "sha256": "d4ab2ee5ed5ed9d5140db666e850a7a69b62b1bc792f5e38b7831931a09e8999",
+      "bytes": 1896,
+      "defaults": {
+        "volume": 1
+      }
+    },
+    {
+      "id": "whoosh",
+      "kind": "sound",
+      "name": "Zas (paso rápido)",
+      "category": "avisos",
+      "tags": [
+        "transición",
+        "aire",
+        "rápido",
+        "swoosh"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 900,
+      "format": "m4a",
+      "hasAudio": true,
+      "file": "whoosh.m4a",
+      "sha256": "601fbdd23f7e2f8a9e78bfdf3cc49ad2dd4ebfd9c41e2d78a620761ea6f498ee",
+      "bytes": 22397,
+      "defaults": {
+        "volume": 1
+      }
+    },
+    {
+      "id": "redoble",
+      "kind": "sound",
+      "name": "Redoble",
+      "category": "felicitaciones",
+      "tags": [
+        "tambor",
+        "suspense",
+        "anuncio",
+        "tachán"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 3600,
+      "format": "m4a",
+      "hasAudio": true,
+      "file": "redoble.m4a",
+      "sha256": "814d3c1e01bd89ca7a9c64ae52496378d3b5db35bd92193936886fee27586d52",
+      "bytes": 85177,
+      "defaults": {
+        "volume": 1
+      }
+    },
+    {
+      "id": "fanfarria",
+      "kind": "sound",
+      "name": "Fanfarria de felicitación",
+      "category": "felicitaciones",
+      "tags": [
+        "trompeta",
+        "victoria",
+        "enhorabuena",
+        "premio"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 2689,
+      "format": "m4a",
+      "hasAudio": true,
+      "file": "fanfarria.m4a",
+      "sha256": "969454748d6dc991716e8199814681858a3a0c46fbdf2ed7e21030bc39c41ebc",
+      "bytes": 58905,
+      "defaults": {
+        "volume": 1
+      }
+    },
+    {
+      "id": "aplausos",
+      "kind": "sound",
+      "name": "Aplausos",
+      "category": "aplausos-y-risas",
+      "tags": [
+        "público",
+        "bravo",
+        "final",
+        "aplauso"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 4589,
+      "format": "m4a",
+      "hasAudio": true,
+      "file": "aplausos.m4a",
+      "sha256": "58b7b085794c368afb4ff8b400e276ce40622fbe60eef8694e5df1dd756aa698",
+      "bytes": 111445,
+      "defaults": {
+        "volume": 1
+      }
+    },
+    {
+      "id": "tic-tac",
+      "kind": "sound",
+      "name": "Tic tac",
+      "category": "avisos",
+      "tags": [
+        "reloj",
+        "tiempo",
+        "espera",
+        "cuenta atrás"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 2000,
+      "format": "m4a",
+      "hasAudio": true,
+      "file": "tic-tac.m4a",
+      "sha256": "66afaf38b950ee4bea07fdc7d1210ea6acb48e2e8c3779d0887260f83154d4b9",
+      "bytes": 4485,
+      "defaults": {
+        "repeat": true,
+        "durationMs": 8000,
+        "volume": 1
+      }
+    }
+  ]
+}

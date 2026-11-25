@@ -4,12 +4,19 @@ import { computed, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import KeyHint from '../components/KeyHint.vue'
 import KeysButton from '../components/KeysButton.vue'
-import { baseName, formatDuration } from '../domain'
+import { baseName, creditsText, formatDuration, projectCredits } from '../domain'
+import { copyText } from '../lib/clipboard'
 import { askConfirm } from '../lib/confirm'
 import { useShortcuts } from '../lib/use-shortcuts'
-import { store } from '../store'
+import { library, store } from '../store'
 
 const copied = ref(false)
+/** Material de la biblioteca con autor que pide que se le nombre (para la descripción del vídeo). */
+const credits = computed(() => projectCredits(store.project.value, library.catalog.value))
+const creditsCopied = ref(false)
+async function copyCredits() {
+  creditsCopied.value = await copyText(creditsText(credits.value))
+}
 /** Se ha guardado «Solo el sonido» (M4A): los textos hablan de sonido, no de vídeo. */
 const sound = computed(() => store.lastExport.value?.target === 'sound')
 
@@ -88,6 +95,14 @@ useShortcuts({
         </button>
       </div>
       <p v-if="copied" class="copied" data-testid="copied-hint">Ahora ve a WhatsApp y pulsa Ctrl+V</p>
+      <div v-if="credits.length" class="credits" data-testid="done-credits">
+        <p><strong>Este vídeo usa material con autor:</strong> copia los créditos para ponerlos en la descripción.</p>
+        <pre class="credits-text" data-testid="done-credits-text">{{ creditsText(credits) }}</pre>
+        <button class="btn" type="button" data-testid="copy-credits" @click="copyCredits">
+          <AppIcon :name="creditsCopied ? 'check' : 'copy'" />
+          {{ creditsCopied ? 'Créditos copiados' : 'Copiar los créditos' }}
+        </button>
+      </div>
       <div class="secondary">
         <button class="btn" type="button" data-testid="save-another-way" @click="store.go('save')">
           <AppIcon name="save" />
@@ -157,6 +172,31 @@ h1 {
   padding: 10px 16px;
   border-radius: 12px;
   background: var(--good-soft);
+}
+.credits {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  text-align: left;
+  font-size: 16px;
+}
+.credits-text {
+  margin: 0;
+  width: 100%;
+  max-height: 120px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 14px;
+  white-space: pre-wrap;
+  user-select: text;
 }
 .secondary {
   display: flex;

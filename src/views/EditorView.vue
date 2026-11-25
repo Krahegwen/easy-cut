@@ -9,14 +9,42 @@ import PreviewPlayer from '../components/PreviewPlayer.vue'
 import TargetPicker from '../components/TargetPicker.vue'
 import UndoRedo from '../components/UndoRedo.vue'
 import UpdateNotice from '../components/UpdateNotice.vue'
-import { clipDurationMs, clipStartTimes, formatDuration, removeCover, setAspect, type AspectRatio } from '../domain'
+import ItemBar from '../components/tracks/ItemBar.vue'
+import LibraryPanel from '../components/tracks/LibraryPanel.vue'
+import TracksView from '../components/tracks/TracksView.vue'
+import type { PlayerTime } from '../components/player-types'
+import { clipDurationMs, clipStartTimes, formatDuration, isTrackMediaPath, removeCover, resolveTracks, setAspect, type AspectRatio } from '../domain'
 import KeyHint from '../components/KeyHint.vue'
 import KeysButton from '../components/KeysButton.vue'
 import { pasteFromClipboard, pickAndAddVideos } from '../lib/add-videos'
 import { useShortcuts } from '../lib/use-shortcuts'
-import { store } from '../store'
+import { library, store, tracks } from '../store'
 
 const player = ref<InstanceType<typeof PreviewPlayer> | null>(null)
+const tracksView = ref<InstanceType<typeof TracksView> | null>(null)
+const view = computed(() => tracks.view.value)
+const item = computed(() => tracks.selectedItem.value)
+
+function onTime(t: PlayerTime) {
+  tracks.playheadMs.value = t.projectMs
+}
+
+function seek(ms: number) {
+  player.value?.seek(ms)
+}
+
+function openLibrary() {
+  player.value?.pause()
+  tracks.openLibrary()
+}
+
+function toggleView() {
+  if (!tracks.hasTracks.value) return
+  tracks.setView(view.value === 'cards' ? 'tracks' : 'cards')
+}
+
+/** Elemento elegido con su tiempo (para las teclas que dependen de dónde está la línea). */
+const itemTimes = computed(() => (item.value ? resolveTracks(store.project.value).find((r) => r.item.id === item.value!.item.id) ?? null : null))
 
 const shapes: { id: AspectRatio; icon: IconName; label: string; hint: string }[] = [
   { id: '16:9', icon: 'horizontal', label: 'Horizontal', hint: 'Para la tele y el ordenador' },
@@ -93,8 +121,23 @@ function copySelected() {
   if (clip.value) void store.copyClip(clip.value.id)
 }
 
-function paste() {
+/**
+ * Ctrl+V: con la vista de pistas o la biblioteca abierta, los ficheros copiados en el Explorador van a las
+ * pistas, donde está la línea; si no, como siempre (al final, como trozos, o el trozo copiado).
+ */
+async function paste() {
   player.value?.pause()
+  if (view.value === 'tracks' || tracks.libraryOpen.value) {
+    const source = await store.pasteSource()
+    if (source.kind === 'files' || source.kind === 'not-media') {
+      const sys = store.systemClipboard.value
+      const paths = sys ? sys.paths.filter(isTrackMediaPath) : []
+      if (paths.length) {
+        await tracks.addFiles(paths, tracks.playheadMs.value)
+        return
+      }
+    }
+  }
   void pasteFromClipboard()
 }
 
@@ -121,10 +164,35 @@ useShortcuts({
   shortcuts: () => {
     const p = player.value
     const has = count.value > 0
+    const it = item.value
+    const at = tracks.playheadMs.value
+    const r = itemTimes.value
+    const inside = !!r && at > r.startMs + 300 && at < r.shownEndMs - 300
+    const tv = tracksView.value
+    // Con un sonido o un efecto elegido, sus teclas van antes que las del trozo.
+    const itemKeys = it && view.value === 'tracks'
+      ? [
+          { id: 'item-deselect', keys: ['Escape'], label: 'Esc', description: 'dejar de elegir el sonido o efecto', run: () => tracks.select(null), enabled: !playing.value },
+          { id: 'item-remove', keys: ['Delete'], label: 'Supr', description: 'quitar el sonido o efecto elegido (se puede deshacer)', run: () => tracks.remove(it.item.id) },
+          { id: 'item-split', keys: ['p'], label: 'P', description: 'partir el elegido donde está la línea', run: () => tracks.split(it.item.id, at), enabled: inside },
+          { id: 'item-duplicate', keys: ['d'], label: 'D', description: 'duplicar el elegido (justo detrás)', run: () => tracks.duplicate(it.item.id) },
+          { id: 'item-move-here', keys: ['m'], label: 'M', description: 'que el elegido empiece donde está la línea', run: () => tracks.moveTo(it.item.id, at) },
+          { id: 'item-trim-start', keys: ['e'], label: 'E', description: 'que el elegido empiece en la línea (recorta o alarga por delante)', run: () => tracks.trimAt(it.item.id, 'start', at), enabled: !!r && at < r.endMs - 300 },
+          { id: 'item-trim-end', keys: ['t'], label: 'T', description: 'que el elegido termine en la línea', run: () => tracks.trimAt(it.item.id, 'end', at), enabled: !!r && at > r.startMs + 300 },
+          { id: 'item-repeat', keys: ['r'], label: 'R', description: 'repetir el elegido (o dejar de repetirlo)', run: () => tracks.setRepeat(it.item.id, !it.item.repeat), enabled: !it.item.still },
+          { id: 'item-up', keys: ['ArrowUp'], label: '↑', description: 'pasar el elegido a la pista de arriba', run: () => tracks.moveToNeighbourTrack(it.item.id, -1) },
+          { id: 'item-down', keys: ['ArrowDown'], label: '↓', description: 'pasar el elegido a la pista de abajo', run: () => tracks.moveToNeighbourTrack(it.item.id, 1) },
+        ]
+      : []
     return [
       { id: 'play', keys: ['Space'], label: 'Espacio', description: 'reproducir o parar', run: () => p?.toggle(), enabled: has },
       { id: 'stop', keys: ['Escape'], label: 'Esc', description: 'parar y volver al principio', run: () => (p?.pause(), p?.seek(0)), enabled: playing.value },
+      ...itemKeys,
       { id: 'back', keys: ['Escape'], label: 'Esc', description: 'volver a Inicio (tu vídeo no se pierde)', run: () => store.go('home') },
+      { id: 'library', keys: ['b'], label: 'B', description: 'añadir sonidos y efectos (biblioteca)', run: openLibrary, enabled: has },
+      { id: 'view', keys: ['v'], label: 'V', description: 'ver las pistas o las tarjetas', run: toggleView, enabled: tracks.hasTracks.value },
+      { id: 'zoom-in', keys: ['+'], label: '+', description: 'acercar (pistas)', run: () => tv?.zoomBy(1), enabled: view.value === 'tracks', repeat: true },
+      { id: 'zoom-out', keys: ['-'], label: '-', description: 'alejar (pistas)', run: () => tv?.zoomBy(-1), enabled: view.value === 'tracks', repeat: true },
       { id: 'go-start', keys: ['Home'], label: 'Inicio', description: 'ir al principio', run: () => p?.seek(0), enabled: has },
       { id: 'go-end', keys: ['End'], label: 'Fin', description: 'ir al final', run: () => p?.seek(p.durationMs), enabled: has },
       { id: 'back-1s', keys: ['ArrowLeft'], label: '←', description: '1 segundo atrás', run: () => p?.seek(p.currentMs - 1000), enabled: has, repeat: true },
@@ -141,6 +209,7 @@ useShortcuts({
 })
 
 onMounted(() => {
+  void library.refreshStatus()
   void store.refreshSystemClipboard()
   clipboardTimer = window.setInterval(() => void store.refreshSystemClipboard(), 1500)
   window.addEventListener('focus', onWindowFocus)
@@ -174,9 +243,11 @@ onBeforeUnmount(() => {
       <TargetPicker />
     </DurationBar>
 
-    <div class="workspace">
+    <div class="body">
+    <div class="main-col">
+    <div class="workspace" :class="{ 'with-library': tracks.libraryOpen.value }">
       <section class="preview">
-        <PreviewPlayer ref="player" :project="store.playableProject.value">
+        <PreviewPlayer ref="player" :project="store.playableProject.value" tracks @time="onTime">
           <template #overlay>
             <div v-if="missingCount > 0" class="missing-banner">
               <AppIcon name="warning" />
@@ -186,7 +257,7 @@ onBeforeUnmount(() => {
         </PreviewPlayer>
       </section>
 
-      <aside class="side">
+      <aside v-if="!tracks.libraryOpen.value" class="side">
         <UpdateNotice compact />
         <section v-if="offerClip" class="panel offer" data-testid="recording-offer">
           <h2><AppIcon name="check" :size="22" /> Grabación añadida</h2>
@@ -199,6 +270,26 @@ onBeforeUnmount(() => {
             <AppIcon name="close" />
             Ahora no
           </button>
+        </section>
+        <section class="panel fx-panel" data-testid="fx-panel">
+          <h2>Sonidos y efectos</h2>
+          <p v-if="!tracks.hasTracks.value" class="fx-hint">Música, aplausos, confeti, luces… por encima de tu vídeo.</p>
+          <button class="btn add-fx" type="button" :disabled="count === 0" data-testid="add-sounds-effects" @click="openLibrary">
+            <AppIcon name="library" />
+            <span class="add-fx-text">Añadir sonidos y efectos</span>
+            <KeyHint k="B" />
+          </button>
+          <span v-if="tracks.hasTracks.value" class="switch-label">Ver abajo <KeyHint k="V" /></span>
+          <div v-if="tracks.hasTracks.value" class="switch" role="radiogroup" aria-label="Cómo ver la parte de abajo">
+            <button class="seg" :class="{ on: view === 'cards' }" type="button" role="radio" :aria-checked="view === 'cards'" data-testid="view-cards" @click="tracks.setView('cards')">
+              <AppIcon name="cards" :size="20" />
+              Tarjetas
+            </button>
+            <button class="seg" :class="{ on: view === 'tracks' }" type="button" role="radio" :aria-checked="view === 'tracks'" data-testid="view-tracks" @click="tracks.setView('tracks')">
+              <AppIcon name="tracks" :size="20" />
+              Pistas
+            </button>
+          </div>
         </section>
         <section class="panel">
           <h2>Forma del vídeo</h2>
@@ -225,13 +316,15 @@ onBeforeUnmount(() => {
 
         <p class="tip muted">
           <AppIcon name="drag" :size="20" />
-          Arrastra los trozos de abajo para cambiar el orden, o usa «Mover» antes o después.
+          {{ view === 'tracks' ? 'Arrastra los trozos y lo que hay en las pistas para moverlos; tira de sus bordes para recortarlos.' : 'Arrastra los trozos de abajo para cambiar el orden, o usa «Mover» antes o después.' }}
         </p>
       </aside>
     </div>
 
     <footer class="strip-area">
-      <div v-if="clip" class="clip-actions" data-testid="clip-panel">
+      <!-- Con la biblioteca abierta, abajo solo las pistas (o la tira): lo puesto queda elegido para después. -->
+      <ItemBar v-if="item && view === 'tracks' && !tracks.libraryOpen.value" :playhead-ms="tracks.playheadMs.value" />
+      <div v-else-if="clip && !tracks.libraryOpen.value" class="clip-actions" data-testid="clip-panel">
         <h2>Trozo {{ index + 1 }} <span class="muted">de {{ count }}</span></h2>
         <span class="nav-keys" title="RePág y AvPág: elegir el trozo anterior o el siguiente"><KeyHint k="RePág" /><KeyHint k="AvPág" /></span>
         <template v-if="clipMissing">
@@ -289,8 +382,12 @@ onBeforeUnmount(() => {
           </button>
         </template>
       </div>
-      <ClipStrip @add="pickAndAddVideos" @record="record" />
+      <ClipStrip v-if="view === 'cards'" @add="pickAndAddVideos" @record="record" />
+      <TracksView v-else ref="tracksView" :playhead-ms="tracks.playheadMs.value" :playing="playing" @seek="seek" />
     </footer>
+    </div>
+    <LibraryPanel v-if="tracks.libraryOpen.value" class="side-library" />
+    </div>
   </main>
 </template>
 
@@ -300,7 +397,8 @@ onBeforeUnmount(() => {
 }
 .workspace {
   flex: 1;
-  min-height: 0;
+  /* La vista previa nunca se queda sin altura: si abajo no cabe todo, las pistas se desplazan. */
+  min-height: 250px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 280px;
   gap: 16px;
@@ -309,6 +407,100 @@ onBeforeUnmount(() => {
 .preview {
   min-height: 0;
   min-width: 0;
+}
+/*
+ * Con la biblioteca abierta, ocupa toda la altura de la derecha: la vista previa (para «Probar sobre mi vídeo»)
+ * y las pistas (para ver dónde cae lo que se pone) siguen a la vista, a la izquierda.
+ */
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.main-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* Lo de abajo se adapta al ancho que le queda (menos con la biblioteca abierta). */
+  container-type: inline-size;
+}
+.workspace.with-library {
+  grid-template-columns: minmax(0, 1fr);
+}
+.side-library {
+  flex: none;
+  width: clamp(380px, 36%, 500px);
+  margin: 16px 20px 14px 0;
+}
+/* «Sonidos y efectos» en la columna de la derecha: añadir y cambiar entre tarjetas y pistas. */
+.fx-panel {
+  border-color: #cdb9e6;
+}
+.fx-hint {
+  font-size: 15px;
+  color: var(--text-muted);
+  line-height: 1.3;
+}
+.add-fx {
+  justify-content: flex-start;
+  min-height: 52px;
+  padding: 6px 12px;
+  white-space: normal;
+  text-align: left;
+  line-height: 1.2;
+  border-color: #7b56b0;
+  color: #5b3590;
+}
+.add-fx-text {
+  flex: 1;
+}
+.add-fx:hover:not(:disabled) {
+  background: #f3edfa !important;
+  border-color: #7b56b0 !important;
+}
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.switch-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: -4px;
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text-muted);
+}
+.seg {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 42px;
+  padding: 0 8px;
+  border: 1.5px solid var(--border-strong);
+  background: var(--surface);
+  font-weight: 600;
+  font-size: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.seg:nth-of-type(1) {
+  border-radius: 10px 0 0 10px;
+}
+.seg:nth-of-type(2) {
+  border-radius: 0 10px 10px 0;
+  margin-left: -6px;
+}
+.seg.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  position: relative;
+  z-index: 1;
 }
 .side {
   display: flex;
@@ -482,7 +674,10 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 .strip-area {
-  flex: none;
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   margin-top: 14px;
   background: var(--surface);
   border-top: 1px solid var(--border);
@@ -506,7 +701,25 @@ onBeforeUnmount(() => {
     grid-template-columns: minmax(0, 1fr) 250px;
   }
 }
+@media (max-width: 1250px) {
+  .seg {
+    font-size: 15px;
+    padding: 0 6px;
+  }
+}
 @media (max-height: 760px) {
+  .workspace {
+    min-height: 220px;
+  }
+  .seg {
+    min-height: 38px;
+  }
+  .add-fx {
+    min-height: 46px;
+  }
+  .fx-hint {
+    display: none;
+  }
   .workspace {
     padding-top: 10px;
   }

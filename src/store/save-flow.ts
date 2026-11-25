@@ -10,6 +10,7 @@ import {
 } from '../domain'
 import { CancelledError } from '../native/bridge'
 import type { EditorStore } from './editor'
+import type { LibraryStore } from './library'
 import { ExportError, startExport, type ExportJob, type ExportResult } from './exporter'
 
 const FACTOR_KEY = 'easy-cut:export-factor'
@@ -32,7 +33,7 @@ function writeFactors(f: FactorStore) {
   }
 }
 
-export function createSaveFlow(store: EditorStore) {
+export function createSaveFlow(store: EditorStore, library: LibraryStore | null = null) {
   const preset = ref<SaveTarget>('whatsapp')
   const progress = shallowRef<ProgressUpdate | null>(null)
   const running = ref(false)
@@ -67,10 +68,26 @@ export function createSaveFlow(store: EditorStore) {
     running.value = true
     store.go('saving')
     const project = store.project.value
+    // Lo de la biblioteca que se usa tiene que estar descargado (normalmente ya lo está desde que se puso).
+    if (library) {
+      try {
+        for (const item of project.tracks.flatMap((t) => t.items)) {
+          if (item.source.type !== 'library') continue
+          const asset = library.asset(item.source.assetId)
+          if (asset) await library.ensureAsset(asset)
+        }
+      } catch (e) {
+        running.value = false
+        store.go('save')
+        store.showError('Falta por descargar algo de la biblioteca y ahora no se puede. Mira si hay conexión a internet y vuelve a probar.', e)
+        return
+      }
+    }
     const media = store.media.value
     job = startExport(store.bridge, {
       project,
       media,
+      itemPath: library ? library.itemPath : undefined,
       preset: id,
       onProgress: (u) => (progress.value = u),
       onRetry: (failed: VideoEncoder, next: VideoEncoder, stderr: string) => {

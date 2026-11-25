@@ -74,6 +74,9 @@ export function createBrowserBridge(): NativeBridge {
     saveRecording: () => unavailable('Guardar la grabación'),
     beginRecording: () => unavailable('Grabar'),
     deleteRecording: () => unavailable('Borrar la grabación'),
+    libraryStatus: (files) => Promise.resolve(files.map(() => null)),
+    libraryFetch: () => unavailableProcess('Descargar de la biblioteca'),
+    libraryCatalog: () => Promise.resolve(null),
     onFilesDropped: () => () => {},
   }
 }

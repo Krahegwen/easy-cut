@@ -1,6 +1,6 @@
 # Easy Cut
 
-Editor de vídeo para Windows pensado para quien no quiere aprender a usar un editor de vídeo. Sin línea de tiempo, sin formatos ni ajustes técnicos: una tira de trozos, botones grandes y la duración siempre a la vista.
+Editor de vídeo para Windows pensado para quien no quiere aprender a usar un editor de vídeo. Sin formatos ni ajustes técnicos: una tira de trozos, botones grandes y la duración siempre a la vista; y, cuando hacen falta, unas pistas sencillas para poner música, sonidos y efectos encima.
 
 La interfaz está en castellano.
 
@@ -10,6 +10,7 @@ La interfaz está en castellano.
 - **Arreglar cada trozo**: cortar el principio y el final, partirlo en dos todas las veces que haga falta, cambiar la velocidad, quitar el sonido, girarlo y encuadrarlo.
 - **Quitar pausas**: busca los silencios de un trozo y los quita, con tres niveles (pocas, normal, muchas).
 - **Imagen**: dejar un trozo solo con sonido, poner otro vídeo encima, o verte en una esquina mientras se ve otro vídeo.
+- **Sonidos y efectos**: música de fondo, aplausos, una campanita, confeti, chispas, luces, nieve, un logo o un marco, en pistas debajo de los trozos. Cada cosa va pegada a su trozo (si lo mueves, va con él) y cada pista se puede silenciar u ocultar. Trae una **biblioteca** propia (se descarga lo que se usa) y también vale lo que tengas en el ordenador.
 - **Grabarte leyendo un texto**: un teleprompter que calcula si el texto cabe en el tiempo que tienes y a qué ritmo hay que leerlo, y graba en vídeo o solo la voz.
 - **Duración máxima**: si el vídeo no puede pasar de, por ejemplo, 5 minutos, la app dice en todo momento cuánto te queda o cuánto te sobra.
 - **Guardar** con un botón: «Para WhatsApp», «Para YouTube», «Calidad alta» o «Solo el sonido».
@@ -86,5 +87,7 @@ Si la etiqueta no coincide con la versión del código, el workflow falla sin pu
 ## Licencias
 
 El código de Easy Cut se publica bajo la licencia [MIT](LICENSE).
+
+Los sonidos y efectos de la biblioteca que ha hecho el proyecto (`scripts/build-library.mjs`) se publican bajo [CC0](https://creativecommons.org/publicdomain/zero/1.0/deed.es): se pueden usar en cualquier vídeo sin nombrar a nadie. Lo que sea de otras personas lleva su licencia, su autor y su fuente en [`library/catalog.json`](library/catalog.json) (ver [`library/README.md`](library/README.md)); si pide que se le nombre, la app lo dice al guardar el vídeo y da el texto de los créditos.
 
 El instalador incluye los programas `ffmpeg` y `ffprobe` sin modificar, que **no** forman parte de este código y tienen su propia licencia: son una compilación de [FFmpeg-Builds](https://github.com/FFmpeg-Builds/FFmpeg-Builds) (antes BtbN/FFmpeg-Builds; variante `win64-gpl`), distribuida bajo la **GNU General Public License, versión 3**. La compilación exacta (versión, commit de FFmpeg y SHA-256) está fijada en [`scripts/ffmpeg-build.json`](scripts/ffmpeg-build.json) y la repite la nota de cada versión publicada; los scripts con los que se compila están en el repositorio de FFmpeg-Builds. Más detalle en [`THIRD-PARTY.md`](THIRD-PARTY.md).

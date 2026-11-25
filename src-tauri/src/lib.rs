@@ -5,6 +5,7 @@ mod clipboard;
 mod commands;
 mod files;
 mod job_object;
+mod library;
 mod media_permissions;
 mod process;
 mod test_window;
@@ -75,6 +76,9 @@ pub fn run() {
             commands::recording_append,
             commands::recording_finish,
             commands::recording_cleanup,
+            library::library_status,
+            library::library_fetch,
+            library::library_catalog,
         ])
         .build(tauri::generate_context!())
         .expect("no se ha podido arrancar Easy Cut");

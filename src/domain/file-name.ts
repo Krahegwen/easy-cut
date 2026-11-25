@@ -65,6 +65,25 @@ export function isMediaPath(path: string): boolean {
   return isVideoPath(path) || isAudioPath(path)
 }
 
+/** Imágenes fijas que se pueden poner en una pista de efectos (las mismas que el diálogo, commands.rs). */
+export const IMAGE_EXTENSIONS: readonly string[] = ['png', 'jpg', 'jpeg', 'webp']
+
+/** ¿Parece una imagen fija (PNG, JPG, WebP)? */
+export function isImagePath(path: string): boolean {
+  const ext = extensionOf(path)
+  return !!ext && IMAGE_EXTENSIONS.includes(ext)
+}
+
+/** ¿Se puede poner en una pista? (sonido, vídeo o imagen). */
+export function isTrackMediaPath(path: string): boolean {
+  return isMediaPath(path) || isImagePath(path)
+}
+
+/** Nombre sin la extensión, para enseñar un fichero en una pista: «C:\m\Aplausos.mp3» → «Aplausos». */
+export function displayName(path: string): string {
+  return baseName(path).replace(/\.[^.]+$/, '')
+}
+
 /** Nombre del fichero de una ruta de Windows o POSIX: «C:\a\b\toma 1.mp4» → «toma 1.mp4». */
 export function baseName(path: string): string {
   const parts = path.split(/[\\/]/)

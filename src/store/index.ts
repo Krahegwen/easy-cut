@@ -8,7 +8,9 @@ import { createUpdater, type UpdaterBackend } from '../lib/updater'
 import { bridge as nativeBridge, isDesktop, type NativeBridge, type PickVideosOptions } from '../native'
 import { createTauriUpdaterBackend } from '../native/tauri-updater'
 import { createEditorStore } from './editor'
+import { createLibraryStore } from './library'
 import { createSaveFlow } from './save-flow'
+import { createTracksStore } from './tracks'
 
 /** Rutas que la prueba e2e mete en lugar del diálogo nativo (solo en desarrollo). */
 const devPickQueue: string[][] = []
@@ -26,7 +28,9 @@ const appBridge: NativeBridge = import.meta.env.DEV
 export type { PreparingItem, Screen } from './editor'
 
 export const store = createEditorStore(appBridge)
-export const saveFlow = createSaveFlow(store)
+export const library = createLibraryStore(appBridge, store.setMedia)
+export const tracks = createTracksStore(store, library)
+export const saveFlow = createSaveFlow(store, library)
 
 /** ¿Se actualiza sola? Solo la app instalada (compilación release); ni `tauri dev` ni el navegador. */
 export const updaterEnabled = isDesktop && !import.meta.env.DEV
@@ -60,6 +64,8 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
     store,
     saveFlow,
     updater,
+    library,
+    tracks,
     /** La próxima vez que la interfaz abra «elegir vídeos», devuelve estas rutas sin diálogo. */
     queuePickedVideos(paths: string[]) {
       devPickQueue.push(paths)
