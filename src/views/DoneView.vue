@@ -2,8 +2,11 @@
 // «¡Listo!»: ver el vídeo, abrir la carpeta, copiarlo para WhatsApp, guardarlo de otra forma o hacer otro.
 import { computed, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
+import KeyHint from '../components/KeyHint.vue'
+import KeysButton from '../components/KeysButton.vue'
 import { baseName, formatDuration } from '../domain'
 import { askConfirm } from '../lib/confirm'
+import { useShortcuts } from '../lib/use-shortcuts'
 import { store } from '../store'
 
 const copied = ref(false)
@@ -48,10 +51,20 @@ async function another() {
   store.startNewProject()
   store.go('pick')
 }
+
+useShortcuts({
+  id: 'done',
+  title: '¡Listo!',
+  shortcuts: () => [
+    { id: 'open-video', keys: ['Enter'], label: 'Intro', description: sound.value ? '«Escuchar»' : '«Ver el vídeo»', run: open },
+    { id: 'back', keys: ['Escape'], label: 'Esc', description: 'volver a tu vídeo', run: () => store.go('editor') },
+  ],
+})
 </script>
 
 <template>
   <main class="screen done" data-testid="done-view">
+    <KeysButton floating />
     <div class="box card">
       <span class="ok"><AppIcon name="check" :size="44" /></span>
       <h1>¡Listo!</h1>
@@ -63,6 +76,7 @@ async function another() {
         <button class="btn primary large" type="button" data-testid="open-video" @click="open">
           <AppIcon :name="sound ? 'sound' : 'play'" />
           {{ sound ? 'Escuchar' : 'Ver el vídeo' }}
+          <KeyHint k="Intro" />
         </button>
         <button class="btn large" type="button" data-testid="open-folder" @click="reveal">
           <AppIcon name="folder" />
@@ -82,6 +96,7 @@ async function another() {
         <button class="btn" type="button" data-testid="back-to-editor" @click="store.go('editor')">
           <AppIcon name="back" />
           Volver a tu vídeo
+          <KeyHint k="Esc" />
         </button>
         <button class="btn" type="button" data-testid="another-video" @click="another">
           <AppIcon name="plus" />

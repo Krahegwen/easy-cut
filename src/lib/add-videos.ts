@@ -36,3 +36,24 @@ export async function pickAndAddVideos(): Promise<number> {
 export function dismissFailures() {
   failedVideos.value = []
 }
+
+/**
+ * Ctrl+V: los vídeos o sonidos copiados en el Explorador se añaden al final (como al soltarlos); si no hay,
+ * se pega el trozo copiado en la app detrás del elegido. Qué gana, en domain/paste.ts.
+ */
+export async function pasteFromClipboard(options: { clips: boolean } = { clips: true }): Promise<void> {
+  const source = await store.pasteSource()
+  if (source.kind === 'files') {
+    await addVideos(source.paths)
+    return
+  }
+  if (source.kind === 'not-media') {
+    store.showToast('Lo que has copiado no parece un vídeo ni un sonido.')
+    return
+  }
+  if (source.kind === 'clip' && options.clips) {
+    store.pasteCopiedClip()
+    return
+  }
+  store.showToast(options.clips ? 'No hay nada que pegar. Copia antes un trozo, o unos vídeos en el Explorador.' : 'No hay vídeos copiados. Cópialos antes en el Explorador.')
+}

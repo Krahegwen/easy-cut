@@ -24,8 +24,10 @@ import {
   type PrompterLine,
   type Script,
 } from '../../domain'
-import { setKeyHandler } from '../../lib/keys'
+import { useShortcuts } from '../../lib/use-shortcuts'
 import AppIcon from '../AppIcon.vue'
+import KeyHint from '../KeyHint.vue'
+import KeysButton from '../KeysButton.vue'
 
 const props = defineProps<{
   mode: 'rehearse' | 'record'
@@ -73,6 +75,8 @@ let finishedAtElapsed: number | null = null
 const shownElapsed = ref(0)
 const shownUnits = ref(0)
 const finishedNotice = ref(false)
+/** Ya ha pasado todo el texto: Intro termina (antes no, para no cortar sin querer). */
+const textDone = ref(false)
 
 /** Línea de lectura: a un 22 % del alto, cerca de la cámara (arriba del todo de la pantalla). */
 const READING_FRACTION = 0.22
@@ -126,7 +130,10 @@ function frame(now: number) {
     // El tiempo real entre fotogramas (no un paso fijo): el ritmo no depende de los fps de la pantalla.
     const dt = Math.min(250, now - lastFrame)
     units = advanceUnits(units, dt, liveWpm.value, props.script.totalUnits)
-    if (units >= props.script.totalUnits && finishedAtElapsed === null) finishedAtElapsed = clockElapsed(clock, now)
+    if (units >= props.script.totalUnits && finishedAtElapsed === null) {
+      finishedAtElapsed = clockElapsed(clock, now)
+      textDone.value = true
+    }
     paint()
   }
   lastFrame = now
@@ -181,7 +188,10 @@ function changeSpeed(delta: number) {
 
 function rewind() {
   units = rewindUnits(lines, units, 2)
-  if (units < props.script.totalUnits) finishedAtElapsed = null
+  if (units < props.script.totalUnits) {
+    finishedAtElapsed = null
+    textDone.value = false
+  }
   paint()
 }
 
@@ -222,29 +232,32 @@ onMounted(() => {
   lastFrame = performance.now()
   raf = requestAnimationFrame(frame)
   startCountdown()
-  setKeyHandler((e) => {
-    if (e.key === ' ') {
-      togglePause()
-      return true
-    }
-    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-      changeSpeed(e.key === 'ArrowUp' ? -PACE_STEP_WPM : PACE_STEP_WPM)
-      return true
-    }
-    if (e.key === 'ArrowLeft') {
-      rewind()
-      return true
-    }
-    return false
-  })
 })
 
 onBeforeUnmount(() => {
   cancelAnimationFrame(raf)
   if (countdownTimer) window.clearInterval(countdownTimer)
   observer?.disconnect()
-  setKeyHandler(null)
   if (cameraEl.value) cameraEl.value.srcObject = null
+})
+
+// ------------------------------------------------------------------ teclas
+
+useShortcuts({
+  id: 'prompter-run',
+  title: props.mode === 'record' ? 'Grabando' : 'Ensayando',
+  shortcuts: () => {
+    const counting = phase.value === 'countdown'
+    const record = props.mode === 'record'
+    return [
+      { id: 'run-pause', keys: ['Space'], label: 'Espacio', description: record ? 'pausa o seguir (en pausa no se graba)' : 'pausa o seguir', run: togglePause, enabled: !counting },
+      { id: 'run-slower', keys: ['ArrowUp'], label: '↑', description: 'más despacio', run: () => changeSpeed(-PACE_STEP_WPM), repeat: true },
+      { id: 'run-faster', keys: ['ArrowDown'], label: '↓', description: 'más rápido', run: () => changeSpeed(PACE_STEP_WPM), repeat: true },
+      { id: 'run-rewind', keys: ['ArrowLeft'], label: '←', description: 'retroceder un poco', run: rewind, enabled: !counting, repeat: true },
+      { id: 'run-leave', keys: ['Escape'], label: 'Esc', description: record ? 'dejar de grabar (pregunta antes)' : 'dejar de ensayar', run: leave },
+      { id: 'run-finish', keys: ['Enter'], label: 'Intro', description: record ? '«Terminar», cuando ya ha pasado todo el texto' : '«Terminar el ensayo», cuando ya ha pasado todo el texto', run: finish, enabled: !counting && textDone.value },
+    ]
+  },
 })
 
 const paragraphs = shallowRef(props.script.paragraphs)
@@ -309,25 +322,31 @@ defineExpose({ togglePause, finish, phase })
       </div>
 
       <div class="controls">
+        <KeysButton dark />
         <button class="btn dark" type="button" data-testid="run-leave" @click="leave">
           <AppIcon name="back" />
           Volver
+          <KeyHint k="Esc" />
         </button>
-        <button class="btn dark" type="button" data-testid="run-rewind" :disabled="phase === 'countdown'" title="Flecha izquierda" @click="rewind">
+        <button class="btn dark" type="button" data-testid="run-rewind" :disabled="phase === 'countdown'" @click="rewind">
           <AppIcon name="rewind" />
           Retroceder un poco
+          <KeyHint k="←" />
         </button>
-        <button class="btn dark" type="button" data-testid="run-slower" title="Flecha arriba" @click="changeSpeed(-PACE_STEP_WPM)">
+        <button class="btn dark" type="button" data-testid="run-slower" @click="changeSpeed(-PACE_STEP_WPM)">
           <AppIcon name="slower" />
           Más despacio
+          <KeyHint k="↑" />
         </button>
-        <button class="btn dark" type="button" data-testid="run-faster" title="Flecha abajo" @click="changeSpeed(PACE_STEP_WPM)">
+        <button class="btn dark" type="button" data-testid="run-faster" @click="changeSpeed(PACE_STEP_WPM)">
           <AppIcon name="faster" />
           Más rápido
+          <KeyHint k="↓" />
         </button>
-        <button class="btn dark pause" type="button" data-testid="run-pause" :disabled="phase === 'countdown'" title="Barra espaciadora" @click="togglePause">
+        <button class="btn dark pause" type="button" data-testid="run-pause" :disabled="phase === 'countdown'" @click="togglePause">
           <AppIcon :name="phase === 'paused' ? 'play' : 'pause'" />
           {{ phase === 'paused' ? 'Seguir' : 'Pausa' }}
+          <KeyHint k="Espacio" />
         </button>
         <button v-if="stream" class="btn dark" type="button" data-testid="run-camera" @click="emit('toggle-camera')">
           <AppIcon :name="showCamera === false ? 'eye' : 'eye-off'" />
@@ -336,6 +355,7 @@ defineExpose({ togglePause, finish, phase })
         <button class="btn finish" type="button" data-testid="run-finish" :disabled="phase === 'countdown'" @click="finish">
           <AppIcon name="stop" />
           {{ mode === 'record' ? 'Terminar' : 'Terminar el ensayo' }}
+          <KeyHint v-if="textDone" k="Intro" />
         </button>
       </div>
     </footer>

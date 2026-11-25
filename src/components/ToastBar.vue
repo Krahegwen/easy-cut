@@ -1,6 +1,18 @@
 <script setup lang="ts">
+import { LAYER_PRIORITY } from '../lib/shortcuts'
+import { useShortcuts } from '../lib/use-shortcuts'
 import { store } from '../store'
 import AppIcon from './AppIcon.vue'
+import KeyHint from './KeyHint.vue'
+
+// Esc cierra el aviso (antes que parar la reproducción o volver atrás).
+useShortcuts({
+  id: 'toast',
+  title: 'El aviso',
+  priority: LAYER_PRIORITY.toast,
+  active: () => !!store.toast.value,
+  shortcuts: () => [{ id: 'toast-close', keys: ['Escape'], label: 'Esc', description: 'cerrar el aviso', run: () => store.hideToast() }],
+})
 
 function run() {
   const t = store.toast.value
@@ -17,8 +29,9 @@ function run() {
         <AppIcon name="undo" />
         {{ store.toast.value.actionLabel }}
       </button>
-      <button class="btn quiet close" type="button" aria-label="Cerrar el aviso" @click="store.hideToast()">
+      <button class="btn quiet close" type="button" aria-label="Cerrar el aviso" data-testid="toast-close" @click="store.hideToast()">
         <AppIcon name="close" />
+        <KeyHint k="Esc" />
       </button>
     </div>
   </Transition>
@@ -90,6 +103,7 @@ function run() {
 .close {
   color: #fff;
   padding: 0 12px;
+  gap: 6px;
 }
 .close:hover {
   background: rgb(255 255 255 / 0.12) !important;

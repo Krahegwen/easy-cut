@@ -2,8 +2,22 @@
 // Error en lenguaje llano, con «Copiar detalles» para quien tenga que ayudar.
 import { ref } from 'vue'
 import { copyText } from '../lib/clipboard'
+import { LAYER_PRIORITY } from '../lib/shortcuts'
+import { useShortcuts } from '../lib/use-shortcuts'
 import { store } from '../store'
 import AppIcon from './AppIcon.vue'
+import KeyHint from './KeyHint.vue'
+
+useShortcuts({
+  id: 'error',
+  title: 'Este aviso',
+  priority: LAYER_PRIORITY.error,
+  modal: true,
+  active: () => !!store.error.value,
+  shortcuts: () => [
+    { id: 'error-close', keys: ['Enter', 'Escape'], label: 'Intro', description: '«Entendido»', run: close, inText: true },
+  ],
+})
 
 const copied = ref(false)
 
@@ -36,6 +50,7 @@ function close() {
         <button class="btn primary" type="button" data-testid="error-close" @click="close">
           <AppIcon name="check" />
           Entendido
+          <KeyHint k="Intro" />
         </button>
       </div>
     </div>

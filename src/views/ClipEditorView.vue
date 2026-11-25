@@ -53,7 +53,9 @@ import {
   type Project,
   type Speed,
 } from '../domain'
-import { setKeyHandler } from '../lib/keys'
+import KeyHint from '../components/KeyHint.vue'
+import KeysButton from '../components/KeysButton.vue'
+import { useShortcuts } from '../lib/use-shortcuts'
 import {
   cancelPauseSearch,
   candidateSegments,
@@ -138,21 +140,42 @@ onMounted(() => {
     tab.value = 'pauses'
     if (start.findPauses && hasAudio.value && pauses.value?.status !== 'searching') findPauses()
   }
-  setKeyHandler((e) => {
-    if (e.key === ' ') {
-      player.value?.toggle()
-      return true
-    }
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-      step(e.key === 'ArrowLeft' ? -1000 : 1000)
-      return true
-    }
-    return false
-  })
 })
 onBeforeUnmount(() => {
-  setKeyHandler(null)
   store.cancelPreview()
+})
+
+// ------------------------------------------------------------------ teclas
+
+const playing = computed(() => !!player.value?.playing)
+
+useShortcuts({
+  id: 'clip-editor',
+  title: 'Arreglar este trozo',
+  shortcuts: () => {
+    const cut = tab.value === 'cut'
+    return [
+      { id: 'play', keys: ['Space'], label: 'Espacio', description: 'reproducir o parar', run: () => player.value?.toggle() },
+      { id: 'stop', keys: ['Escape'], label: 'Esc', description: 'parar y volver al principio del trozo', run: () => showAt(io.value.startMs), enabled: playing.value },
+      { id: 'back', keys: ['Escape'], label: 'Esc', description: 'volver a «Tu vídeo» (los cambios se quedan)', run: done },
+      { id: 'go-start', keys: ['Home'], label: 'Inicio', description: 'ir al principio del trozo', run: () => showAt(io.value.startMs) },
+      { id: 'go-end', keys: ['End'], label: 'Fin', description: 'ir al final del trozo', run: () => showAt(io.value.endMs) },
+      { id: 'back-1s', keys: ['ArrowLeft'], label: '←', description: '1 segundo atrás', run: () => step(-1000), repeat: true },
+      { id: 'forward-1s', keys: ['ArrowRight'], label: '→', description: '1 segundo adelante', run: () => step(1000), repeat: true },
+      { id: 'start-here', keys: ['e'], label: 'E', description: '«Empieza aquí» (en «Cortar»)', run: startHere, enabled: cut },
+      { id: 'end-here', keys: ['t'], label: 'T', description: '«Termina aquí» (en «Cortar»)', run: endHere, enabled: cut },
+      { id: 'split-here', keys: ['p'], label: 'P', description: '«Partir aquí» (en «Cortar»)', run: splitHere, enabled: cut },
+      ...tabs.map((t, i) => ({
+        id: `tab-${t.id}`,
+        keys: [String(i + 1)],
+        label: String(i + 1),
+        description: `pestaña «${t.label}»`,
+        run: () => (tab.value = t.id),
+      })),
+      { id: 'done', keys: ['l'], label: 'L', description: '«Listo»: volver a «Tu vídeo»', run: done },
+      { id: 'done-enter', keys: ['Enter'], label: 'Intro', description: '«Listo» también', run: done },
+    ]
+  },
 })
 
 // ------------------------------------------------------------------ Cortar
@@ -497,9 +520,11 @@ function done() {
       <button class="btn quiet" type="button" data-testid="clip-back" @click="done">
         <AppIcon name="back" />
         Volver
+        <KeyHint k="Esc" />
       </button>
       <h1>Arreglar el trozo {{ clipNumber }}</h1>
       <span class="spacer" />
+      <KeysButton />
       <UndoRedo />
     </header>
 
@@ -525,6 +550,7 @@ function done() {
       >
         <AppIcon :name="t.icon" :size="24" />
         {{ t.label }}
+        <KeyHint :k="String(tabs.indexOf(t) + 1)" />
       </button>
     </nav>
 
@@ -536,6 +562,7 @@ function done() {
           loop
           :pannable="tab === 'frame' && ownVisible"
           clock-label="Posición en el trozo"
+          anchor="source"
           @time="onTime"
           @pan="onPan"
         />
@@ -551,25 +578,30 @@ function done() {
             <button class="btn" type="button" data-testid="step-back" @click="step(-1000)">
               <AppIcon name="step-back" />
               1 segundo atrás
+              <KeyHint k="←" />
             </button>
             <button class="btn" type="button" data-testid="step-forward" @click="step(1000)">
               1 segundo adelante
               <AppIcon name="step-forward" />
+              <KeyHint k="→" />
             </button>
           </div>
           <div class="pair">
             <button class="btn strong" type="button" data-testid="start-here" @click="startHere">
               <AppIcon name="start-here" />
               Empieza aquí
+              <KeyHint k="E" />
             </button>
             <button class="btn strong" type="button" data-testid="end-here" @click="endHere">
               <AppIcon name="end-here" />
               Termina aquí
+              <KeyHint k="T" />
             </button>
           </div>
           <button class="btn strong" type="button" data-testid="split-here" @click="splitHere">
             <AppIcon name="split" />
             Partir aquí
+            <KeyHint k="P" />
           </button>
           <button class="btn quiet" type="button" :disabled="!cutChanged" data-testid="reset-cut" @click="resetCut">
             <AppIcon name="reset" />
@@ -981,6 +1013,8 @@ function done() {
       <button class="btn primary large" type="button" data-testid="clip-done" @click="done">
         <AppIcon name="check" />
         Listo
+        <KeyHint k="L" />
+        <KeyHint k="Intro" />
       </button>
     </footer>
   </main>

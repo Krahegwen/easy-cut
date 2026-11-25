@@ -3,8 +3,22 @@
 import { computed, ref } from 'vue'
 import { dismissFailures, failedVideos } from '../lib/add-videos'
 import { copyText } from '../lib/clipboard'
+import { LAYER_PRIORITY } from '../lib/shortcuts'
+import { useShortcuts } from '../lib/use-shortcuts'
 import { store } from '../store'
 import AppIcon from './AppIcon.vue'
+import KeyHint from './KeyHint.vue'
+
+// Mientras se preparan los vídeos no vale ninguna tecla de la pantalla de debajo.
+useShortcuts({ id: 'preparing', title: 'Preparando', priority: LAYER_PRIORITY.preparing, modal: true, active: () => store.isPreparing.value, shortcuts: () => [] })
+useShortcuts({
+  id: 'failed-videos',
+  title: 'Este aviso',
+  priority: LAYER_PRIORITY.dialog,
+  modal: true,
+  active: () => !store.isPreparing.value && failedVideos.value.length > 0,
+  shortcuts: () => [{ id: 'failed-close', keys: ['Enter', 'Escape'], label: 'Intro', description: '«Seguir»', run: close }],
+})
 
 const done = computed(() => store.preparing.value.filter((i) => i.status !== 'pending').length)
 const total = computed(() => store.preparing.value.length)
@@ -52,6 +66,7 @@ function close() {
         <button class="btn primary" type="button" data-testid="failed-close" @click="close">
           <AppIcon name="check" />
           Seguir
+          <KeyHint k="Intro" />
         </button>
       </div>
     </div>

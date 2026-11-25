@@ -3,6 +3,8 @@
 // discreta debajo, «Solo el sonido» (un M4A). Si ningún trozo tiene imagen, esa pasa a ser la destacada.
 import { computed, onMounted } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
+import KeyHint from '../components/KeyHint.vue'
+import KeysButton from '../components/KeysButton.vue'
 import type { IconName } from '../components/icons'
 import {
   clipShowsPicture,
@@ -17,6 +19,7 @@ import {
   formatDuration,
   type PresetId,
 } from '../domain'
+import { useShortcuts } from '../lib/use-shortcuts'
 import { saveFlow, store } from '../store'
 
 const options: { id: PresetId; icon: IconName; title: string; text: string }[] = [
@@ -49,6 +52,17 @@ const soundEstimate = computed(() => {
 })
 
 onMounted(() => void saveFlow.detectHardware())
+
+// 1, 2, 3: las tres tarjetas en su orden; 4: «Solo el sonido».
+useShortcuts({
+  id: 'save',
+  title: 'Guardar el vídeo',
+  shortcuts: () => [
+    ...options.map((o, i) => ({ id: `preset-${o.id}`, keys: [String(i + 1)], label: String(i + 1), description: `guardar «${o.title}»`, run: () => void saveFlow.start(o.id) })),
+    { id: 'preset-sound', keys: ['4'], label: '4', description: 'guardar «Solo el sonido»', run: () => void saveFlow.start('sound') },
+    { id: 'back', keys: ['Escape'], label: 'Esc', description: 'volver a tu vídeo', run: () => store.go('editor') },
+  ],
+})
 </script>
 
 <template>
@@ -57,8 +71,11 @@ onMounted(() => void saveFlow.detectHardware())
       <button class="btn quiet" type="button" data-testid="back-editor" @click="store.go('editor')">
         <AppIcon name="back" />
         Volver a tu vídeo
+        <KeyHint k="Esc" />
       </button>
       <h1>Guardar el vídeo</h1>
+      <span class="spacer" />
+      <KeysButton />
     </header>
     <div class="body">
       <h2 class="question">¿Para qué es el vídeo?</h2>
@@ -105,6 +122,7 @@ onMounted(() => void saveFlow.detectHardware())
           <span class="go">
             <AppIcon name="save" />
             Guardar así
+            <KeyHint :k="String(options.indexOf(o) + 1)" />
           </span>
         </button>
       </div>
@@ -117,6 +135,7 @@ onMounted(() => void saveFlow.detectHardware())
         <span class="sound-go">
           <AppIcon name="save" />
           Guardar el sonido
+          <KeyHint k="4" />
         </span>
       </button>
       </div>

@@ -9,8 +9,10 @@ import PreviewPlayer from '../components/PreviewPlayer.vue'
 import TargetPicker from '../components/TargetPicker.vue'
 import UndoRedo from '../components/UndoRedo.vue'
 import { clipDurationMs, clipStartTimes, formatDuration, removeCover, setAspect, type AspectRatio } from '../domain'
-import { pickAndAddVideos } from '../lib/add-videos'
-import { setKeyHandler } from '../lib/keys'
+import KeyHint from '../components/KeyHint.vue'
+import KeysButton from '../components/KeysButton.vue'
+import { pasteFromClipboard, pickAndAddVideos } from '../lib/add-videos'
+import { useShortcuts } from '../lib/use-shortcuts'
 import { store } from '../store'
 
 const player = ref<InstanceType<typeof PreviewPlayer> | null>(null)
@@ -82,22 +84,70 @@ watch(
   },
 )
 
-onMounted(() => {
-  setKeyHandler((e) => {
+// ------------------------------------------------------------------ copiar y pegar
+
+const canFix = computed(() => !!clip.value && !clipMissing.value)
+
+function copySelected() {
+  if (clip.value) void store.copyClip(clip.value.id)
+}
+
+function paste() {
+  player.value?.pause()
+  void pasteFromClipboard()
+}
+
+/** Trozo anterior o siguiente (RePág / AvPág). */
+function selectBy(delta: number) {
+  const clips = store.project.value.clips
+  if (clips.length === 0) return
+  const i = index.value < 0 ? 0 : Math.min(clips.length - 1, Math.max(0, index.value + delta))
+  store.select(clips[i]!.id)
+}
+
+// El portapapeles del sistema puede cambiar en cualquier momento (se copia algo en el Explorador): se mira
+// al volver a la ventana y cada poco (es barato: solo el número de secuencia), para activar «Pegar».
+let clipboardTimer = 0
+const onWindowFocus = () => void store.refreshSystemClipboard()
+
+// ------------------------------------------------------------------ teclas
+
+const playing = computed(() => !!player.value?.playing)
+
+useShortcuts({
+  id: 'editor',
+  title: 'Tu vídeo',
+  shortcuts: () => {
     const p = player.value
-    if (!p) return false
-    if (e.key === ' ') {
-      p.toggle()
-      return true
-    }
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-      p.seek(p.currentMs + (e.key === 'ArrowLeft' ? -1000 : 1000))
-      return true
-    }
-    return false
-  })
+    const has = count.value > 0
+    return [
+      { id: 'play', keys: ['Space'], label: 'Espacio', description: 'reproducir o parar', run: () => p?.toggle(), enabled: has },
+      { id: 'stop', keys: ['Escape'], label: 'Esc', description: 'parar y volver al principio', run: () => (p?.pause(), p?.seek(0)), enabled: playing.value },
+      { id: 'back', keys: ['Escape'], label: 'Esc', description: 'volver a Inicio (tu vídeo no se pierde)', run: () => store.go('home') },
+      { id: 'go-start', keys: ['Home'], label: 'Inicio', description: 'ir al principio', run: () => p?.seek(0), enabled: has },
+      { id: 'go-end', keys: ['End'], label: 'Fin', description: 'ir al final', run: () => p?.seek(p.durationMs), enabled: has },
+      { id: 'back-1s', keys: ['ArrowLeft'], label: '←', description: '1 segundo atrás', run: () => p?.seek(p.currentMs - 1000), enabled: has, repeat: true },
+      { id: 'forward-1s', keys: ['ArrowRight'], label: '→', description: '1 segundo adelante', run: () => p?.seek(p.currentMs + 1000), enabled: has, repeat: true },
+      { id: 'prev-clip', keys: ['PageUp'], label: 'RePág', description: 'elegir el trozo anterior', run: () => selectBy(-1), enabled: has, repeat: true },
+      { id: 'next-clip', keys: ['PageDown'], label: 'AvPág', description: 'elegir el trozo siguiente', run: () => selectBy(1), enabled: has, repeat: true },
+      { id: 'fix', keys: ['a'], label: 'A', description: 'arreglar el trozo elegido', run: fix, enabled: canFix.value },
+      { id: 'remove', keys: ['Delete'], label: 'Supr', description: 'quitar el trozo elegido (se puede deshacer)', run: () => clip.value && store.removeClip(clip.value.id), enabled: !!clip.value },
+      { id: 'copy', keys: ['Ctrl+c'], label: 'Ctrl C', description: 'copiar el trozo elegido', run: copySelected, enabled: !!clip.value },
+      { id: 'paste', keys: ['Ctrl+v'], label: 'Ctrl V', description: 'pegar (un trozo copiado, o vídeos copiados en el Explorador)', run: paste },
+      { id: 'save', keys: ['g'], label: 'G', description: 'guardar el vídeo', run: save, enabled: has },
+    ]
+  },
 })
-onBeforeUnmount(() => setKeyHandler(null))
+
+onMounted(() => {
+  void store.refreshSystemClipboard()
+  clipboardTimer = window.setInterval(() => void store.refreshSystemClipboard(), 1500)
+  window.addEventListener('focus', onWindowFocus)
+})
+onBeforeUnmount(() => {
+  window.clearInterval(clipboardTimer)
+  window.removeEventListener('focus', onWindowFocus)
+})
 </script>
 
 <template>
@@ -106,13 +156,16 @@ onBeforeUnmount(() => setKeyHandler(null))
       <button class="btn quiet" type="button" data-testid="go-home" @click="store.go('home')">
         <AppIcon name="home" />
         Inicio
+        <KeyHint k="Esc" />
       </button>
       <h1>Tu vídeo</h1>
       <span class="spacer" />
+      <KeysButton />
       <UndoRedo />
       <button class="btn primary large save" type="button" data-testid="save-video" :disabled="count === 0" @click="save">
         <AppIcon name="save" />
         Guardar el vídeo
+        <KeyHint k="G" />
       </button>
     </header>
 
@@ -170,7 +223,7 @@ onBeforeUnmount(() => setKeyHandler(null))
 
         <p class="tip muted">
           <AppIcon name="drag" :size="20" />
-          Arrastra los trozos de abajo para cambiar el orden, o usa «Mover antes» y «Mover después».
+          Arrastra los trozos de abajo para cambiar el orden, o usa «Mover» antes o después.
         </p>
       </aside>
     </div>
@@ -178,12 +231,14 @@ onBeforeUnmount(() => setKeyHandler(null))
     <footer class="strip-area">
       <div v-if="clip" class="clip-actions" data-testid="clip-panel">
         <h2>Trozo {{ index + 1 }} <span class="muted">de {{ count }}</span></h2>
+        <span class="nav-keys" title="RePág y AvPág: elegir el trozo anterior o el siguiente"><KeyHint k="RePág" /><KeyHint k="AvPág" /></span>
         <template v-if="clipMissing">
           <p class="lost"><AppIcon name="warning" /> No encuentro este vídeo. Puede que se haya movido o borrado.</p>
           <span class="spacer" />
           <button class="btn danger" type="button" data-testid="remove-clip" @click="store.removeClip(clip.id)">
             <AppIcon name="trash" />
             Quitarlo del vídeo
+            <KeyHint k="Supr" />
           </button>
         </template>
         <template v-else-if="clipCoverMissing">
@@ -196,25 +251,39 @@ onBeforeUnmount(() => setKeyHandler(null))
           <button class="btn fix" type="button" data-testid="fix-clip" @click="fix">
             <AppIcon name="wrench" />
             Arreglar este trozo
+            <KeyHint k="A" />
           </button>
         </template>
         <template v-else>
           <button class="btn fix" type="button" data-testid="fix-clip" @click="fix">
             <AppIcon name="wrench" />
             Arreglar este trozo
+            <KeyHint k="A" />
           </button>
-          <button class="btn" type="button" :disabled="index <= 0" data-testid="move-before" @click="store.moveBy(clip.id, -1)">
-            <AppIcon name="arrow-left" />
-            Mover antes
-          </button>
-          <button class="btn" type="button" :disabled="index >= count - 1" data-testid="move-after" @click="store.moveBy(clip.id, 1)">
-            <AppIcon name="arrow-right" />
-            Mover después
-          </button>
+          <div class="move" role="group" aria-label="Mover el trozo">
+            <span class="move-label">Mover</span>
+            <button class="btn" type="button" :disabled="index <= 0" aria-label="Mover antes" title="Mover antes" data-testid="move-before" @click="store.moveBy(clip.id, -1)">
+              <AppIcon name="arrow-left" />
+            </button>
+            <button class="btn" type="button" :disabled="index >= count - 1" aria-label="Mover después" title="Mover después" data-testid="move-after" @click="store.moveBy(clip.id, 1)">
+              <AppIcon name="arrow-right" />
+            </button>
+          </div>
           <span class="spacer" />
-          <button class="btn danger" type="button" data-testid="remove-clip" @click="store.removeClip(clip.id)">
+          <button class="btn" type="button" data-testid="copy-clip" aria-label="Copiar este trozo" @click="copySelected">
+            <AppIcon name="copy" />
+            <span>Copiar<span class="long"> este trozo</span></span>
+            <KeyHint k="Ctrl C" />
+          </button>
+          <button class="btn" type="button" :disabled="!store.pasteAvailable.value" data-testid="paste-clip" aria-label="Pegar" @click="paste">
+            <AppIcon name="paste" />
+            Pegar
+            <KeyHint k="Ctrl V" />
+          </button>
+          <button class="btn danger" type="button" aria-label="Quitar del vídeo" data-testid="remove-clip" @click="store.removeClip(clip.id)">
             <AppIcon name="trash" />
-            Quitar del vídeo
+            <span>Quitar<span class="long"> del vídeo</span></span>
+            <KeyHint k="Supr" />
           </button>
         </template>
       </div>
@@ -343,6 +412,57 @@ onBeforeUnmount(() => setKeyHandler(null))
 }
 .clip-actions h2 .muted {
   font-weight: 400;
+}
+.move {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.move-label {
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-right: 2px;
+}
+.move .btn {
+  width: 48px;
+  padding: 0;
+}
+.nav-keys {
+  display: inline-flex;
+  gap: 3px;
+  margin: 0 6px 0 -6px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+@media (max-width: 1420px) {
+  .clip-actions .long {
+    display: none;
+  }
+}
+@media (max-width: 1250px) {
+  .clip-actions {
+    gap: 7px;
+  }
+  .clip-actions h2 {
+    margin-right: 2px;
+    font-size: 18px;
+  }
+  .clip-actions .btn {
+    padding: 0 11px;
+    gap: 6px;
+    font-size: 16px;
+  }
+  /* RePág / AvPág siguen en el panel «Teclas»; aquí se queda «Mover», que explica las flechas. */
+  .nav-keys {
+    display: none;
+  }
+  .move .btn {
+    width: 44px;
+    padding: 0;
+  }
+  .topbar .save {
+    padding: 0 18px;
+  }
 }
 .spacer {
   flex: 1;

@@ -2,8 +2,11 @@
 // «Guardando tu vídeo…»: barra gruesa, tiempo que falta y «Cancelar» (con confirmación).
 import { computed } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
+import KeyHint from '../components/KeyHint.vue'
+import KeysButton from '../components/KeysButton.vue'
 import { describeRemaining, formatPercent } from '../domain'
 import { askConfirm } from '../lib/confirm'
+import { useShortcuts } from '../lib/use-shortcuts'
 import { saveFlow } from '../store'
 
 const sound = computed(() => saveFlow.preset.value === 'sound')
@@ -20,10 +23,17 @@ async function cancel() {
   })
   if (ok) saveFlow.cancel()
 }
+
+useShortcuts({
+  id: 'saving',
+  title: 'Guardando',
+  shortcuts: () => [{ id: 'cancel-saving', keys: ['Escape'], label: 'Esc', description: '«Cancelar» (pregunta antes)', run: () => void cancel() }],
+})
 </script>
 
 <template>
   <main class="screen saving" data-testid="saving-view">
+    <KeysButton floating />
     <div class="box card">
       <span class="spinner big" />
       <h1>{{ sound ? 'Guardando el sonido…' : 'Guardando tu vídeo…' }}</h1>
@@ -39,6 +49,7 @@ async function cancel() {
       <button class="btn danger large" type="button" data-testid="cancel-saving" @click="cancel">
         <AppIcon name="close" />
         Cancelar
+        <KeyHint k="Esc" />
       </button>
     </div>
   </main>

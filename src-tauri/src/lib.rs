@@ -1,6 +1,7 @@
 // Shell de escritorio de easy-cut (Tauri 2): ffmpeg/ffprobe como sidecar, diálogos, ficheros y permisos.
 
 mod binaries;
+mod clipboard;
 mod commands;
 mod files;
 mod job_object;
@@ -40,6 +41,8 @@ pub fn run() {
             commands::open_file,
             commands::reveal_in_folder,
             commands::copy_file_to_clipboard,
+            commands::clipboard_sequence,
+            commands::clipboard_files,
             commands::save_autosave,
             commands::load_autosave,
             commands::clear_autosave,

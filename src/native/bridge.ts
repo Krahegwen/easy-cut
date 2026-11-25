@@ -164,6 +164,13 @@ export interface NativeBridge {
   revealInFolder(path: string): Promise<void>
   /** Copia el fichero al portapapeles como fichero (para pegarlo con Ctrl+V en WhatsApp). */
   copyFileToClipboard(path: string): Promise<void>
+  /**
+   * Número de secuencia del portapapeles de Windows (sube cada vez que algo copia). Barato: sirve para
+   * saber si ha cambiado sin leerlo.
+   */
+  clipboardSequence(): Promise<number>
+  /** Ficheros copiados en el Explorador (rutas completas) y la secuencia del portapapeles en ese momento. */
+  clipboardFiles(): Promise<{ sequence: number; paths: string[] }>
 
   /** Autoguardado del proyecto en curso (uno solo), en la carpeta de datos de la app. */
   saveAutosave(json: string): Promise<void>

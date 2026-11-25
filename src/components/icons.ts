@@ -61,3 +61,5 @@ export type IconName =
   | 'wave'
   | 'cover-video'
   | 'corner'
+  | 'keyboard'
+  | 'paste'

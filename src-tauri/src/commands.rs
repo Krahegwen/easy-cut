@@ -546,6 +546,18 @@ pub async fn copy_file_to_clipboard(path: String) -> Result<(), String> {
     }
 }
 
+/// Número de secuencia del portapapeles (sube cada vez que algo copia). Barato: no abre el portapapeles.
+#[tauri::command]
+pub fn clipboard_sequence() -> u32 {
+    crate::clipboard::sequence()
+}
+
+/// Ficheros copiados en el Explorador (CF_HDROP) y la secuencia del portapapeles en ese momento.
+#[tauri::command]
+pub fn clipboard_files() -> Result<crate::clipboard::ClipboardFiles, String> {
+    crate::clipboard::files()
+}
+
 // ---------------------------------------------------------------- proyecto
 
 #[tauri::command]

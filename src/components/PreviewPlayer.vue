@@ -34,6 +34,7 @@ import {
 } from '../domain'
 import { store } from '../store'
 import AppIcon from './AppIcon.vue'
+import KeyHint from './KeyHint.vue'
 import type { PanEvent, PlayerTime } from './player-types'
 import PositionBar from './PositionBar.vue'
 
@@ -45,8 +46,10 @@ const props = withDefaults(
     pannable?: boolean
     /** Texto del reloj: posición en el vídeo o en el trozo. */
     clockLabel?: string
+    /** Qué se conserva al editar: el instante del vídeo (por defecto) o el del original (al arreglar un trozo). */
+    anchor?: 'project' | 'source'
   }>(),
-  { loop: false, pannable: false, clockLabel: 'Posición en el vídeo' },
+  { loop: false, pannable: false, clockLabel: 'Posición en el vídeo', anchor: 'project' },
 )
 
 const emit = defineEmits<{ time: [t: PlayerTime]; pan: [e: PanEvent] }>()
@@ -471,6 +474,9 @@ watch(plan, () => {
     currentMs.value = 0
     return
   }
+  // En «Arreglar este trozo» manda el instante del original: tras «Empieza aquí» la imagen se queda donde
+  // estaba (antes saltaba hacia delante lo mismo que se había recortado al principio).
+  if (props.anchor === 'source' && !playing.value && freeSourceMs.value === null) freeSourceMs.value = sourceMs.value
   if (freeSourceMs.value !== null) {
     const clipIndex = Math.min(activeClipIndex.value, props.project.clips.length - 1)
     const idx = findSpanForSource(plan.value, clipIndex, freeSourceMs.value)
@@ -719,6 +725,7 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
       >
         <AppIcon :name="playing ? 'pause' : 'play'" :size="26" />
         <span>{{ playing ? 'Pausa' : 'Reproducir' }}</span>
+        <KeyHint k="Espacio" />
       </button>
       <span class="clock" data-testid="player-clock">{{ formatClock(currentMs) }} / {{ formatClock(durationMs) }}</span>
       <PositionBar
@@ -855,7 +862,7 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
   gap: 10px;
   min-height: 52px;
   min-width: 156px;
-  padding: 0 20px;
+  padding: 0 16px 0 20px;
   border: none;
   border-radius: 26px;
   background: #fff;

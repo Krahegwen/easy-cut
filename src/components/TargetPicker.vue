@@ -2,8 +2,11 @@
 // Control «Duración máxima»: sin límite, 1, 2, 3, 5, 10 minutos u otra.
 import { computed, ref } from 'vue'
 import { describeTargetOption, setTargetDuration, TARGET_DURATION_OPTIONS } from '../domain'
+import { LAYER_PRIORITY } from '../lib/shortcuts'
+import { useShortcuts } from '../lib/use-shortcuts'
 import { store } from '../store'
 import AppIcon from './AppIcon.vue'
+import KeyHint from './KeyHint.vue'
 
 // Sin v-model cambia la del vídeo (con deshacer); con v-model (teleprompter), solo devuelve el valor.
 const props = defineProps<{ modelValue?: number | null }>()
@@ -52,6 +55,26 @@ function stepSeconds(d: number) {
 }
 
 const customMs = computed(() => (minutes.value * 60 + seconds.value) * 1000)
+
+function close() {
+  if (custom.value) custom.value = false
+  else open.value = false
+}
+
+// Abierto, es como un diálogo: Esc lo cierra (o vuelve de «Otra…» a la lista).
+useShortcuts({
+  id: 'target-picker',
+  title: 'Duración máxima',
+  priority: LAYER_PRIORITY.popover,
+  modal: true,
+  active: () => open.value,
+  shortcuts: () => [
+    { id: 'target-close', keys: ['Escape'], label: 'Esc', description: custom.value ? 'volver a la lista' : 'cerrar sin cambiar nada', run: close },
+    ...(custom.value
+      ? [{ id: 'target-use', keys: ['Enter'], label: 'Intro', description: `usar ${describeTargetOption(customMs.value)}`, run: () => choose(customMs.value), enabled: customMs.value >= 5000 }]
+      : []),
+  ],
+})
 </script>
 
 <template>
@@ -97,10 +120,12 @@ const customMs = computed(() => (minutes.value * 60 + seconds.value) * 1000)
           <button class="btn" type="button" @click="custom = false">
             <AppIcon name="back" />
             Volver
+            <KeyHint k="Esc" />
           </button>
           <button class="btn primary" type="button" :disabled="customMs < 5000" @click="choose(customMs)">
             <AppIcon name="check" />
             Usar {{ describeTargetOption(customMs) }}
+            <KeyHint k="Intro" />
           </button>
         </div>
       </template>

@@ -1,8 +1,11 @@
 <script setup lang="ts">
 // Inicio: hacer un vídeo nuevo (principal), seguir con el que quedó sin terminar o grabarse leyendo.
 import AppIcon from '../components/AppIcon.vue'
+import KeyHint from '../components/KeyHint.vue'
+import KeysButton from '../components/KeysButton.vue'
 import { formatDuration } from '../domain'
 import { askConfirm } from '../lib/confirm'
+import { useShortcuts } from '../lib/use-shortcuts'
 import { store } from '../store'
 
 async function newVideo() {
@@ -23,10 +26,18 @@ async function newVideo() {
 function resume() {
   void store.resumeAutosave()
 }
+
+// Intro = lo destacado: «Hacer un vídeo nuevo» (si hay uno a medias, pregunta antes de perderlo).
+useShortcuts({
+  id: 'home',
+  title: 'Inicio',
+  shortcuts: () => [{ id: 'new-video', keys: ['Enter'], label: 'Intro', description: '«Hacer un vídeo nuevo»', run: () => void newVideo() }],
+})
 </script>
 
 <template>
-  <main class="screen home">
+  <main class="screen home" data-testid="home-view">
+    <KeysButton floating />
     <div class="content">
       <header class="hero">
         <span class="logo" aria-hidden="true"><AppIcon name="film" :size="34" /></span>
@@ -38,6 +49,7 @@ function resume() {
         <button class="btn primary huge" type="button" data-testid="new-video" @click="newVideo">
           <AppIcon name="plus" :size="30" />
           Hacer un vídeo nuevo
+          <KeyHint k="Intro" />
         </button>
 
         <section v-if="store.autosave.value" class="resume card" data-testid="resume-card">

@@ -309,6 +309,8 @@ export function createTauriBridge(): NativeBridge {
     openFile: (path) => invoke<void>('open_file', { path }),
     revealInFolder: (path) => invoke<void>('reveal_in_folder', { path }),
     copyFileToClipboard: (path) => invoke<void>('copy_file_to_clipboard', { path }),
+    clipboardSequence: () => invoke<number>('clipboard_sequence'),
+    clipboardFiles: () => invoke<{ sequence: number; paths: string[] }>('clipboard_files'),
 
     saveAutosave: (json) => invoke<void>('save_autosave', { json }),
     loadAutosave: () => invoke<string | null>('load_autosave'),

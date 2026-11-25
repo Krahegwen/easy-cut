@@ -1,41 +1,70 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+// Pregunta de confirmación. Esc = la opción de volver. Intro = la principal, salvo si es destructiva
+// (danger): entonces Intro también es volver, y el foco empieza en «volver».
+import { computed, nextTick, ref, watch } from 'vue'
 import { confirmRequest } from '../lib/confirm'
+import { LAYER_PRIORITY } from '../lib/shortcuts'
+import { useShortcuts } from '../lib/use-shortcuts'
 import AppIcon from './AppIcon.vue'
+import KeyHint from './KeyHint.vue'
 
+const cancelButton = ref<HTMLButtonElement | null>(null)
 const confirmButton = ref<HTMLButtonElement | null>(null)
+const danger = computed(() => !!confirmRequest.value?.danger)
+
 watch(confirmRequest, async (r) => {
   if (r) {
     await nextTick()
-    confirmButton.value?.focus()
+    ;(r.danger ? cancelButton.value : confirmButton.value)?.focus()
   }
 })
 
-function onKey(e: KeyboardEvent) {
-  if (e.key === 'Escape') confirmRequest.value?.resolve(false)
+function answer(ok: boolean) {
+  confirmRequest.value?.resolve(ok)
 }
+
+useShortcuts({
+  id: 'confirm',
+  title: 'Esta pregunta',
+  priority: LAYER_PRIORITY.dialog,
+  modal: true,
+  active: () => !!confirmRequest.value,
+  shortcuts: () => {
+    const cancelLabel = confirmRequest.value?.cancelLabel ?? 'No, volver'
+    const okLabel = confirmRequest.value?.confirmLabel ?? ''
+    return [
+      { id: 'confirm-cancel', keys: ['Escape'], label: 'Esc', description: `«${cancelLabel}»`, run: () => answer(false), inText: true },
+      danger.value
+        ? { id: 'confirm-enter', keys: ['Enter'], label: 'Intro', description: `«${cancelLabel}» (lo seguro)`, run: () => answer(false) }
+        : { id: 'confirm-enter', keys: ['Enter'], label: 'Intro', description: `«${okLabel}»`, run: () => answer(true) },
+    ]
+  },
+})
 </script>
 
 <template>
-  <div v-if="confirmRequest" class="overlay" role="presentation" @keydown="onKey">
+  <div v-if="confirmRequest" class="overlay" role="presentation">
     <div class="dialog card" role="alertdialog" aria-modal="true" :aria-label="confirmRequest.title" data-testid="confirm-dialog">
       <h2>{{ confirmRequest.title }}</h2>
       <p v-if="confirmRequest.message" class="message">{{ confirmRequest.message }}</p>
       <div class="actions">
-        <button class="btn" type="button" @click="confirmRequest.resolve(false)">
+        <button ref="cancelButton" class="btn" type="button" data-testid="confirm-cancel" @click="answer(false)">
           <AppIcon name="back" />
           {{ confirmRequest.cancelLabel ?? 'No, volver' }}
+          <KeyHint k="Esc" />
+          <KeyHint v-if="danger" k="Intro" />
         </button>
         <button
           ref="confirmButton"
           class="btn"
-          :class="confirmRequest.danger ? 'danger-solid' : 'primary'"
+          :class="danger ? 'danger-solid' : 'primary'"
           type="button"
           data-testid="confirm-ok"
-          @click="confirmRequest.resolve(true)"
+          @click="answer(true)"
         >
           <AppIcon name="check" />
           {{ confirmRequest.confirmLabel }}
+          <KeyHint v-if="!danger" k="Intro" />
         </button>
       </div>
     </div>
@@ -53,7 +82,7 @@ function onKey(e: KeyboardEvent) {
   padding: 24px;
 }
 .dialog {
-  width: min(560px, 100%);
+  width: min(600px, 100%);
   padding: 28px 28px 24px;
   box-shadow: var(--shadow-lg);
 }

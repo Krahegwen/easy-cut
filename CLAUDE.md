@@ -97,7 +97,40 @@ Prueba de extremo a extremo del teleprompter (texto, ritmo, ensayo midiendo el a
 node scripts/teleprompter-e2e.mjs --fake-media
 ```
 
-En desarrollo, `window.__easyCut` expone `bridge`, `domain`, `store`, `liveTracks()` (pistas de cámara o micrófono encendidas) y `queuePickedVideos(rutas)` (sustituye a la siguiente apertura del diálogo de elegir vídeos, también el de «Elegir el vídeo» de encima); la pantalla de diagnóstico se abre con `?diagnostics`. En producción no existe ninguna de las dos cosas.
+Prueba de extremo a extremo de los atajos de teclado (eventos de teclado reales de CDP en cada pantalla, escribir en el texto del teleprompter sin que salte nada, espacio con un botón enfocado, Esc en las preguntas, Supr y deshacer, Ctrl+C / Ctrl+V de un trozo, pegar ficheros copiados en el Explorador con `Set-Clipboard -Path`, el panel «Teclas», y que cada tecla dibujada es un atajo que vale y se ve entera, también a 1100x700; capturas `keys-*.png`). Usa la cámara falsa, borra lo que guarda y graba y deja el portapapeles como estaba:
+
+```powershell
+node scripts/shortcuts-e2e.mjs
+```
+
+En desarrollo, `window.__easyCut` expone `bridge`, `domain`, `store`, `shortcuts()` (atajos que valen ahora), `liveTracks()` (pistas de cámara o micrófono encendidas) y `queuePickedVideos(rutas)` (sustituye a la siguiente apertura del diálogo de elegir vídeos, también el de «Elegir el vídeo» de encima); la pantalla de diagnóstico se abre con `?diagnostics`. En producción no existe ninguna de las dos cosas.
+
+## Atajos de teclado
+
+De **una sola tecla**, salvo las cuatro combinaciones de siempre (Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+V). Cada botón con atajo lleva su tecla dibujada (`KeyHint`), y el botón «Teclas» (o **F1**, en todas partes, también escribiendo) abre la lista de la pantalla. Cada pantalla o diálogo declara los suyos con `useShortcuts` (`src/lib/use-shortcuts.ts`); la lógica es pura y con tests (`src/lib/shortcuts.ts`): capas por prioridad (pantalla < aviso < desplegable < diálogo < error < panel) y, con un diálogo abierto, solo valen los suyos. Un solo listener (en captura). Reglas:
+
+- Con el foco en un cuadro de texto (o un desplegable) no vale ninguno: todo es del texto, también Ctrl+C / Ctrl+V / Ctrl+Z. Esc saca del cuadro; F1 sí vale.
+- Con Alt, AltGr o la tecla Windows, nunca. Las letras van por `event.key` (teclado español); con Ctrl, también por `code`.
+- Dejar la tecla pulsada solo repite las flechas (y deshacer/rehacer); Supr, partir, guardar… no.
+- Espacio siempre es el atajo, aunque haya un botón con el foco (no se pulsan las dos cosas). Intro en un botón al que se llegó **con Tab** lo pulsa; uno que se tocó con el ratón no se vuelve a pulsar. No se usa `:focus-visible` para saberlo (Chromium la activa con cualquier tecla): se mira si el foco llegó con Tab.
+- Esc: cierra el diálogo o el aviso abierto; si no hay y algo se está reproduciendo, para y vuelve al principio; si no, «Volver», con la pregunta de siempre donde la hay. En las preguntas destructivas, Intro es «No, volver» (y el foco empieza ahí).
+
+| Pantalla | Teclas |
+| --- | --- |
+| Inicio | Intro «Hacer un vídeo nuevo» (pregunta si hay uno a medias) |
+| Elige tus vídeos | Intro elegir · Ctrl+V pegar vídeos copiados en el Explorador · Esc Inicio |
+| Tu vídeo | Espacio · Esc (parar y al 0 / Inicio) · Inicio / Fin · ← → 1 s · RePág / AvPág trozo anterior / siguiente · A arreglar · Supr quitar (con «Deshacer») · Ctrl+C / Ctrl+V · G guardar · Ctrl+Z / Ctrl+Y |
+| Arreglar este trozo | Espacio · Esc (parar y al principio del trozo / volver) · Inicio / Fin del trozo · ← → 1 s · E / T / P (en «Cortar») · 1–6 pestañas · L o Intro «Listo» · Ctrl+Z / Ctrl+Y |
+| Guardar | 1 2 3 las tarjetas · 4 «Solo el sonido» · Esc volver |
+| Guardando | Esc «Cancelar» (pregunta) |
+| ¡Listo! | Intro «Ver el vídeo» / «Escuchar» · Esc volver a tu vídeo |
+| Teleprompter: texto | solo Esc (escribiendo, primero sale del texto) |
+| Teleprompter: cámara | Intro «Empezar a grabar» · Esc volver al texto |
+| Ensayar / grabar | Espacio pausa / sigue · ↑ ↓ más despacio / más rápido · ← retroceder · Esc dejar de ensayar / grabar (pregunta) · Intro terminar, solo cuando ya ha pasado todo el texto |
+| Teleprompter: revisar | Espacio · Esc (parar y al 0 / salir, con pregunta) · Inicio / Fin · ← → · Intro «Usar esta grabación» |
+| Preguntas | Esc cancelar · Intro la principal, o «No, volver» si es destructiva |
+
+Copiar y pegar: Ctrl+C copia el trozo en la app (no toca el portapapeles de Windows); Ctrl+V pega detrás del elegido con todos sus ajustes (`duplicateClip` / `insertClipAfter`, un paso de deshacer). Si el portapapeles de Windows tiene vídeos o sonidos copiados en el Explorador **después** de copiar el trozo, Ctrl+V añade esos al final, como soltarlos. Se sabe por el número de secuencia del portapapeles (`GetClipboardSequenceNumber`), apuntado al copiar el trozo: unos ficheros viejos no ganan (`src/domain/paste.ts`). La lista de ficheros (CF_HDROP) se lee con Win32 en `src-tauri/src/clipboard.rs` (microsegundos, rutas en UTF-16). «Pegar» se activa mirando la secuencia cada 1,5 s y al volver a la ventana.
 
 ## Pendientes
 
@@ -131,17 +164,22 @@ src/
                      de encima y cuándo recolocarlo (>150 ms)
     layout.ts        formas (horizontal/vertical/cuadrado), encuadre en el marco de la vista previa, color del fondo
                      liso y sitio y tamaño del vídeo en la esquina
+    paste.ts         qué pega Ctrl+V: ficheros del Explorador más nuevos que el trozo copiado (por la secuencia
+                     del portapapeles) o el trozo
   store/
     editor.ts        estado: proyecto + historial, originales (y vídeos de encima), pantalla, avisos, autoguardado,
-                     proxies, miniaturas, formas de onda, «Elegir el vídeo» de encima
+                     proxies, miniaturas, formas de onda, «Elegir el vídeo» de encima, copiar y pegar trozos
     exporter.ts      guardar (vídeo o «Solo el sonido»): comprobación de originales, filtro en fichero, reintento con
                      libx264, borrar a medias
     save-flow.ts     pantallas Guardar / Guardando / ¡Listo!
     index.ts         instancia única (y `window.__easyCut` solo en desarrollo)
-  lib/               confirmaciones, portapapeles, atajos, añadir vídeos, estado de «quitar pausas»,
+  lib/               confirmaciones, portapapeles, añadir y pegar vídeos, estado de «quitar pausas»,
+                     shortcuts.ts (registro de atajos por capas, puro y con tests), use-shortcuts.ts (useShortcuts,
+                     el único listener de teclado y el panel «Teclas»),
                      camera.ts (getUserMedia, dispositivos, medidor), recorder.ts (MediaRecorder → disco por partes),
                      teleprompter-settings.ts (texto y ajustes en localStorage)
-  components/        PreviewPlayer, ClipStrip, Filmstrip, DurationBar, TargetPicker, AppIcon (iconos SVG propios)…
+  components/        PreviewPlayer, ClipStrip, Filmstrip, DurationBar, TargetPicker, AppIcon (iconos SVG propios),
+                     KeyHint (la tecla dibujada; el texto va en ::before), KeysButton y KeysPanel («Teclas», F1)…
     teleprompter/    PrompterRun (pantalla de ensayar/grabar: texto con translateY desde rAF), CameraSetup
   views/             Home, Pick, Editor («Tu vídeo»), ClipEditor («Arreglar este trozo», con la pestaña «Imagen»),
                      Save (tres tarjetas y «Solo el sonido»), Saving, Done,
@@ -159,6 +197,7 @@ src-tauri/           shell Tauri 2 (Rust)
   src/commands.rs    comandos invoke (miniaturas, formas de onda, caché, diálogos, autoguardado, grabaciones…);
                      carpetas aparte en desarrollo
   src/files.rs       nombres sin sobrescribir, clave de caché, tamaño de JPEG
+  src/clipboard.rs   ficheros copiados en el Explorador (CF_HDROP) y secuencia del portapapeles, con Win32
   src/media_permissions.rs  cámara y micrófono concedidos sin diálogo (WebView2)
   capabilities/      permisos mínimos (solo los comandos propios y escuchar eventos)
 scripts/
@@ -167,6 +206,7 @@ scripts/
   ui-e2e.mjs         prueba de extremo a extremo de la interfaz por CDP (cdp.mjs: cliente mínimo)
   teleprompter-e2e.mjs  prueba de extremo a extremo del teleprompter (--fake-media para las capturas)
   picture-e2e.mjs    prueba de extremo a extremo de «Imagen» y «Solo el sonido»
+  shortcuts-e2e.mjs  prueba de extremo a extremo de los atajos de teclado y de copiar y pegar
 tests/integration/   prueba con ffmpeg real (pnpm test:ffmpeg)
 ```
 
@@ -181,6 +221,8 @@ tests/integration/   prueba con ffmpeg real (pnpm test:ffmpeg)
 - Al cancelar una exportación, el MP4 a medias se queda en la carpeta del usuario: lo borra la UI con `deletePartialOutput` (solo .mp4 dentro de «Mis montajes»).
 - Grabar: MediaRecorder de WebView2 (Chromium 158) admite `video/mp4;codecs=avc1.640028,mp4a.40.2`, que sabe su duración (el WebM no) y se revisa con seek; es el primero que se prueba. Para solo la voz, `audio/mp4` (AAC). Los datos se escriben al disco cada segundo (`beginRecording` → `recording_append`). `MediaRecorder.pause()` no deja hueco: tras pausar y seguir, el MP4 final dura lo grabado sin la pausa y audio y vídeo coinciden (±0,1 s, comprobado con cámara real y falsa).
 - La cámara falsa de WebView2 (`--use-fake-device-for-media-stream`) da 1080p a 20 fps; la conversión la deja a 30 CFR.
+- Teclado: el texto de `::before` (la tecla de `KeyHint`) no entra en `innerText` ni, con `aria-hidden`, en el nombre del botón; las pruebas que leen el texto de un botón no lo ven. `:focus-visible` se activa en cuanto se pulsa una tecla aunque el botón se tocara con el ratón (por eso el foco «de teclado» se mira con Tab). `Input.dispatchKeyEvent` de CDP con `text` escribe de verdad en un `<textarea>` y con `autoRepeat` llega como `event.repeat`.
+- Portapapeles: `Set-Clipboard -LiteralPath` (PowerShell 5.1) deja los ficheros como CF_HDROP, igual que copiar en el Explorador; `DragQueryFileW` devuelve las rutas con tildes intactas. Leerlos por Win32, con el viaje de invoke incluido, tarda unos 3 ms (medido en la e2e); con `powershell -Command Get-Clipboard -Format FileDropList` eran ~300 ms (medido aquí).
 - La tira de trozos se reordena con eventos de puntero, no con el arrastre HTML5 de elementos (con `dragDropEnabled` en Windows no es fiable, según los avisos de Tauri; no se ha comprobado aquí).
 
 ## Notas de ffmpeg comprobadas

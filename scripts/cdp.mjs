@@ -114,13 +114,46 @@ export async function connectToApp(port, { timeoutMs = 120_000 } = {}) {
     await sleep(80)
   }
 
-  async function key(keyName, { ctrl = false, shift = false } = {}) {
-    const codes = { ' ': ['Space', 32], ArrowLeft: ['ArrowLeft', 37], ArrowUp: ['ArrowUp', 38], ArrowRight: ['ArrowRight', 39], ArrowDown: ['ArrowDown', 40], z: ['KeyZ', 90], y: ['KeyY', 89], Escape: ['Escape', 27] }
-    const [code, keyCode] = codes[keyName] ?? [keyName, 0]
+  /** Códigos de las teclas especiales (code y código virtual de Windows). */
+  const SPECIAL = {
+    ' ': ['Space', 32],
+    ArrowLeft: ['ArrowLeft', 37],
+    ArrowUp: ['ArrowUp', 38],
+    ArrowRight: ['ArrowRight', 39],
+    ArrowDown: ['ArrowDown', 40],
+    Escape: ['Escape', 27],
+    Enter: ['Enter', 13],
+    Tab: ['Tab', 9],
+    Delete: ['Delete', 46],
+    Backspace: ['Backspace', 8],
+    Home: ['Home', 36],
+    End: ['End', 35],
+    PageUp: ['PageUp', 33],
+    PageDown: ['PageDown', 34],
+    F1: ['F1', 112],
+  }
+
+  /** Código de una tecla: las especiales, las letras (KeyE) y los números de la fila de arriba (Digit1). */
+  function keyCodes(keyName) {
+    if (SPECIAL[keyName]) return SPECIAL[keyName]
+    if (/^[a-zA-Z]$/.test(keyName)) return [`Key${keyName.toUpperCase()}`, keyName.toUpperCase().charCodeAt(0)]
+    if (/^[0-9]$/.test(keyName)) return [`Digit${keyName}`, keyName.charCodeAt(0)]
+    return [keyName, 0]
+  }
+
+  /**
+   * Pulsa una tecla con Input.dispatchKeyEvent (eventos de teclado reales). Las que escriben llevan su texto,
+   * así que en un cuadro de texto se escriben de verdad. Con `repeat`, el keyDown llega como autorrepetición.
+   * Con `hold`, solo el keyDown (para soltarla luego con keyUp).
+   */
+  async function key(keyName, { ctrl = false, shift = false, repeat = false, hold = false, up = false } = {}) {
+    const [code, keyCode] = keyCodes(keyName)
     const modifiers = (ctrl ? 2 : 0) | (shift ? 8 : 0)
-    const base = { key: keyName, code, windowsVirtualKeyCode: keyCode, modifiers }
-    await send('Input.dispatchKeyEvent', { type: 'keyDown', ...base, text: keyName === ' ' && !ctrl ? ' ' : undefined })
-    await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
+    const base = { key: keyName, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, modifiers }
+    const printable = keyName.length === 1 && !ctrl
+    const text = keyName === 'Enter' && !ctrl ? '\r' : printable ? keyName : undefined
+    if (!up) await send('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', ...base, text, unmodifiedText: text, autoRepeat: repeat })
+    if (!hold) await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
     await sleep(60)
   }
 

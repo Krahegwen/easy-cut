@@ -6,6 +6,8 @@ import { computed, shallowRef, ref, watch, type Ref } from 'vue'
 import {
   addClip,
   baseName,
+  canPaste,
+  choosePasteSource,
   canRedo,
   canUndo,
   clipPaths,
@@ -14,7 +16,10 @@ import {
   createProject,
   defaultPicture,
   dominantAspect,
+  duplicateClip,
   findClip,
+  insertClipAfter,
+  isMediaPath,
   moveClip,
   parseProject,
   projectDurationMs,
@@ -28,8 +33,10 @@ import {
   type Clip,
   type History,
   type MediaInfo,
+  type PasteSource,
   type Project,
   type SaveTarget,
+  type SystemClipboardFiles,
 } from '../domain'
 import type { NativeBridge, Thumbnail } from '../native/bridge'
 
@@ -205,14 +212,14 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
 
   let toastCounter = 0
   let toastTimer: ReturnType<typeof setTimeout> | null = null
-  function showToast(message: string, action?: { label: string; run: () => void }) {
+  function showToast(message: string, action?: { label: string; run: () => void }, durationMs = toastMs) {
     toastCounter += 1
     toast.value = { id: toastCounter, message, actionLabel: action?.label, action: action?.run }
     if (toastTimer) clearTimeout(toastTimer)
     const id = toastCounter
     toastTimer = setTimeout(() => {
       if (toast.value?.id === id) toast.value = null
-    }, toastMs)
+    }, durationMs)
   }
   function hideToast() {
     toast.value = null
@@ -339,6 +346,11 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
   async function resumeAutosave() {
     const saved = autosave.value
     if (!saved) return
+    // Se vino a Inicio desde «Tu vídeo» y el vídeo sigue abierto: se vuelve a él tal cual (con su deshacer).
+    if (saved.project === history.value.present) {
+      screen.value = 'editor'
+      return
+    }
     history.value = createHistory(saved.project)
     transient.value = null
     selectedClipId.value = saved.project.clips[0]?.id ?? null
@@ -551,7 +563,83 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
       hideToast()
       previousScreen.value = screen.value
     }
+    // Volver a Inicio con un vídeo a medias: Inicio lo ofrece («Seguir con este vídeo») y «Hacer un vídeo
+    // nuevo» pregunta antes de perderlo (antes no lo sabía y lo descartaba sin preguntar).
+    const present = history.value.present
+    if (next === 'home' && present.clips.length > 0) {
+      autosave.value = { project: present, clipCount: present.clips.length, durationMs: projectDurationMs(present) }
+      void flushAutosave()
+    }
     screen.value = next
+  }
+
+  // ------------------------------------------------------------------ copiar y pegar trozos
+
+  /** Trozo copiado en la app y la secuencia del portapapeles del sistema al copiarlo (ver domain/paste.ts). */
+  const copiedClip = shallowRef<{ clip: Clip; sequence: number | null } | null>(null)
+  /** Lo último que se sabe del portapapeles del sistema (para activar «Pegar»). */
+  const systemClipboard = shallowRef<SystemClipboardFiles | null>(null)
+  const pasteAvailable = computed(() => canPaste(copiedClip.value, systemClipboard.value, isMediaPath))
+
+  /** Lee los ficheros del portapapeles del sistema (null si no se puede). */
+  async function readSystemClipboard(): Promise<SystemClipboardFiles | null> {
+    try {
+      const r = await bridge.clipboardFiles()
+      systemClipboard.value = r
+      return r
+    } catch (e) {
+      console.warn('[easy-cut] no se ha podido leer el portapapeles', e)
+      return null
+    }
+  }
+
+  /** Mira si el portapapeles ha cambiado (barato) y, si ha cambiado, qué ficheros tiene. */
+  async function refreshSystemClipboard() {
+    try {
+      const sequence = await bridge.clipboardSequence()
+      if (systemClipboard.value && sequence === systemClipboard.value.sequence) return
+    } catch {
+      return
+    }
+    await readSystemClipboard()
+  }
+
+  /** «Copiar este trozo» (Ctrl+C): copia en la app, con todos sus ajustes. No toca el portapapeles del sistema. */
+  async function copyClip(clipId: string): Promise<boolean> {
+    const clip = findClip(history.value.present, clipId)
+    if (!clip) return false
+    const mark = { clip: duplicateClip(clip, clip.id), sequence: systemClipboard.value?.sequence ?? null }
+    copiedClip.value = mark
+    showToast('Trozo copiado', undefined, 3000)
+    try {
+      const sequence = await bridge.clipboardSequence()
+      if (copiedClip.value === mark) copiedClip.value = { ...mark, sequence }
+    } catch {
+      // Sin secuencia: unos ficheros del Explorador se tendrían por más nuevos (ver domain/paste.ts).
+    }
+    return true
+  }
+
+  /**
+   * Pega el trozo copiado justo después del elegido (o al final), con id nuevo y todos sus ajustes. Un solo
+   * paso de deshacer; el pegado queda elegido. Devuelve su id (null si no había nada copiado).
+   */
+  function pasteCopiedClip(): string | null {
+    const c = copiedClip.value
+    if (!c) return null
+    const fresh = duplicateClip(c.clip)
+    const after = selectedClipId.value
+    apply((p) => insertClipAfter(p, after, fresh))
+    selectedClipId.value = fresh.id
+    const n = history.value.present.clips.findIndex((x) => x.id === fresh.id) + 1
+    showToast(`Trozo pegado: es el trozo ${n}.`, { label: 'Deshacer', run: undo })
+    return fresh.id
+  }
+
+  /** Qué se pegaría ahora con Ctrl+V (lee el portapapeles del sistema). */
+  async function pasteSource(): Promise<PasteSource> {
+    const system = await readSystemClipboard()
+    return choosePasteSource(copiedClip.value, system, isMediaPath)
   }
 
   // ------------------------------------------------------------------ grabaciones (teleprompter)
@@ -642,6 +730,14 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     go,
     addRecording,
     dismissRecordingOffer,
+    copiedClip,
+    systemClipboard,
+    pasteAvailable,
+    readSystemClipboard,
+    refreshSystemClipboard,
+    copyClip,
+    pasteCopiedClip,
+    pasteSource,
   }
 }
 

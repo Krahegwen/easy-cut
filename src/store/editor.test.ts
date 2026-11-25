@@ -249,3 +249,86 @@ describe('store del editor', () => {
     expect(spy).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('copiar y pegar trozos', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('pega el trozo copiado detrás del elegido, con sus ajustes, id nuevo y un solo paso de deshacer', async () => {
+    const { bridge } = createFakeBridge({ media: mediaSet() })
+    const store = createEditorStore(bridge)
+    await store.addClipsFromPaths([H, V])
+    const [a, b] = store.project.value.clips
+    store.apply((p) => setSpeed(setInOut(p, a!.id, { inMs: 1000, outMs: 7000 }), a!.id, 2))
+    const before = store.durationMs.value
+    const copied = store.project.value.clips[0]!
+    store.select(a!.id)
+    await store.copyClip(a!.id)
+    expect(store.toast.value?.message).toBe('Trozo copiado')
+    expect(store.pasteAvailable.value).toBe(true)
+    const steps = store.history.value.past.length
+    const id = store.pasteCopiedClip()
+    const clips = store.project.value.clips
+    expect(clips.map((c) => c.id)).toEqual([a!.id, id, b!.id])
+    expect(id).not.toBe(a!.id)
+    expect(store.selectedClipId.value).toBe(id)
+    const { id: _x, ...pasted } = clips[1]!
+    const { id: _y, ...original } = copied
+    expect(pasted).toEqual(original)
+    expect(store.durationMs.value).toBe(before + 3000)
+    expect(store.history.value.past.length).toBe(steps + 1)
+    expect(store.toast.value?.message).toBe('Trozo pegado: es el trozo 2.')
+    store.undo()
+    expect(store.project.value.clips.map((c) => c.id)).toEqual([a!.id, b!.id])
+    expect(store.durationMs.value).toBe(before)
+  })
+
+  it('se pega el trozo como estaba al copiarlo, aunque luego se cambie o se quite', async () => {
+    const { bridge } = createFakeBridge({ media: mediaSet() })
+    const store = createEditorStore(bridge)
+    await store.addClipsFromPaths([H])
+    const a = store.project.value.clips[0]!
+    await store.copyClip(a.id)
+    store.apply((p) => setSpeed(p, a.id, 4))
+    store.removeClip(a.id)
+    store.pasteCopiedClip()
+    expect(store.project.value.clips).toHaveLength(1)
+    expect(store.project.value.clips[0]!.speed).toBe(1)
+  })
+
+  it('ficheros copiados después en el Explorador ganan; los que ya estaban, no', async () => {
+    const { bridge, state } = createFakeBridge({ media: mediaSet(), clipboard: { sequence: 10, paths: ['C:\\v\\viejo.mp4'] } })
+    const store = createEditorStore(bridge)
+    await store.addClipsFromPaths([H])
+    expect((await store.pasteSource()).kind).toBe('files')
+    await store.copyClip(store.project.value.clips[0]!.id)
+    // El portapapeles no ha cambiado desde que se copió el trozo: los ficheros viejos no ganan.
+    expect((await store.pasteSource()).kind).toBe('clip')
+    state.clipboard = { sequence: 11, paths: ['C:\\v\\nuevo.mp4', 'C:\\v\\nota.txt'] }
+    expect(await store.pasteSource()).toEqual({ kind: 'files', paths: ['C:\\v\\nuevo.mp4'] })
+  })
+
+  it('sin nada copiado no ofrece pegar; refrescar el portapapeles lo activa', async () => {
+    const { bridge, state } = createFakeBridge({ media: mediaSet() })
+    const store = createEditorStore(bridge)
+    await store.refreshSystemClipboard()
+    expect(store.pasteAvailable.value).toBe(false)
+    state.clipboard = { sequence: 2, paths: ['C:\\v\\h.mp4'] }
+    await store.refreshSystemClipboard()
+    expect(store.pasteAvailable.value).toBe(true)
+  })
+
+  it('volver a Inicio con un vídeo abierto lo ofrece para seguir (y empezar otro pregunta)', async () => {
+    const { bridge } = createFakeBridge({ media: mediaSet() })
+    const store = createEditorStore(bridge)
+    await store.addClipsFromPaths([H, V])
+    store.go('editor')
+    store.apply((p) => setSpeed(p, store.project.value.clips[0]!.id, 2))
+    store.go('home')
+    expect(store.autosave.value?.clipCount).toBe(2)
+    await store.resumeAutosave()
+    expect(store.screen.value).toBe('editor')
+    // Se sigue con el mismo vídeo y su deshacer.
+    expect(store.undoable.value).toBe(true)
+  })
+})

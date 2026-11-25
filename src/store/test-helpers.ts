@@ -16,6 +16,8 @@ export interface FakeBridgeState {
   /** Si es true, ffmpeg no termina hasta que se cancela. */
   ffmpegHangs: boolean
   encoders: Record<string, boolean>
+  /** Portapapeles del sistema: secuencia y ficheros copiados en el Explorador. */
+  clipboard: { sequence: number; paths: string[] }
 }
 
 export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { bridge: NativeBridge; state: FakeBridgeState } {
@@ -30,6 +32,7 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     ffmpegExitCodes: [],
     ffmpegHangs: false,
     encoders: { h264_nvenc: true, libx264: true },
+    clipboard: { sequence: 1, paths: [] },
     ...initial,
   }
   for (const p of Object.keys(state.media)) state.existing.add(p)
@@ -83,6 +86,8 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     openFile: async () => {},
     revealInFolder: async () => {},
     copyFileToClipboard: async () => {},
+    clipboardSequence: async () => state.clipboard.sequence,
+    clipboardFiles: async () => ({ sequence: state.clipboard.sequence, paths: [...state.clipboard.paths] }),
     saveAutosave: async (json) => {
       state.autosave = json
     },

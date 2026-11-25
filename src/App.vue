@@ -1,13 +1,14 @@
 <script setup lang="ts">
-// Pantalla activa, atajos globales (Ctrl+Z / Ctrl+Y), ficheros soltados en la ventana y avisos.
+// Pantalla activa, el único listener de teclado (los atajos los declara cada pantalla o diálogo con
+// useShortcuts), ficheros soltados en la ventana y avisos.
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import ErrorDialog from './components/ErrorDialog.vue'
+import KeysPanel from './components/KeysPanel.vue'
 import PreparingOverlay from './components/PreparingOverlay.vue'
 import ToastBar from './components/ToastBar.vue'
 import { addVideos } from './lib/add-videos'
-import { confirmRequest } from './lib/confirm'
-import { dispatchKey } from './lib/keys'
+import { installShortcutListener } from './lib/use-shortcuts'
 import { store } from './store'
 import ClipEditorView from './views/ClipEditorView.vue'
 import DoneView from './views/DoneView.vue'
@@ -20,38 +21,12 @@ import TeleprompterView from './views/TeleprompterView.vue'
 
 const hovering = ref(false)
 
-/** Las teclas no se roban a un campo de texto ni con un diálogo abierto. */
-function isTyping(e: KeyboardEvent): boolean {
-  const t = e.target as HTMLElement | null
-  return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
-}
-
-function onKey(e: KeyboardEvent) {
-  if (isTyping(e) || confirmRequest.value || store.error.value) return
-  const editing = store.screen.value === 'editor' || store.screen.value === 'clip'
-  if (editing && (e.ctrlKey || e.metaKey) && !e.altKey) {
-    const k = e.key.toLowerCase()
-    if (k === 'z' && !e.shiftKey) {
-      e.preventDefault()
-      store.undo()
-      return
-    }
-    if (k === 'y' || (k === 'z' && e.shiftKey)) {
-      e.preventDefault()
-      store.redo()
-      return
-    }
-  }
-  if (e.ctrlKey || e.metaKey || e.altKey) return
-  // Espacio sobre un botón lo pulsaría: aquí siempre es reproducir/pausa.
-  if (dispatchKey(e)) e.preventDefault()
-}
-
 let stopDrop: (() => void) | null = null
+let stopKeys: (() => void) | null = null
 const onBeforeUnload = () => void store.flushAutosave()
 
 onMounted(() => {
-  window.addEventListener('keydown', onKey)
+  stopKeys = installShortcutListener()
   window.addEventListener('beforeunload', onBeforeUnload)
   stopDrop = store.bridge.onFilesDropped({
     onDrop: (paths) => {
@@ -68,7 +43,7 @@ onMounted(() => {
   void store.loadAutosaveSummary()
 })
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKey)
+  stopKeys?.()
   window.removeEventListener('beforeunload', onBeforeUnload)
   stopDrop?.()
 })
@@ -89,6 +64,7 @@ onBeforeUnmount(() => {
   <ToastBar />
   <ConfirmDialog />
   <ErrorDialog />
+  <KeysPanel />
 </template>
 
 <style scoped>

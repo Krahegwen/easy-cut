@@ -18,6 +18,8 @@ const COMMANDS: &[&str] = &[
     "open_file",
     "reveal_in_folder",
     "copy_file_to_clipboard",
+    "clipboard_sequence",
+    "clipboard_files",
     "save_autosave",
     "load_autosave",
     "clear_autosave",

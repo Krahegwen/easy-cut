@@ -3,6 +3,7 @@
 
 import * as domain from '../domain'
 import { liveTracks } from '../lib/camera'
+import { describeActiveShortcuts } from '../lib/use-shortcuts'
 import { bridge as nativeBridge, type NativeBridge, type PickVideosOptions } from '../native'
 import { createEditorStore } from './editor'
 import { createSaveFlow } from './save-flow'
@@ -41,5 +42,7 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
     },
     /** Pistas de cámara y micrófono que siguen encendidas (deben ser cero fuera del teleprompter). */
     liveTracks,
+    /** Atajos que valen ahora (capas activas): para contrastar las teclas dibujadas con lo que hacen. */
+    shortcuts: describeActiveShortcuts,
   }
 }

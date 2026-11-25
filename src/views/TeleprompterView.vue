@@ -4,6 +4,8 @@
 // trozo del vídeo. La cámara y el micrófono se apagan siempre al salir de aquí, también si algo falla.
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
+import KeyHint from '../components/KeyHint.vue'
+import KeysButton from '../components/KeysButton.vue'
 import CameraSetup from '../components/teleprompter/CameraSetup.vue'
 import PrompterRun from '../components/teleprompter/PrompterRun.vue'
 import TargetPicker from '../components/TargetPicker.vue'
@@ -30,6 +32,7 @@ import { listDevices, openCamera, stopStream, trackDeviceId, type DeviceOption }
 import { askConfirm } from '../lib/confirm'
 import { createRecorder, type Recorder } from '../lib/recorder'
 import { FONT_SIZES, loadSettings, saveSettings } from '../lib/teleprompter-settings'
+import { useShortcuts } from '../lib/use-shortcuts'
 import { store } from '../store'
 
 type Step = 'script' | 'rehearse' | 'camera' | 'record' | 'review' | 'saving'
@@ -451,6 +454,56 @@ async function goBack() {
   store.go(backTarget.value)
 }
 
+// ------------------------------------------------------------------ teclas
+
+/** Revisar: Esc primero para y vuelve al principio si se está viendo; si no, sale (con su pregunta). */
+function reviewStop() {
+  const v = reviewVideo.value
+  if (!v) return
+  v.pause()
+  v.currentTime = 0
+}
+
+function reviewSeek(deltaMs: number | 'start' | 'end') {
+  const v = reviewVideo.value
+  if (!v) return
+  const dur = Number.isFinite(v.duration) ? v.duration : recordedMs.value / 1000
+  if (deltaMs === 'start') v.currentTime = 0
+  else if (deltaMs === 'end') v.currentTime = Math.max(0, dur - 0.05)
+  else v.currentTime = Math.min(dur, Math.max(0, v.currentTime + deltaMs / 1000))
+}
+
+const backLabel = computed(() => (step.value === 'script' ? 'volver (escribiendo, la primera vez solo sale del texto)' : step.value === 'camera' ? 'volver al texto' : voiceRecording.value ? 'volver' : 'salir sin usar la grabación (pregunta antes)'))
+
+useShortcuts({
+  id: 'teleprompter',
+  title: 'Grabarme leyendo un texto',
+  shortcuts: () => {
+    const s = step.value
+    // Ensayando o grabando manda PrompterRun; guardando no hay nada que hacer.
+    if (s === 'rehearse' || s === 'record' || s === 'saving') return []
+    const back = { id: 'tp-back', keys: ['Escape'], label: 'Esc', description: backLabel.value, run: () => void goBack() }
+    // En el texto se está escribiendo: ninguna letra ni Intro (es un salto de línea), solo Esc.
+    if (s === 'script') return [back]
+    if (s === 'camera') {
+      return [
+        back,
+        { id: 'tp-start', keys: ['Enter'], label: 'Intro', description: '«Empezar a grabar»', run: () => void startRecording(), enabled: !!stream.value && !starting.value },
+      ]
+    }
+    return [
+      { id: 'tp-review-play', keys: ['Space'], label: 'Espacio', description: voiceRecording.value ? 'escuchar o parar' : 'ver o parar', run: toggleReview },
+      { id: 'tp-review-stop', keys: ['Escape'], label: 'Esc', description: 'parar y volver al principio', run: reviewStop, enabled: reviewPlaying.value },
+      back,
+      { id: 'tp-review-start', keys: ['Home'], label: 'Inicio', description: 'desde el principio', run: restartReview },
+      { id: 'tp-review-end', keys: ['End'], label: 'Fin', description: 'ir al final', run: () => reviewSeek('end') },
+      { id: 'tp-review-back', keys: ['ArrowLeft'], label: '←', description: '1 segundo atrás', run: () => reviewSeek(-1000), repeat: true },
+      { id: 'tp-review-forward', keys: ['ArrowRight'], label: '→', description: '1 segundo adelante', run: () => reviewSeek(1000), repeat: true },
+      { id: 'tp-use', keys: ['Enter'], label: 'Intro', description: '«Usar esta grabación»', run: () => void (voiceRecording.value ? useVoiceRecording() : useRecording()) },
+    ]
+  },
+})
+
 onMounted(() => {
   // Si se viene de «Tu vídeo» con una duración máxima, esa manda.
   if (projectTarget !== null) targetMs.value = projectTarget
@@ -471,9 +524,11 @@ onBeforeUnmount(() => {
       <button class="btn quiet" type="button" data-testid="back-home" @click="goBack">
         <AppIcon name="back" />
         {{ step === 'script' ? 'Volver' : step === 'camera' ? 'Volver al texto' : voiceRecording ? 'Volver' : 'Salir' }}
+        <KeyHint k="Esc" />
       </button>
       <h1>{{ title }}</h1>
       <span class="spacer" />
+      <KeysButton />
       <template v-if="step === 'script'">
         <button class="btn" type="button" data-testid="rehearse" :disabled="!hasText" @click="step = 'rehearse'">
           <AppIcon name="play" />
@@ -487,6 +542,7 @@ onBeforeUnmount(() => {
       <button v-else-if="step === 'camera'" class="btn primary large rec" type="button" data-testid="start-recording" :disabled="!stream || starting" @click="startRecording">
         <AppIcon name="record" />
         Empezar a grabar
+        <KeyHint k="Intro" />
       </button>
     </header>
 
@@ -669,10 +725,12 @@ onBeforeUnmount(() => {
           <button class="btn" type="button" data-testid="review-play" @click="toggleReview">
             <AppIcon :name="reviewPlaying ? 'pause' : 'play'" />
             {{ reviewPlaying ? 'Pausa' : voiceRecording ? 'Escuchar la grabación' : 'Ver la grabación' }}
+            <KeyHint k="Espacio" />
           </button>
           <button class="btn quiet" type="button" @click="restartReview">
             <AppIcon name="reset" />
             Desde el principio
+            <KeyHint k="Inicio" />
           </button>
           <span class="review-time" data-testid="review-time">{{ formatClock(reviewTime) }} / {{ formatClock(recordedMs) }}</span>
         </div>
@@ -683,6 +741,7 @@ onBeforeUnmount(() => {
         <button class="btn primary large" type="button" data-testid="use-recording" @click="useVoiceRecording">
           <AppIcon name="check" />
           Usar esta grabación
+          <KeyHint k="Intro" />
         </button>
         <button class="btn large" type="button" data-testid="retake" @click="retakeVoice">
           <AppIcon name="reset" />
@@ -698,6 +757,7 @@ onBeforeUnmount(() => {
         <button class="btn primary large" type="button" data-testid="use-recording" @click="useRecording">
           <AppIcon name="check" />
           Usar esta grabación
+          <KeyHint k="Intro" />
         </button>
         <button class="btn large" type="button" data-testid="retake" @click="retake">
           <AppIcon name="reset" />

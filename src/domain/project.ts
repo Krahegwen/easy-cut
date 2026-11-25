@@ -306,6 +306,28 @@ export function addClip(project: Project, clip: Clip, index: number = project.cl
   return { ...project, clips }
 }
 
+/**
+ * Copia independiente de un trozo con otro id (copiar y pegar): mismos cortes, pausas quitadas, velocidad,
+ * sonido, giro, encuadre e imagen. No comparte ningún objeto con el original.
+ */
+export function duplicateClip(clip: Clip, newId: string = defaultIdFactory()): Clip {
+  return {
+    ...clip,
+    id: newId,
+    segments: clip.segments.map((s) => ({ ...s })),
+    framing: { ...clip.framing },
+    picture: shiftPicture(clip.picture, 0),
+  }
+}
+
+/**
+ * Inserta un trozo justo después de otro (o al final si `afterClipId` es null o no está).
+ */
+export function insertClipAfter(project: Project, afterClipId: string | null, clip: Clip): Project {
+  const index = afterClipId === null ? -1 : project.clips.findIndex((c) => c.id === afterClipId)
+  return addClip(project, clip, index < 0 ? project.clips.length : index + 1)
+}
+
 export function removeClip(project: Project, clipId: string): Project {
   if (!project.clips.some((c) => c.id === clipId)) return project
   return { ...project, clips: project.clips.filter((c) => c.id !== clipId) }

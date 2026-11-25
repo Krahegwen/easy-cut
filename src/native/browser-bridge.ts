@@ -43,6 +43,9 @@ export function createBrowserBridge(): NativeBridge {
     openFile: () => unavailable('Abrir el vídeo'),
     revealInFolder: () => unavailable('Mostrar en la carpeta'),
     copyFileToClipboard: () => unavailable('Copiar al portapapeles'),
+    // En el navegador no se pueden leer los ficheros del portapapeles: nunca hay ninguno.
+    clipboardSequence: () => Promise.resolve(0),
+    clipboardFiles: () => Promise.resolve({ sequence: 0, paths: [] }),
     saveAutosave(json) {
       try {
         localStorage.setItem(AUTOSAVE_KEY, json)
