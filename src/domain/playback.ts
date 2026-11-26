@@ -156,7 +156,73 @@ export function previewPicture(clip: Clip, clipOutMs: number, coverAvailable = t
 /** Margen con el que se da por acabado un tramo (el <video> no avisa justo en el milisegundo). */
 export const SPAN_END_TOLERANCE_MS = 40
 
-/** ¿El <video> ha llegado (casi) al final del tramo y hay que saltar al siguiente? */
-export function hasReachedSpanEnd(span: PlaybackSpan, sourceMs: number): boolean {
-  return sourceMs >= span.sourceEndMs - SPAN_END_TOLERANCE_MS
+/** Lo que dura un fotograma de pantalla (60 Hz), en ms: lo que avanza el reloj entre dos comprobaciones. */
+const SCREEN_FRAME_MS = 17
+
+/**
+ * Margen para dar por acabado un tramo que suena a `mediaRate` (velocidad del trozo × la de repaso): como
+ * mínimo SPAN_END_TOLERANCE_MS y, si va muy rápido, lo que avanza el original en un fotograma de pantalla
+ * (si no, en la comprobación siguiente ya se habría pasado y se verían trozos de lo quitado).
+ */
+export function spanEndToleranceMs(rate = 1): number {
+  return Math.max(SPAN_END_TOLERANCE_MS, Math.round(SCREEN_FRAME_MS * Math.max(0, rate)))
+}
+
+/** ¿El <video> ha llegado (casi) al final del tramo y hay que saltar al siguiente? (`rate`: su playbackRate) */
+export function hasReachedSpanEnd(span: PlaybackSpan, sourceMs: number, rate = 1): boolean {
+  return sourceMs >= span.sourceEndMs - spanEndToleranceMs(rate)
+}
+
+// ---------------------------------------------------------------------------
+// «Repasar más rápido»: solo cambia cómo se ve ahora la vista previa, nunca el vídeo que se guarda.
+//
+// El reloj del montaje avanza `review` veces más deprisa que el de la pared. Cada <video>/<audio> suena a su
+// velocidad propia dentro del montaje por el factor de repaso: un trozo a 2× repasado a 1,5× va a 3×; lo de
+// encima y los sonidos y efectos de las pistas (que van a velocidad normal en el montaje) van a `review`. Los
+// márgenes de recolocación (150 ms) siguen midiendo en tiempo del montaje: ni el original de un sonido ni el
+// vídeo de encima se estiran, así que su tiempo y el del montaje avanzan igual.
+
+export type ReviewRate = 1 | 1.5 | 2
+export const REVIEW_RATES: readonly ReviewRate[] = [1, 1.5, 2]
+
+/** Lo que admite `playbackRate` en Chromium (fuera de esto lanza una excepción). */
+export const MIN_MEDIA_RATE = 0.0625
+export const MAX_MEDIA_RATE = 16
+
+/** ¿Es un factor de repaso válido? (lo que no lo sea se trata como 1×). */
+export function isReviewRate(value: unknown): value is ReviewRate {
+  return REVIEW_RATES.includes(value as ReviewRate)
+}
+
+/** El factor de repaso, o 1 si no es uno de los que se ofrecen. */
+export function normalizeReviewRate(value: unknown): ReviewRate {
+  return isReviewRate(value) ? value : 1
+}
+
+/** `playbackRate` de un elemento que en el montaje va a `speed` (1 = normal) repasando a `review`. */
+export function mediaRate(speed: number, review: number = 1): number {
+  const r = speed * normalizeReviewRate(review)
+  if (!Number.isFinite(r) || r <= 0) return 1
+  return Math.min(MAX_MEDIA_RATE, Math.max(MIN_MEDIA_RATE, r))
+}
+
+/** Cuánto avanza el reloj del montaje en `wallMs` ms de reloj de pared repasando a `review`. */
+export function reviewAdvanceMs(wallMs: number, review: number = 1): number {
+  return Math.max(0, wallMs) * normalizeReviewRate(review)
+}
+
+/** Cuánto se tarda de verdad (ms de pared) en ver `projectMs` ms del montaje repasando a `review`. */
+export function reviewWallMs(projectMs: number, review: number = 1): number {
+  return Math.max(0, projectMs) / normalizeReviewRate(review)
+}
+
+/** Cómo se escribe el factor en la interfaz: «1×», «1,5×», «2×». */
+export function formatReviewRate(review: number): string {
+  return `${String(normalizeReviewRate(review)).replace('.', ',')}×`
+}
+
+/** El aviso que se ve mientras se repasa más rápido (null a velocidad normal). */
+export function reviewNotice(review: number): string | null {
+  const r = normalizeReviewRate(review)
+  return r === 1 ? null : `Repasando a ${formatReviewRate(r)} · el vídeo guardado no cambia`
 }
