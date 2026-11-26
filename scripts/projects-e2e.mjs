@@ -367,7 +367,25 @@ try {
     await S('await tracks.addFiles([args.v], 500); return true', { v: moving.voice })
     await waitSaved()
     await goHome()
-    for (const p of Object.values(moving)) renameSync(p, join(after, p.slice(before.length + 1)))
+    // Al llegar a Inicio, la tarjeta de C saca su miniatura de boda.mp4 con ffmpeg (~120 ms, medido), y ffmpeg abre
+    // los ficheros sin dejar moverlos (EBUSY). Es trabajo de lo que se ve, así que se espera a que la tarjeta
+    // la enseñe, como lo vería una persona. Si aun así algo de antes sigue leyendo (una forma de onda del editor),
+    // se reintenta un poco, acotado, y se dice.
+    await app.waitFor('return !!document.querySelector(args.s + " .thumb img")', { args: { s: card(idC) }, timeoutMs: 15_000, what: 'miniatura de la tarjeta de C' })
+    let busyRetries = 0
+    for (const p of Object.values(moving)) {
+      for (;;) {
+        try {
+          renameSync(p, join(after, p.slice(before.length + 1)))
+          break
+        } catch (err) {
+          if (err?.code !== 'EBUSY' || busyRetries >= 30) throw err
+          busyRetries += 1
+          await sleep(100)
+        }
+      }
+    }
+    if (busyRetries) console.log(`      (mover los originales ha esperado ${busyRetries} × 100 ms: algún ffmpeg aún los leía)`)
     await app.click(`${card(idC)} [data-testid=project-open]`)
     await waitScreen('editor')
     await app.waitFor('return window.__easyCut.store.missingPaths().length === 3', { timeoutMs: 15_000, what: 'los tres que faltan' })
