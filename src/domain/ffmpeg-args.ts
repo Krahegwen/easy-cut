@@ -11,7 +11,9 @@ import {
   clipDisplaySize,
   clipInOut,
   clipOutputMs,
+  MIN_SEGMENT_MS,
   type Clip,
+  type CollageCell,
   type CoverPicture,
   type EffectLook,
   type MediaInfo,
@@ -21,7 +23,8 @@ import {
   type TrackKind,
   type Viewable,
 } from './project'
-import { audibleOrVisible, projectTiming, resolveTracks, type ProjectTiming } from './tracks'
+import { audibleOrVisible, projectTiming, resolveTracks, type ProjectTiming, type ResolvedItem } from './tracks'
+import { cellContentLayout, cellRects, COLLAGE_BACKGROUND_HEX, COLLAGE_GAP_HEX, heardCell, layoutById } from './collage'
 import { clipVideoJoinFades, dipFades, edgeFades, isDip, ZOOM_MAX_SCALE, type ResolvedJoin } from './transitions'
 
 export const AUDIO_SAMPLE_RATE = 48_000
@@ -434,10 +437,82 @@ export interface PlannedItem {
   media: MediaInfo
   /** «El vídeo de este trozo»: el índice de su trozo (su imagen sale de [cv{i}], no de un fichero aparte). */
   clipIndex?: number
+  /** Un collage: sus huecos con su fichero y su información (null si está vacío o no se encuentra: fondo liso). */
+  collage?: PlannedCell[]
   /** Tiempo en el fichero (ms, con los tiempos de fotogramas enteros de cada trozo). */
   startMs: number
   /** Lo que dura dentro del vídeo (lo que sobresale del final se corta). */
   lengthMs: number
+}
+
+/** Un hueco de un collage listo para guardarse. */
+export interface PlannedCell {
+  cell: CollageCell
+  media: MediaInfo | null
+}
+
+function tryLookup(media: MediaLookup, path: string): MediaInfo | null {
+  return media instanceof Map ? (media.get(path) ?? null) : ((media as Record<string, MediaInfo>)[path] ?? null)
+}
+
+/** La «información» de un collage como efecto: tiene la forma del marco (su recuadro a tamaño 1 es el marco). */
+const COLLAGE_MEDIA: MediaInfo = {
+  path: '',
+  durationMs: 0,
+  hasVideo: true,
+  width: 0,
+  height: 0,
+  codedWidth: 0,
+  codedHeight: 0,
+  rotation: 0,
+  fps: 0,
+  hasAudio: false,
+  isHdr: false,
+  videoCodec: 'collage',
+  pixelFormat: null,
+  colorTransfer: null,
+  colorPrimaries: null,
+  colorSpace: null,
+  audioCodec: null,
+  audioSampleRate: null,
+  audioChannels: null,
+  sizeBytes: null,
+}
+
+/**
+ * Un collage al guardar: su imagen (un efecto más, sin sonido propio) y, si se eligió un hueco que suena, el sonido
+ * de ese hueco como un sonido más: desde donde va el hueco, a velocidad normal, con el volumen del hueco y el
+ * aparecer y desaparecer del collage, y en silencio cuando su vídeo se acaba (apad).
+ */
+function planCollage(r: ResolvedItem, mediaByPath: MediaLookup): PlannedItem[] {
+  const item = r.item
+  const collage = item.collage!
+  const lengthMs = r.shownEndMs - r.startMs
+  const cells: PlannedCell[] = collage.cells.map((cell) => ({ cell, media: cell.source ? tryLookup(mediaByPath, cell.source.path) : null }))
+  const out: PlannedItem[] = [{ item: { ...item, volume: 0 }, kind: 'effect', path: '', media: COLLAGE_MEDIA, collage: cells, startMs: r.startMs, lengthMs }]
+  const h = heardCell(collage)
+  const heard = h === null ? null : cells[h]!
+  if (heard?.media?.hasAudio && heard.cell.source && !heard.cell.source.still) {
+    const dur = heard.media.durationMs
+    const inMs = heard.cell.startMs + item.phaseMs
+    if (inMs < dur - MIN_SEGMENT_MS) {
+      const sound: TrackItem = {
+        ...item,
+        source: { type: 'file', path: heard.cell.source.path },
+        sourceDurationMs: dur,
+        hasAudio: true,
+        inMs,
+        outMs: dur,
+        phaseMs: 0,
+        repeat: false,
+        volume: heard.cell.volume,
+        look: null,
+        collage: null,
+      }
+      out.push({ item: sound, kind: 'sound', path: heard.cell.source.path, media: heard.media, startMs: r.startMs, lengthMs })
+    }
+  }
+  return out
 }
 
 /**
@@ -452,6 +527,10 @@ export function planTrackItems(
 ): PlannedItem[] {
   const planned: PlannedItem[] = []
   for (const r of audibleOrVisible(resolveTracks(project, timing))) {
+    if (r.item.collage) {
+      planned.push(...planCollage(r, mediaByPath))
+      continue
+    }
     if (r.item.source.type === 'clip') {
       const clipId = r.item.source.clipId
       const clipIndex = project.clips.findIndex((c) => c.id === clipId)
@@ -587,6 +666,57 @@ export function effectRegions(planned: readonly PlannedItem[], project: Project,
   return regions
 }
 
+/**
+ * Los huecos de un collage montados en un collage de cw × ch (px pares) con exactamente `frames` fotogramas: deja
+ * [out]. Cada hueco lee solo su tramo (-ss / -t de entrada, desde donde va: su comienzo más lo que lleva el collage),
+ * a velocidad normal; primero fps y escalar al tamaño de su hueco (con «Llenar», recortar; «Entero», bandas de fondo
+ * con pad) y luego tpad, que repite su última imagen si se acaba antes (se queda quieto). Un hueco vacío (o cuyo
+ * fichero no está) es fondo liso. xstack los junta (con la separación como relleno): un solo filtro, en YUV.
+ */
+function collageChains(p: PlannedItem, inputs: Inputs, spec: OutputSpec, frames: number, cw: number, ch: number, out: string): string[] {
+  const collage = p.item.collage!
+  const layout = layoutById(collage.layoutId)!
+  const F = spec.fps
+  const lengthMs = (frames * 1000) / F
+  const rects = cellRects(layout, cw, ch, collage.gap, true)
+  const chains: string[] = []
+  const scaleOpts = 'flags=bicubic:out_color_matrix=bt709:out_range=tv'
+  const tail = ['setsar=1', 'format=yuv420p', `tpad=stop_mode=clone:stop=${frames}`, `trim=end_frame=${frames}`]
+  p.collage!.forEach(({ cell, media }, i) => {
+    const rect = rects[i]!
+    const label = `${out}_${i}`
+    const source = cell.source
+    if (!source || !media || (!media.hasVideo && !media.isStill)) {
+      chains.push(`color=c=0x${COLLAGE_BACKGROUND_HEX}:s=${rect.width}x${rect.height}:r=${F},trim=end_frame=${frames},format=yuv420p,setsar=1[${label}]`)
+      return
+    }
+    let input: number
+    if (source.still || media.isStill) {
+      input = inputs.raw(source.path, ['-loop', '1', '-framerate', String(F), '-t', sec(lengthMs + 500)])
+    } else {
+      // Desde donde va el hueco; si ya se acabó, desde un poco antes de su final (tpad repite su última imagen).
+      const at = cell.startMs + p.item.phaseMs
+      const seek = Math.max(0, Math.min(at, media.durationMs - COVER_SEEK_TAIL_MS))
+      input = inputs.add(source.path, seek, lengthMs + 1000, ['-an'])
+    }
+    const c = cellContentLayout(cell, media.width, media.height, rect.width, rect.height, true)
+    const sized = c.width !== rect.width || c.height !== rect.height
+    const fit = [`scale=${c.width}:${c.height}:${scaleOpts}`]
+    if (sized && cell.fit === 'fill') {
+      fit.push(`crop=${rect.width}:${rect.height}:${Math.min(c.width - rect.width, Math.max(0, -c.left))}:${Math.min(c.height - rect.height, Math.max(0, -c.top))}`)
+    } else if (sized) {
+      fit.push(`pad=${rect.width}:${rect.height}:${Math.max(0, c.left)}:${Math.max(0, c.top)}:color=0x${COLLAGE_BACKGROUND_HEX}`)
+    }
+    const parts = ['setpts=PTS-STARTPTS', `fps=${F}`, ...(media.isHdr ? toneMapFilters(media) : []), ...fit, ...tail]
+    chains.push(`[${input}:v:0]${parts.join(',')}[${label}]`)
+  })
+  const layoutArg = rects.map((r) => `${r.left}_${r.top}`).join('|')
+  chains.push(
+    `${rects.map((_, i) => `[${out}_${i}]`).join('')}xstack=inputs=${rects.length}:layout=${layoutArg}:fill=0x${COLLAGE_GAP_HEX[collage.gap]},format=yuv420p,${BT709_SETPARAMS}[${out}]`,
+  )
+  return chains
+}
+
 /** Cadena de imagen de un efecto, ya escalado, colocado y desplazado a su instante dentro del tramo: deja [label]. */
 /**
  * Esquinas redondeadas de un efecto con la forma del marco (el vídeo de un trozo): ya puesto encima en [over], en
@@ -675,6 +805,20 @@ function effectChains(
   spec: OutputSpec,
   label: string,
 ): string[] {
+  const setup: string[] = []
+  const made = effectChainsWith(e, region, inputs, spec, label, setup)
+  return made.length ? [...setup, ...made] : []
+}
+
+/** Monta las cadenas de un efecto; lo que hay que preparar antes (los huecos de un collage) va en `collageSetup`. */
+function effectChainsWith(
+  e: EffectRegion['effects'][number],
+  region: EffectRegion,
+  inputs: Inputs,
+  spec: OutputSpec,
+  label: string,
+  collageSetup: string[],
+): string[] {
   const { p } = e
   const item = p.item
   const look = item.look!
@@ -688,6 +832,13 @@ function effectChains(
   if (p.clipIndex !== undefined) {
     // «El vídeo de este trozo»: ya viene hecho (cortes, velocidad, giro, recorte con la forma del marco).
     input = `cv${p.clipIndex}`
+  } else if (p.collage) {
+    // Un collage: sus huecos montados con xstack. Quieto y más pequeño que el marco, se monta ya a su tamaño (más
+    // barato: el escalado de después no hace nada); si se mueve, a pantalla completa y se escala en cada fotograma
+    // como cualquier efecto.
+    const size = hasMotion(look) ? { width: W, height: H } : effectRect(staticLook(look), W, H, W, H, true)
+    collageSetup.push(...collageChains(p, inputs, spec, frames, size.width, size.height, `${label}cg`))
+    input = `${label}cg`
   } else if (item.still) {
     input = inputs.raw(p.path, ['-loop', '1', '-framerate', String(F), '-t', sec(lengthMs + 500)])
   } else if (item.repeat) {
@@ -697,8 +848,8 @@ function effectChains(
   } else {
     input = inputs.add(p.path, item.inMs, Math.min(item.outMs - item.inMs, lengthMs) + 500, [...alphaDecoder(p.media), '-an'])
   }
-  // El vídeo de un trozo tiene la forma del marco (su recuadro a tamaño 1 es el marco entero).
-  const media = p.clipIndex !== undefined ? { ...p.media, width: W, height: H } : p.media
+  // El vídeo de un trozo y el collage tienen la forma del marco (su recuadro a tamaño 1 es el marco entero).
+  const media = p.clipIndex !== undefined || p.collage ? { ...p.media, width: W, height: H } : p.media
   const src = typeof input === 'string' ? `[${input}]` : `[${input}:v:0]`
   const rect = effectRect(staticLook(look), media.width, media.height, W, H, true)
   const fades = effectiveFadeLengths(item, lengthMs)
@@ -848,7 +999,7 @@ function effectLayerChains(planned: readonly PlannedItem[], project: Project, in
         if (hasMotion(look)) {
           chains.push(`[${under}][${fx}]overlay=${motionPosition(look, offsetMs)}:format=gbrp:eof_action=pass:shortest=0[${over}]`)
         } else {
-          const media = e.p.clipIndex !== undefined ? { width: spec.width, height: spec.height } : e.p.media
+          const media = e.p.clipIndex !== undefined || e.p.collage ? { width: spec.width, height: spec.height } : e.p.media
           const rect = effectRect(staticLook(look), media.width, media.height, spec.width, spec.height, true)
           chains.push(`[${under}][${fx}]overlay=x=${rect.left}:y=${rect.top}:format=gbrp:eof_action=pass:shortest=0[${over}]`)
         }
