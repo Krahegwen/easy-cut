@@ -1,7 +1,7 @@
 // Modelo del proyecto y operaciones inmutables sobre él.
 // Todos los tiempos son milisegundos enteros. Nada de DOM ni de Node aquí.
 
-import { isEasing, type Easing } from './motion'
+import { isEasing, isMotionEasing, type Easing, type MotionEasing } from './motion'
 
 export interface TimeRange {
   startMs: number
@@ -159,12 +159,29 @@ export interface EffectBox {
   scale: number
 }
 
+/**
+ * Una marca de sitio y tamaño: en `atMs` (tiempo del elemento, desde su principio; puede caer fuera de su tramo
+ * tras recortarlo o partirlo, y sigue dando forma al camino) el efecto está en `box`. Llega a ella desde la marca
+ * anterior con la curva `easing` («De golpe»: se queda quieto y salta al llegar).
+ */
+export interface BoxKeyframe {
+  atMs: number
+  box: EffectBox
+  easing: MotionEasing
+}
+
 export interface EffectLook {
   mix: EffectMix
   /** 0 (no se ve) a 1. */
   opacity: number
+  /** Tamaño y sitio sin marcas (todo el rato el mismo). */
   box: EffectBox
   fit: EffectFit
+  /**
+   * Marcas de sitio y tamaño (ordenadas por tiempo, sin dos en el mismo instante). Vacía: `box` todo el rato.
+   * Con marcas, el efecto viaja de una a otra (ver keyframes.ts).
+   */
+  keyframes: BoxKeyframe[]
 }
 
 /** Un sonido o un efecto colocado en el tiempo en una pista. */
@@ -1240,17 +1257,35 @@ function clampNumber(v: number, lo: number, hi: number): number {
 /** Deja un aspecto de efecto en valores válidos. */
 export function normalizeLook(raw: unknown): EffectLook {
   const l = isObject(raw) ? raw : {}
-  const box = isObject(l.box) ? l.box : {}
   return {
     mix: l.mix === 'light' ? 'light' : 'normal',
     opacity: clampNumber(finiteOr(l.opacity, 1), 0, 1),
-    box: {
-      x: clampNumber(finiteOr(box.x, 0.5), 0, 1),
-      y: clampNumber(finiteOr(box.y, 0.5), 0, 1),
-      scale: clampNumber(finiteOr(box.scale, 1), MIN_EFFECT_SCALE, MAX_EFFECT_SCALE),
-    },
+    box: normalizeBox(l.box),
     fit: l.fit === 'contain' ? 'contain' : 'cover',
+    keyframes: normalizeKeyframes(l.keyframes),
   }
+}
+
+/** Un tamaño y sitio en valores válidos (centro dentro del marco y tamaño entre los límites). */
+export function normalizeBox(raw: unknown): EffectBox {
+  const box = isObject(raw) ? raw : {}
+  return {
+    x: clampNumber(finiteOr(box.x, 0.5), 0, 1),
+    y: clampNumber(finiteOr(box.y, 0.5), 0, 1),
+    scale: clampNumber(finiteOr(box.scale, 1), MIN_EFFECT_SCALE, MAX_EFFECT_SCALE),
+  }
+}
+
+/** Marcas en orden y válidas: sin dos en el mismo milisegundo (gana la última), curvas conocidas. */
+function normalizeKeyframes(raw: unknown): BoxKeyframe[] {
+  if (!Array.isArray(raw)) return []
+  const byTime = new Map<number, BoxKeyframe>()
+  for (const k of raw) {
+    if (!isObject(k) || typeof k.atMs !== 'number' || !Number.isFinite(k.atMs)) continue
+    const atMs = Math.round(k.atMs)
+    byTime.set(atMs, { atMs, box: normalizeBox(k.box), easing: isMotionEasing(k.easing) ? k.easing : 'smooth' })
+  }
+  return [...byTime.values()].sort((a, b) => a.atMs - b.atMs)
 }
 
 /**

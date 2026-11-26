@@ -364,6 +364,213 @@ try {
     await app.click('[data-testid=back-to-editor]')
     await waitScreen('editor')
   }
+
+  // ============================================================ B. Pegatinas que se mueven (marcas)
+
+  let stId = null
+  /** Rect (fracciones del marco) del efecto en la vista previa y el valor del dominio en ese instante. */
+  const previewBox = (id) =>
+    app.evaluate(`const e = document.querySelector('[data-testid=track-effect][data-item-id="${id}"]'); const f = document.querySelector('[data-testid=preview-frame]').getBoundingClientRect();
+      if (!e || getComputedStyle(e).visibility !== 'visible') return null; const b = e.getBoundingClientRect();
+      const d = window.__easyCut.domain; const p = window.__easyCut.store.project.value; const r = d.resolveTracks(p).find((x) => x.item.id === args.id);
+      const t = Number(document.querySelector('[data-testid=player]').dataset.currentMs);
+      const want = d.boxAt(r.item.look, Math.min(Math.max(0, t - r.startMs), r.shownEndMs - r.startMs));
+      return { cx: (b.left + b.width / 2 - f.left) / f.width, cy: (b.top + b.height / 2 - f.top) / f.height, h: b.height / f.height, want, t, local: t - r.startMs, transform: e.style.transform }`, { id })
+  const keyframes = () => S('const r = domain.findItem(store.project.value, args.id); return r ? r.item.look.keyframes : null', { id: stId })
+  {
+    await seekTo(3000)
+    await app.key('b')
+    await waitScreen('library-panel')
+    await app.click('[data-testid=library-tab-effects]')
+    await app.evaluate('const s = document.querySelector("[data-testid=library-category]"); const i = [...s.options].findIndex((o) => o.dataset.category === "pegatinas"); s.selectedIndex = i; s.dispatchEvent(new Event("change")); return true')
+    await sleep(300)
+    await app.click('[data-testid=library-put-pegatina-estrella]')
+    await app.waitFor('return window.__easyCut.store.project.value.tracks.flatMap((t) => t.items).some((i) => i.source.assetId === "pegatina-estrella")', { timeoutMs: 20_000, what: 'pegatina puesta' })
+    await noErrorDialog('poner la pegatina')
+    for (let i = 0; i < 3 && (await app.evaluate('return !!document.querySelector("[data-testid=library-panel]")')); i++) {
+      await app.key('Escape')
+      await sleep(150)
+    }
+    stId = (await items()).find((i) => i.item.source.assetId === 'pegatina-estrella').id
+    const st = (await items()).find((i) => i.id === stId)
+    check('Pegatina puesta en la línea (3 s), sin marcas: todo como antes', st.start === 3000 && st.item.look.keyframes.length === 0, `${st.start}–${st.end}`)
+
+    // Primer sitio: «Marcar aquí» con la tecla K a los 0,3 s de la pegatina.
+    await selectItem(stId)
+    await app.click('[data-testid=item-box]')
+    await waitScreen('box-editor')
+    await seekTo(3300)
+    await app.key('k')
+    let kf = await keyframes()
+    check('K: «Marcar aquí» pone una marca en la línea, con el sitio que tenía', kf.length === 1 && Math.abs(kf[0].atMs - 300) <= 60 && kf[0].box.x === 0.8, JSON.stringify(kf))
+    const hint = await app.text('[data-testid=box-hint-text]')
+    check('La barra lo explica en llano', hint.includes('1 marca'), hint)
+
+    // Segundo sitio: a los 2,4 s, arrastrar el recuadro a otro sitio y hacerlo más grande (crea la marca sola).
+    await seekTo(5400)
+    const b = await app.center('[data-testid=box-editor]')
+    const frame = await app.evaluate('const r = document.querySelector("[data-testid=preview-frame]").getBoundingClientRect(); return { w: r.width, h: r.height }')
+    await app.drag({ x: b.x, y: b.y }, { x: b.x - frame.w * 0.5, y: b.y + frame.h * 0.4 }, 12)
+    const h = await app.center('[data-testid=box-handle-br]')
+    await app.drag({ x: h.x, y: h.y }, { x: h.x + 50, y: h.y + 40 }, 10)
+    kf = await keyframes()
+    check('En otro momento, mover y cambiar el tamaño crea la marca de ese instante', kf.length === 2 && Math.abs(kf[1].atMs - 2400) <= 60 && kf[1].box.x < 0.45 && kf[1].box.y > 0.55 && kf[1].box.scale > 0.25, JSON.stringify(kf.map((k) => [k.atMs, k.box])))
+    check('Y la primera marca sigue donde estaba', kf[0].box.x === 0.8, JSON.stringify(kf[0].box))
+    const dots = await app.evaluate('return document.querySelectorAll("[data-testid=mark-dot]").length')
+    const diamonds = await app.evaluate(`return [...document.querySelectorAll('[data-testid=track-item][data-item-id="${stId}"] [data-testid=item-mark]')].map((d) => Number(d.dataset.atMs))`)
+    check('Las marcas se ven: rombos sobre la pegatina en su pista y puntos numerados en la vista previa', diamonds.length === 2 && dots === 2, `rombos ${diamonds} · puntos ${dots}`)
+    await shot('motion-05-marcas.png')
+
+    // A mitad de camino, en la vista previa: el recuadro está donde dice el dominio (±2 % del marco).
+    const mid = Math.round((kf[0].atMs + kf[1].atMs) / 2)
+    await seekTo(3000 + mid)
+    await app.waitFor(`const e = document.querySelector('[data-testid=track-effect][data-item-id="${stId}"]'); return e && e.complete ? true : null`, { timeoutMs: 10_000, what: 'pegatina cargada' })
+    const m = await previewBox(stId)
+    const midErr = Math.max(Math.abs(m.cx - m.want.x), Math.abs(m.cy - m.want.y), Math.abs(m.h - m.want.scale))
+    const endA = kf[0].box
+    const endB = kf[1].box
+    const between = (v, a, b2) => v > Math.min(a, b2) + 0.02 && v < Math.max(a, b2) - 0.02
+    check('Vista previa: a mitad de camino viaja (entre las dos marcas) y está donde al guardar (±2 %)', midErr <= 0.02 && between(m.cx, endA.x, endB.x) && between(m.cy, endA.y, endB.y) && m.transform.includes('translate'), `a los ${m.local} ms: ${m.cx.toFixed(3)},${m.cy.toFixed(3)} tamaño ${m.h.toFixed(3)} / ${m.want.x.toFixed(3)},${m.want.y.toFixed(3)} ${m.want.scale.toFixed(3)}`)
+    // Reproduciendo, también se mueve (rAF): la posición cambia entre dos lecturas.
+    await seekTo(3000 + kf[0].atMs + 100)
+    await app.key(' ')
+    await sleep(500)
+    const p1 = await previewBox(stId)
+    await sleep(500)
+    const p2 = await previewBox(stId)
+    await app.key(' ')
+    check('Reproduciendo, la pegatina se mueve fotograma a fotograma', !!p1 && !!p2 && Math.hypot(p2.cx - p1.cx, p2.cy - p1.cy) > 0.03 && Math.abs(p2.cx - p2.want.x) < 0.03, p1 && p2 ? `${p1.cx.toFixed(3)} → ${p2.cx.toFixed(3)}` : 'sin leer')
+
+    // Mover marcas con teclas: J a la anterior, N la lleva a la línea.
+    await seekTo(3000 + 1500)
+    await app.key('j')
+    await sleep(300)
+    const atPrev = await playerMs()
+    check('J lleva la línea a la marca anterior', Math.abs(atPrev - (3000 + kf[0].atMs)) <= 40, `${atPrev} ms`)
+    await seekTo(3000 + 800)
+    await app.key('n')
+    kf = await keyframes()
+    check('N lleva esa marca a la línea', Math.abs(kf[0].atMs - 800) <= 60 && kf.length === 2, JSON.stringify(kf.map((k) => k.atMs)))
+    await app.key('l')
+    await sleep(300)
+    check('L lleva la línea a la marca siguiente', Math.abs((await playerMs()) - (3000 + kf[1].atMs)) <= 40, `${await playerMs()} ms`)
+
+    // Mover una marca arrastrando su rombo en la pista.
+    const before = kf[1].atMs
+    const diamond = await app.center(`[data-testid=track-item][data-item-id="${stId}"] [data-testid=item-mark][data-at-ms="${before}"]`)
+    const px = await pxPerSec()
+    await app.drag({ x: diamond.x, y: diamond.y }, { x: diamond.x - px * 0.4, y: diamond.y }, 8)
+    kf = await keyframes()
+    check('Arrastrar un rombo mueve la marca en el tiempo', kf.length === 2 && kf[1].atMs < before - 250 && kf[1].atMs > before - 550, `${before} → ${kf[1].atMs}`)
+
+    // Cómo viaja: «Empieza despacio» en el tramo de la línea.
+    await seekTo(3000 + Math.round((kf[0].atMs + kf[1].atMs) / 2))
+    await app.click('[data-testid=mark-travel]')
+    await shot('motion-06-como-viaja.png')
+    await app.click('[data-testid=travel-ease-in]')
+    kf = await keyframes()
+    check('«Cómo viaja»: la curva del tramo de la línea', kf[1].easing === 'ease-in', kf.map((k) => k.easing).join(','))
+
+    // Quitar una marca con K sobre ella y deshacer.
+    await app.key('j')
+    await sleep(250)
+    await app.key('k')
+    check('K sobre una marca la quita', (await keyframes()).length === 1)
+    await app.key('z', { ctrl: true })
+    check('Ctrl+Z la devuelve', (await keyframes()).length === 2)
+
+    // Pantalla completa (F) en un instante con marcas: crea o actualiza la marca de la línea.
+    await seekTo(3000 + 2700)
+    await app.key('f')
+    kf = await keyframes()
+    check('F en «Tamaño y sitio» pone a pantalla completa ESE instante (una marca más)', kf.length === 3 && kf[2].box.scale === 1 && kf[2].box.x === 0.5, JSON.stringify(kf.map((k) => [k.atMs, k.box.scale])))
+    await app.key('z', { ctrl: true })
+
+    // Barras a 1280 y 1100 en «Tamaño y sitio».
+    for (const [w, hh] of [[1280, 800], [1100, 700]]) {
+      await app.setViewport(w, hh)
+      await sleep(400)
+      await barInOneLine('[data-testid=box-hint]', `«Tamaño y sitio» con marcas, ${w}×${hh}`)
+      await visibleKeyHintsAreShortcuts(`«Tamaño y sitio» con marcas, ${w}×${hh}`)
+      await shot(`motion-07-tamano-y-sitio-${w}.png`)
+    }
+    await app.setViewport(1280, 800)
+
+    // «Quitar el movimiento» y deshacer.
+    await app.click('[data-testid=mark-clear]')
+    check('«Quitar el movimiento»: sin marcas', (await keyframes()).length === 0)
+    await app.key('z', { ctrl: true })
+    await app.key('Escape')
+    await sleep(200)
+
+    // Partir la pegatina con marcas (P): cada mitad sigue el mismo camino, sin saltos en el corte.
+    kf = await keyframes()
+    const cut = 3000 + Math.round((kf[0].atMs + kf[1].atMs) / 2)
+    const pathBefore = await S(`const r = domain.resolveTracks(store.project.value).find((x) => x.item.id === args.id); return args.ts.map((t) => domain.boxAt(r.item.look, t - r.startMs))`, { id: stId, ts: [cut - 300, cut - 1, cut, cut + 300] })
+    await selectItem(stId)
+    await seekTo(cut)
+    const cutAt = await playerMs()
+    await app.key('p')
+    const halves = (await items()).filter((i) => i.item.source.assetId === 'pegatina-estrella')
+    const pathAfter = await S(`const p = store.project.value; return args.ts.map((t) => { const r = domain.resolveTracks(p).find((x) => x.item.source.assetId === 'pegatina-estrella' && x.startMs <= t && t < x.endMs); return r ? domain.boxAt(r.item.look, t - r.startMs) : null })`, { ts: [cutAt - 300, cutAt - 1, cutAt, cutAt + 300] })
+    const same = pathAfter.every((b2, i) => b2 && Math.abs(b2.x - pathBefore[i].x) < 0.01)
+    const jump = pathAfter[1] && pathAfter[2] ? Math.hypot(pathAfter[2].x - pathAfter[1].x, pathAfter[2].y - pathAfter[1].y) : 1
+    check('Partir con marcas: dos mitades que siguen el mismo camino y no saltan en el corte', halves.length === 2 && jump < 0.01 && (Math.abs(cutAt - cut) > 40 || same), `mitades ${halves.map((x) => `${x.start}–${x.end} (${x.item.look.keyframes.map((k) => k.atMs).join('/')})`).join(' · ')} · salto ${jump.toFixed(4)}`)
+    await app.key('z', { ctrl: true })
+    check('Deshacer vuelve a una sola pegatina con sus marcas', (await items()).filter((i) => i.item.source.assetId === 'pegatina-estrella').length === 1 && (await keyframes()).length === 2)
+  }
+
+  // --- Guardar y medir en el fichero dónde está la estrella en tres instantes.
+  {
+    const kf = await keyframes()
+    const st = (await items()).find((i) => i.id === stId)
+    await app.click('[data-testid=save-video]')
+    await waitScreen('save-view')
+    await app.click('[data-testid=preset-whatsapp]')
+    await app.waitFor('return !!document.querySelector("[data-testid=done-view]")', { timeoutMs: 180_000, what: 'vídeo con movimiento guardado' })
+    await noErrorDialog('guardar con movimiento')
+    const out = await S('return store.lastExport.value.path')
+    const v = ffprobe(out).streams.find((s) => s.codec_type === 'video')
+    /** Recuadro de lo amarillo (la estrella) en el fotograma de `ms`. */
+    const yellowBox = (ms) => {
+      const buf = execFileSync('ffmpeg', ['-v', 'error', '-ss', (ms / 1000).toFixed(3), '-i', out, '-frames:v', '1', '-vf', 'scale=640:360:flags=area,format=rgb24', '-f', 'rawvideo', '-'], { maxBuffer: 64 * 1024 * 1024 })
+      let minX = 640
+      let maxX = -1
+      let minY = 360
+      let maxY = -1
+      for (let y = 0; y < 360; y++)
+        for (let x = 0; x < 640; x++) {
+          const i = (y * 640 + x) * 3
+          if (buf[i] > 200 && buf[i + 1] > 150 && buf[i + 2] < 110) {
+            minX = Math.min(minX, x)
+            maxX = Math.max(maxX, x)
+            minY = Math.min(minY, y)
+            maxY = Math.max(maxY, y)
+          }
+        }
+      return maxX < 0 ? null : { cx: (minX + maxX + 1) / 2 / 640, cy: (minY + maxY + 1) / 2 / 360, h: (maxY - minY + 1) / 360 }
+    }
+    const want = (local) => S('const r = domain.resolveTracks(store.project.value).find((x) => x.item.id === args.id); return domain.boxAt(r.item.look, args.l)', { id: stId, l: local })
+    // La estrella no llena su cuadrado: su centro y su alto, medidos en la primera marca, son proporcionales al tamaño.
+    const frameLocal = (local) => (Math.floor(((st.start + local) * 30) / 1000) * 1000) / 30 - st.start
+    const a = yellowBox(st.start + kf[0].atMs - 100 > st.start ? st.start + kf[0].atMs - 100 : st.start + 50)
+    const aw = await want(frameLocal(Math.max(50, kf[0].atMs - 100)))
+    const k = { x: (a.cx - aw.x) / aw.scale, y: (a.cy - aw.y) / aw.scale, h: a.h / aw.scale }
+    const rows = []
+    let worst = 0
+    for (const f of [0.25, 0.5, 0.75]) {
+      const local = Math.round(kf[0].atMs + (kf[1].atMs - kf[0].atMs) * f)
+      const got = yellowBox(st.start + local)
+      const w2 = await want(frameLocal(local))
+      const ex = { cx: w2.x + k.x * w2.scale, cy: w2.y + k.y * w2.scale, h: k.h * w2.scale }
+      const err = got ? Math.max(Math.abs(got.cx - ex.cx), Math.abs(got.cy - ex.cy), Math.abs(got.h - ex.h)) : 1
+      worst = Math.max(worst, err)
+      rows.push(`${local} ms: ${got ? `${got.cx.toFixed(3)},${got.cy.toFixed(3)} alto ${got.h.toFixed(3)}` : '—'} / ${ex.cx.toFixed(3)},${ex.cy.toFixed(3)} ${ex.h.toFixed(3)}`)
+    }
+    check(`En el fichero (${v.width}×${v.height}): la estrella viaja por el mismo camino que en la vista previa (±2 % del marco)`, worst <= 0.02, `${rows.join(' · ')} · peor ${worst.toFixed(4)}`)
+    await app.click('[data-testid=back-to-editor]')
+    await waitScreen('editor')
+  }
 } catch (e) {
   check('La prueba ha llegado al final', false, e instanceof Error ? e.stack ?? e.message : String(e))
   try {

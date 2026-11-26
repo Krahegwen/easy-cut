@@ -5,6 +5,7 @@
 // ItemAnchor en project.ts). Aquí: resolver los tiempos, colocar sin solapes, mover, recortar, partir,
 // duplicar, imanes y lo que hace falta para la vista previa. Todo puro e inmutable, en milisegundos.
 
+import { copyLook, shiftKeyframes, splitKeyframes } from './keyframes'
 import { effectiveFadeLengths, fadeGainAt, isEasing, type Easing } from './motion'
 import {
   anchorAt,
@@ -498,6 +499,8 @@ export function trimItemStart(project: Project, itemId: string, newStartMs: numb
     next = { ...item, inMs }
   }
   if (start === s && next.inMs === item.inMs && next.durationMs === item.durationMs) return project
+  // Las marcas de sitio y tamaño van en tiempo del elemento: se corren para quedarse en su sitio del vídeo.
+  if (next.look && next.look.keyframes.length > 0 && start !== s) next = { ...next, look: { ...next.look, keyframes: shiftKeyframes(next.look.keyframes, s - start) } }
   next = { ...next, anchor: anchorForItem(project, next, start, timing) }
   return updateItem(project, itemId, () => next)
 }
@@ -540,10 +543,14 @@ export function splitItem(project: Project, itemId: string, atMs: number, newId:
   let second: TrackItem = itemHasFreeLength(item)
     ? { ...item, id: newId, durationMs: restLength, phaseMs: item.repeat ? mod(item.phaseMs + elapsed, itemLoopMs(item)) : 0, fadeInMs: 0 }
     : { ...item, id: newId, inMs: item.inMs + elapsed, fadeInMs: 0 }
-  second = { ...second, look: item.look ? { ...item.look, box: { ...item.look.box } } : null, anchor: anchorForItem(project, second, at, timing) }
+  // Las marcas de sitio y tamaño: cada mitad se queda con las suyas (ver splitKeyframes).
+  const marks = item.look ? splitKeyframes(item.look.keyframes, elapsed) : null
+  const firstLook = item.look && marks ? { ...item.look, box: { ...item.look.box }, keyframes: marks.first } : null
+  second = { ...second, look: item.look && marks ? { ...item.look, box: { ...item.look.box }, keyframes: marks.second } : null, anchor: anchorForItem(project, second, at, timing) }
+  const firstPart: TrackItem = { ...first, look: firstLook }
   return updateTrack(project, found.track.id, (t) => {
     const items = t.items.slice()
-    items.splice(found.itemIndex, 1, first, second)
+    items.splice(found.itemIndex, 1, firstPart, second)
     return { ...t, items }
   })
 }
@@ -563,7 +570,7 @@ export function duplicateItem(project: Project, itemId: string, newId: string, n
     ...found.item,
     id: newId,
     durationMs: itemHasFreeLength(found.item) ? Math.max(MIN_ITEM_MS, length) : null,
-    look: found.item.look ? { ...found.item.look, box: { ...found.item.look.box } } : null,
+    look: found.item.look ? copyLook(found.item.look) : null,
   }
   const start = r.endMs
   if (start > timing.totalMs - MIN_ITEM_MS) return { ok: false }
@@ -678,6 +685,29 @@ export function snapMove(points: readonly number[], startMs: number, lengthMs: n
   const dEnd = byEnd.guideMs === null ? Infinity : Math.abs(byEnd.timeMs - (startMs + lengthMs))
   if (dStart === Infinity && dEnd === Infinity) return { timeMs: startMs, guideMs: null }
   return dStart <= dEnd ? byStart : { timeMs: byEnd.timeMs - lengthMs, guideMs: byEnd.guideMs }
+}
+
+// ---------------------------------------------------------------------------
+// Tamaño y sitio con marcas (ver keyframes.ts)
+
+/** Cambia cómo se ve un efecto con una función sobre su aspecto (mismo proyecto si no cambia). */
+export function updateEffectLook(project: Project, itemId: string, fn: (look: EffectLook) => EffectLook): Project {
+  return updateItem(project, itemId, (i) => {
+    if (!i.look) return i
+    const look = fn(i.look)
+    return look === i.look ? i : { ...i, look }
+  })
+}
+
+/**
+ * Instante del elemento (ms desde su principio) que corresponde a `atMs` del vídeo, sujeto a su tramo: lo que
+ * edita «Tamaño y sitio» con la línea en `atMs`. null si el elemento no está.
+ */
+export function itemLocalMs(project: Project, itemId: string, atMs: number, timing = projectTiming(project)): number | null {
+  const found = findItem(project, itemId)
+  if (!found) return null
+  const r = resolveOne(project, found.track, found.trackIndex, found.item, timing)
+  return Math.round(Math.min(Math.max(0, atMs - r.startMs), Math.max(0, r.shownEndMs - r.startMs)))
 }
 
 // ---------------------------------------------------------------------------

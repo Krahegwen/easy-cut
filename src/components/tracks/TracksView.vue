@@ -19,6 +19,8 @@ import {
   snapMove,
   snapPoints,
   snapTime,
+  visibleMarks,
+  type BoxKeyframe,
   type Clip,
   type ResolvedItem,
   type Track,
@@ -407,6 +409,49 @@ function stopItemDrag() {
   window.removeEventListener('pointercancel', itemCancel)
 }
 
+// ------------------------------------------------------------------ marcas de tamaño y sitio
+
+/** Las marcas que se ven de un efecto (rombos sobre su bloque). */
+function marksOf(r: ResolvedItem): BoxKeyframe[] {
+  return r.item.look ? visibleMarks(r.item.look, r.shownEndMs - r.startMs) : []
+}
+function isPickedMark(r: ResolvedItem, k: BoxKeyframe): boolean {
+  const p = tracks.pickedMark.value
+  return !!p && p.itemId === r.item.id && p.atMs === k.atMs
+}
+
+const markDrag = ref<{ itemId: string; from: number; startX: number; startMs: number; lengthMs: number; to: number; active: boolean } | null>(null)
+
+/** Un rombo: pulsarlo lleva la línea a la marca (y la deja «a mano»); arrastrarlo la mueve en el tiempo. */
+function markDown(r: ResolvedItem, k: BoxKeyframe, e: PointerEvent) {
+  if (e.button !== 0) return
+  e.stopPropagation()
+  e.preventDefault()
+  tracks.select(r.item.id)
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  markDrag.value = { itemId: r.item.id, from: k.atMs, startX: e.clientX, startMs: r.startMs, lengthMs: r.shownEndMs - r.startMs, to: k.atMs, active: false }
+}
+function markMove(e: PointerEvent) {
+  const d = markDrag.value
+  if (!d) return
+  if (!d.active && Math.abs(e.clientX - d.startX) > 4) d.active = true
+  if (!d.active) return
+  d.to = Math.round(Math.min(d.lengthMs, Math.max(0, d.from + ms(e.clientX - d.startX))))
+  tracks.previewMoveMark(d.itemId, d.from, d.to)
+}
+function markUp() {
+  const d = markDrag.value
+  markDrag.value = null
+  if (!d) return
+  if (d.active) {
+    store.commitPreview()
+    tracks.pickedMark.value = { itemId: d.itemId, atMs: d.to }
+    return
+  }
+  tracks.pickedMark.value = { itemId: d.itemId, atMs: d.from }
+  emit('seek', d.startMs + d.from)
+}
+
 // ------------------------------------------------------------------ cómo se dibuja cada elemento
 
 function blockStyle(r: ResolvedItem) {
@@ -538,6 +583,20 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
               <span v-if="overflowStyle(r)" class="overflow" :style="overflowStyle(r)!" title="Esto pasa del final del vídeo: se corta al guardar" />
               <span class="handle start" data-testid="item-handle-start" @pointerdown="itemDown(r, 'start', $event)" />
               <span class="handle end" data-testid="item-handle-end" @pointerdown="itemDown(r, 'end', $event)" />
+              <span
+                v-for="k in marksOf(r)"
+                :key="k.atMs"
+                class="mark"
+                :class="{ picked: isPickedMark(r, k) }"
+                :style="{ left: `${x(k.atMs)}px` }"
+                data-testid="item-mark"
+                :data-at-ms="k.atMs"
+                :title="`Marca de tamaño y sitio a los ${formatClock(r.startMs + k.atMs)}: pulsa para ir a ella, arrástrala para moverla`"
+                @pointerdown="markDown(r, k, $event)"
+                @pointermove="markMove"
+                @pointerup="markUp"
+                @pointercancel="markUp"
+              />
             </div>
           </div>
         </template>
@@ -999,6 +1058,31 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
   bottom: 0;
   background: repeating-linear-gradient(135deg, rgb(255 255 255 / 0.75) 0 6px, rgb(255 255 255 / 0.4) 6px 12px);
   pointer-events: auto;
+}
+.mark {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  transform: rotate(45deg);
+  border-radius: 2px;
+  background: #fff;
+  border: 2.5px solid #5b3d8a;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  cursor: ew-resize;
+  z-index: 3;
+  touch-action: none;
+}
+/* Zona para cogerlo más grande que el dibujo. */
+.mark::before {
+  content: '';
+  position: absolute;
+  inset: -7px;
+}
+.mark.picked {
+  background: #f2b632;
+  border-color: #1d2b36;
 }
 .handle {
   position: absolute;

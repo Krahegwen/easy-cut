@@ -3,6 +3,7 @@
 
 import { encoderVideoArgs, type VideoEncoder } from './encoders'
 import { effectRect, insetRect, PLAIN_BACKGROUND_HEX } from './layout'
+import { boxExprs, hasMotion } from './keyframes'
 import { afadeCurve, effectiveFadeLengths, fadeGainAt, fadeGainExpr, num, type Fades } from './motion'
 import { computeOutputSpec, even, SOUND_BITRATE_KBPS, type OutputSpec, type PresetId } from './output'
 import {
@@ -11,6 +12,7 @@ import {
   clipOutputMs,
   type Clip,
   type CoverPicture,
+  type EffectLook,
   type MediaInfo,
   type Project,
   type Speed,
@@ -569,6 +571,27 @@ export function effectRegions(planned: readonly PlannedItem[], project: Project,
 }
 
 /** Cadena de imagen de un efecto, ya escalado, colocado y desplazado a su instante dentro del tramo: deja [label]. */
+/** El aspecto de un efecto que no se mueve: con una sola marca (o todas iguales), el de esa marca. */
+function staticLook(look: EffectLook): EffectLook {
+  return look.keyframes.length > 0 ? { ...look, box: look.keyframes[0]!.box } : look
+}
+
+/**
+ * Tamaño (expresiones de ancho y alto para scale con eval=frame) de un efecto que se mueve: el de su recuadro a
+ * tamaño 1 por el tamaño de cada instante (el mismo cálculo que effectRect, sin redondear a pares).
+ */
+function motionScale(look: EffectLook, media: MediaInfo, W: number, H: number): string {
+  const one = effectRect({ ...look, box: { x: 0.5, y: 0.5, scale: 1 } }, media.width, media.height, W, H)
+  const s = boxExprs(look).scale
+  return `scale=w='max(2,${num(one.width)}*(${s}))':h='max(2,${num(one.height)}*(${s}))':eval=frame:flags=bicubic`
+}
+
+/** x e y de overlay para que el centro del efecto caiga en (x, y) del marco en cada instante (`offsetMs`: su inicio). */
+function motionPosition(look: EffectLook, offsetMs: number): string {
+  const e = boxExprs(look, 't', offsetMs)
+  return `x='main_w*(${e.x})-overlay_w/2':y='main_h*(${e.y})-overlay_h/2':eval=frame`
+}
+
 function effectChains(
   e: EffectRegion['effects'][number],
   region: EffectRegion,
@@ -595,13 +618,42 @@ function effectChains(
   } else {
     input = inputs.add(p.path, item.inMs, Math.min(item.outMs - item.inMs, lengthMs) + 500, [...alphaDecoder(p.media), '-an'])
   }
-  const rect = effectRect(look, p.media.width, p.media.height, W, H, true)
+  const rect = effectRect(staticLook(look), p.media.width, p.media.height, W, H, true)
   const fades = effectiveFadeLengths(item, lengthMs)
   const linear = linearFades(item)
   const offset = sec(((e.startFrame - region.startFrame) * 1000) / F)
   const timing = [...pre, 'setpts=PTS-STARTPTS', `fps=${F}`, `tpad=stop_mode=clone:stop=${frames}`, `trim=end_frame=${frames}`]
   const scale = `scale=${rect.width}:${rect.height}:flags=bicubic`
   const tail = [`setpts=PTS-STARTPTS+${offset}/TB`]
+  const moving = hasMotion(look)
+  if (look.mix === 'light' && moving) {
+    // «Como luz» que se mueve: escalado en cada fotograma (scale con eval=frame) y puesto con overlay sobre negro
+    // a pantalla completa en su sitio de cada instante (lo que se sale del marco, se corta), y luego blend=screen.
+    const parts = [...timing]
+    if (!linear) parts.push('format=yuv420p', fadeToBlackFilter(item, lengthMs)!)
+    parts.push('format=gbrp', motionScale(look, p.media, W, H))
+    if (linear && fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}`)
+    if (linear && fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}`)
+    return [
+      `[${input}:v:0]${parts.join(',')}[${label}src]`,
+      `color=c=black:s=${W}x${H}:r=${F},trim=end_frame=${frames},format=gbrp[${label}cv]`,
+      `[${label}cv][${label}src]overlay=${motionPosition(look, 0)}:format=gbrp:shortest=0:eof_action=pass,${tail.join(',')}[${label}]`,
+    ]
+  }
+  if (moving) {
+    // Normal que se mueve: a RGB con alfa, transparencia y suaves, y escalado en cada fotograma; el sitio lo pone
+    // overlay con x e y en función de t (effectLayerChains).
+    const parts = [...timing, 'format=gbrap']
+    if (linear) {
+      if (look.opacity < 1) parts.push(`colorchannelmixer=aa=${Number(look.opacity.toFixed(3))}`)
+      if (fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}:alpha=1`)
+      if (fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}:alpha=1`)
+    } else {
+      parts.push(...alphaCurveFilters(item, look.opacity, frames, F, label))
+    }
+    parts.push(motionScale(look, p.media, W, H))
+    return [`[${input}:v:0]${[...parts, ...tail].join(',')}[${label}]`]
+  }
   if (look.mix === 'light') {
     // «Como luz»: lo que se ve del recuadro, sobre negro a pantalla completa (el negro no cambia nada en
     // modo screen). La transparencia la pone blend (all_opacity); las suaves, fundiendo a negro.
@@ -703,8 +755,11 @@ function effectLayerChains(planned: readonly PlannedItem[], project: Project, in
       if (look.mix === 'light') {
         const opacity = look.opacity < 1 ? `:all_opacity=${Number(look.opacity.toFixed(3))}` : ''
         chains.push(`[${base}][${fx}]blend=all_mode=screen${opacity}:eof_action=pass:shortest=0[${next}]`)
+      } else if (hasMotion(look)) {
+        const offsetMs = ((e.startFrame - piece.region!.startFrame) * 1000) / spec.fps
+        chains.push(`[${base}][${fx}]overlay=${motionPosition(look, offsetMs)}:format=gbrp:eof_action=pass:shortest=0[${next}]`)
       } else {
-        const rect = effectRect(look, e.p.media.width, e.p.media.height, spec.width, spec.height, true)
+        const rect = effectRect(staticLook(look), e.p.media.width, e.p.media.height, spec.width, spec.height, true)
         chains.push(`[${base}][${fx}]overlay=x=${rect.left}:y=${rect.top}:format=gbrp:eof_action=pass:shortest=0[${next}]`)
       }
       base = next

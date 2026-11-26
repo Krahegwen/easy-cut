@@ -4,6 +4,19 @@
 
 import { computed, ref, shallowRef, watch } from 'vue'
 import {
+  addMark,
+  boxAt,
+  clearMotion as clearMotionOfLook,
+  itemLocalMs,
+  markIndexAt,
+  moveMark as moveMarkOfLook,
+  neighbourMark,
+  removeMark,
+  setBoxAt,
+  setSegmentEasing,
+  updateEffectLook,
+  type EffectBox,
+  type MotionEasing,
   addTrack as addTrackToProject,
   assetDefaults,
   baseName,
@@ -67,6 +80,11 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
   const adding = ref<string | null>(null)
   /** Dónde está la línea (el cabezal de la vista previa): «Poner aquí», partir, soltar ficheros… */
   const playheadMs = ref(0)
+  /**
+   * La marca de sitio y tamaño «a mano» (la última a la que se ha ido con ← marca / marca →, o que se ha pulsado
+   * en su pista): «Mover la marca aquí» la lleva a la línea.
+   */
+  const pickedMark = ref<{ itemId: string; atMs: number } | null>(null)
 
   const project = editor.project
   const hasTracks = computed(() => project.value.tracks.length > 0)
@@ -87,6 +105,7 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
   function select(itemId: string | null) {
     selectedItemId.value = itemId
     if (!itemId) boxEditing.value = false
+    if (pickedMark.value && pickedMark.value.itemId !== itemId) pickedMark.value = null
   }
 
   /** Lo que se hace con un proyecto nuevo que no cabe o no hay vídeo. */
@@ -342,6 +361,95 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     editor.apply((p) => setEffectLook(p, itemId, change))
   }
 
+  // ---------------------------------------------------------------- tamaño y sitio con marcas
+
+  /** El instante del elemento que corresponde a la línea (sujeto a su tramo). */
+  function localAtLine(itemId: string): number {
+    return itemLocalMs(editor.history.value.present, itemId, playheadMs.value) ?? 0
+  }
+
+  /** Lo que se ve del efecto en la línea (con marcas, el valor de ese instante). */
+  function boxAtLine(itemId: string): EffectBox | null {
+    const found = findItem(editor.project.value, itemId)
+    if (!found?.item.look) return null
+    return boxAt(found.item.look, itemLocalMs(editor.project.value, itemId, playheadMs.value) ?? 0)
+  }
+
+  /** Mientras se arrastra en «Tamaño y sitio»: el valor de ese instante (crea o actualiza su marca si las hay). */
+  function previewBoxAt(itemId: string, localMs: number, change: Partial<EffectBox>) {
+    editor.preview((p) => updateEffectLook(p, itemId, (l) => setBoxAt(l, localMs, change)))
+  }
+
+  /** Lo mismo con botón o tecla (un paso de deshacer): p. ej. «Pantalla completa». */
+  function setBoxHere(itemId: string, change: Partial<EffectBox>) {
+    const local = localAtLine(itemId)
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => setBoxAt(l, local, change)))
+  }
+
+  /** ¿Hay una marca en la línea? */
+  function markAtLine(itemId: string): boolean {
+    const found = findItem(editor.project.value, itemId)
+    return !!found?.item.look && markIndexAt(found.item.look, itemLocalMs(editor.project.value, itemId, playheadMs.value) ?? 0) >= 0
+  }
+
+  /** «Marcar aquí» o, si ya hay una marca en la línea, «Quitar esta marca». */
+  function toggleMarkHere(itemId: string) {
+    const local = localAtLine(itemId)
+    const found = findItem(editor.history.value.present, itemId)
+    if (!found?.item.look) return
+    const on = markIndexAt(found.item.look, local) >= 0
+    const first = found.item.look.keyframes.length === 0
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => (on ? removeMark(l, local) : addMark(l, local))))
+    pickedMark.value = on ? null : { itemId, atMs: local }
+    if (on) editor.showToast('Marca quitada.', { label: 'Deshacer', run: editor.undo })
+    else if (first) editor.showToast('Marcado. Ahora lleva la línea a otro momento y mueve o cambia el tamaño: viajará de una marca a otra.')
+  }
+
+  /** «Quitar el movimiento»: sin marcas, quieto como está en la línea. */
+  function clearMotion(itemId: string) {
+    const local = localAtLine(itemId)
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => clearMotionOfLook(l, local)))
+    pickedMark.value = null
+    editor.showToast('Ya no se mueve: se queda como estaba en la línea.', { label: 'Deshacer', run: editor.undo })
+  }
+
+  /** Instante del vídeo de la marca anterior o siguiente (y la deja «a mano»); null si no hay. */
+  function neighbourMarkMs(itemId: string, dir: -1 | 1): number | null {
+    const p = editor.history.value.present
+    const r = resolveTracks(p).find((x) => x.item.id === itemId)
+    if (!r?.item.look) return null
+    const k = neighbourMark(r.item.look, playheadMs.value - r.startMs, dir, r.shownEndMs - r.startMs)
+    if (!k) return null
+    pickedMark.value = { itemId, atMs: k.atMs }
+    return r.startMs + k.atMs
+  }
+
+  /** «Mover la marca aquí»: la marca «a mano» pasa a la línea. */
+  function movePickedMarkHere(itemId: string): boolean {
+    const picked = pickedMark.value
+    if (!picked || picked.itemId !== itemId) return false
+    const local = localAtLine(itemId)
+    const before = editor.history.value.present
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => moveMarkOfLook(l, picked.atMs, local)))
+    if (editor.history.value.present === before) {
+      editor.showToast('Ahí no puede ir: hay otra marca muy cerca.')
+      return false
+    }
+    pickedMark.value = { itemId, atMs: local }
+    return true
+  }
+
+  /** Mientras se arrastra una marca en su pista; entra en el historial al soltar (commitPreview). */
+  function previewMoveMark(itemId: string, fromMs: number, toMs: number) {
+    editor.preview((p) => updateEffectLook(p, itemId, (l) => moveMarkOfLook(l, fromMs, toMs)))
+  }
+
+  /** «Cómo viaja»: la curva del tramo de la línea. */
+  function setTravelEasing(itemId: string, easing: MotionEasing) {
+    const local = localAtLine(itemId)
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => setSegmentEasing(l, local, easing)))
+  }
+
   // ---------------------------------------------------------------- pistas
 
   function setTrackMuted(trackId: string, muted: boolean) {
@@ -499,6 +607,18 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     setFade,
     setRepeat,
     setLook,
+    pickedMark,
+    localAtLine,
+    boxAtLine,
+    previewBoxAt,
+    setBoxHere,
+    markAtLine,
+    toggleMarkHere,
+    clearMotion,
+    neighbourMarkMs,
+    movePickedMarkHere,
+    previewMoveMark,
+    setTravelEasing,
     setTrackMuted,
     setTrackHidden,
     setMainMuted,

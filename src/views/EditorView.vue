@@ -15,7 +15,7 @@ import ItemBar from '../components/tracks/ItemBar.vue'
 import LibraryPanel from '../components/tracks/LibraryPanel.vue'
 import TracksView from '../components/tracks/TracksView.vue'
 import type { PlayerTime } from '../components/player-types'
-import { clipDurationMs, clipStartTimes, formatDuration, isTrackMediaPath, removeCover, resolveTracks, setAspect, setClipFade, type AspectRatio, type Easing } from '../domain'
+import { clipDurationMs, clipStartTimes, formatDuration, isTrackMediaPath, neighbourMark, removeCover, resolveTracks, setAspect, setClipFade, type AspectRatio, type Easing } from '../domain'
 import FadePicker from '../components/FadePicker.vue'
 import { LAYER_PRIORITY } from '../lib/shortcuts'
 import KeyHint from '../components/KeyHint.vue'
@@ -167,6 +167,20 @@ useShortcuts({
   shortcuts: () => [{ id: 'clip-fades-close', keys: ['Escape'], label: 'Esc', description: 'cerrar', run: () => (clipFadesOpen.value = false) }],
 })
 
+// ------------------------------------------------------------------ marcas de tamaño y sitio
+
+function goMark(itemId: string, dir: -1 | 1) {
+  const ms = tracks.neighbourMarkMs(itemId, dir)
+  if (ms !== null) seek(ms)
+}
+/** ¿Hay una marca antes (−1) o después (+1) de la línea en el efecto elegido? */
+function hasMarks(dir: -1 | 1): boolean {
+  const r = itemTimes.value
+  const look = r?.item.look
+  if (!r || !look) return false
+  return !!neighbourMark(look, tracks.playheadMs.value - r.startMs, dir, r.shownEndMs - r.startMs)
+}
+
 // ------------------------------------------------------------------ copiar y pegar
 
 const canFix = computed(() => !!clip.value && !clipMissing.value)
@@ -279,6 +293,15 @@ useShortcuts({
           { id: 'item-repeat', keys: ['r'], label: 'R', description: 'repetir el elegido (o dejar de repetirlo)', run: () => tracks.setRepeat(it.item.id, !it.item.repeat), enabled: !it.item.still },
           { id: 'item-up', keys: ['ArrowUp'], label: '↑', description: 'pasar el elegido a la pista de arriba', run: () => tracks.moveToNeighbourTrack(it.item.id, -1) },
           { id: 'item-down', keys: ['ArrowDown'], label: '↓', description: 'pasar el elegido a la pista de abajo', run: () => tracks.moveToNeighbourTrack(it.item.id, 1) },
+          // Marcas de tamaño y sitio (solo en los efectos).
+          ...(it.track.kind === 'effect'
+            ? [
+                { id: 'mark-toggle', keys: ['k'], label: 'K', description: 'marcar el tamaño y sitio en la línea (o quitar la marca que hay ahí)', run: () => tracks.toggleMarkHere(it.item.id) },
+                { id: 'mark-prev', keys: ['j'], label: 'J', description: 'ir a la marca anterior del elegido', run: () => goMark(it.item.id, -1), enabled: hasMarks(-1) },
+                { id: 'mark-next', keys: ['l'], label: 'L', description: 'ir a la marca siguiente del elegido', run: () => goMark(it.item.id, 1), enabled: hasMarks(1) },
+                { id: 'mark-move', keys: ['n'], label: 'N', description: 'llevar la marca elegida (en amarillo) a la línea', run: () => tracks.movePickedMarkHere(it.item.id), enabled: tracks.pickedMark.value?.itemId === it.item.id },
+              ]
+            : []),
         ]
       : []
     // Sin sonido ni efecto elegido, E, T y P actúan sobre el trozo elegido (la barra de abajo dice cuál).
@@ -460,7 +483,7 @@ onBeforeUnmount(() => {
 
       <footer class="strip-area">
         <!-- Con la biblioteca abierta, abajo solo las pistas: lo puesto queda elegido para después. -->
-        <ItemBar v-if="item && !tracks.libraryOpen.value" :playhead-ms="tracks.playheadMs.value" />
+        <ItemBar v-if="item && !tracks.libraryOpen.value" :playhead-ms="tracks.playheadMs.value" @seek="seek" />
         <div v-else-if="clip && !tracks.libraryOpen.value" class="clip-actions" data-testid="clip-panel">
           <h2>
             Trozo {{ index + 1 }} <span class="muted">de {{ count }}</span>

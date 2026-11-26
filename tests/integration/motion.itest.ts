@@ -10,7 +10,9 @@ import { promisify } from 'node:util'
 import { beforeAll, describe, expect, it } from 'vitest'
 import {
   addClip,
+  addMark,
   addTrack,
+  boxAt,
   buildExportCommand,
   buildProbeArgs,
   createClip,
@@ -21,9 +23,12 @@ import {
   fadeGainAt,
   insertItem,
   parseProbeOutput,
+  setBoxAt,
   setClipFade,
   setItemFade,
   setMuted,
+  setSegmentEasing,
+  updateEffectLook,
   type MediaInfo,
   type NewItem,
   type Project,
@@ -220,6 +225,82 @@ describe.sequential('aparecer y desaparecer con curva (ffmpeg real)', () => {
     }
     console.table(rows)
     report.push({ caso: 'efectos', ms, rows })
+  })
+
+  // ------------------------------------------------------------------ B. Movimiento con marcas
+
+  /** Proyecto con una pegatina roja (contain) que viaja con tres marcas, y un cuadrado «como luz» que también. */
+  function movingProject(withMotion: boolean): Project {
+    let p = createProject('16:9')
+    p = addClip(p, createClip(media.get(f.base)!, 'b'))
+    p = place(p, item('rojo', 'effect', f.red, { defaults: { durationMs: 4000, look: { fit: 'contain', box: { x: 0.2, y: 0.3, scale: 0.2 } } } }), 'effect', 1000, 'Encima')
+    p = place(p, item('luz', 'effect', f.light, { defaults: { look: { mix: 'light', box: { x: 0.3, y: 0.5, scale: 0.5 } } } }), 'effect', 5500, 'Luz')
+    if (!withMotion) return p
+    p = updateEffectLook(p, 'rojo', (l) => {
+      let look = addMark(l, 500)
+      look = setBoxAt(look, 2500, { x: 0.75, y: 0.7, scale: 0.4 })
+      look = setBoxAt(look, 3500, { x: 0.5, y: 0.5, scale: 0.3 })
+      return setSegmentEasing(look, 3200, 'ease-in')
+    })
+    p = updateEffectLook(p, 'luz', (l) => setBoxAt(addMark(l, 500), 3000, { x: 0.7, y: 0.5, scale: 0.25 }))
+    return p
+  }
+
+  /** Recuadro (fracciones del marco) de lo que pasa `test` en el fotograma de `ms`, a 480×270. */
+  async function blob(path: string, ms: number, test: (r: number, g: number, b: number) => boolean) {
+    const { stdout } = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', (ms / 1000).toFixed(3), '-i', path, '-frames:v', '1', '-vf', 'scale=480:270:flags=area,format=rgb24', '-f', 'rawvideo', '-'], { ...BIG, encoding: 'buffer' })
+    const b = stdout as unknown as Buffer
+    let minX = 480
+    let maxX = -1
+    let minY = 270
+    let maxY = -1
+    for (let y = 0; y < 270; y++) {
+      for (let x = 0; x < 480; x++) {
+        const i = (y * 480 + x) * 3
+        if (!test(b[i]!, b[i + 1]!, b[i + 2]!)) continue
+        minX = Math.min(minX, x)
+        maxX = Math.max(maxX, x)
+        minY = Math.min(minY, y)
+        maxY = Math.max(maxY, y)
+      }
+    }
+    if (maxX < 0) return null
+    return { cx: (minX + maxX + 1) / 2 / 480, cy: (minY + maxY + 1) / 2 / 270, w: (maxX - minX + 1) / 480, h: (maxY - minY + 1) / 270 }
+  }
+
+  it('una pegatina con marcas viaja por el fichero como en la vista previa (±2 % del marco), y «como luz» también', async () => {
+    const still = await exportVideo('sin-movimiento', movingProject(false))
+    const p = movingProject(true)
+    const moved = await exportVideo('con-movimiento', p)
+    const red = p.tracks.find((t) => t.id === 'Encima')!.items[0]!
+    const light = p.tracks.find((t) => t.id === 'Luz')!.items[0]!
+    const rows: Record<string, unknown>[] = []
+    let worst = 0
+    for (const local of [200, 800, 1300, 1700, 2400, 2900, 3300, 3700]) {
+      const frameLocal = (Math.floor(((1000 + local) * 30) / 1000) * 1000) / 30 - 1000
+      const want = boxAt(red.look!, frameLocal)
+      // La pegatina es un cuadrado: su lado es el alto del recuadro (contain en 16:9) por el tamaño.
+      const got = await blob(moved.out, 1000 + local, (r, g, b) => r > 180 && g < 80 && b < 80)
+      expect(got, `pegatina a los ${local} ms`).not.toBeNull()
+      const err = Math.max(Math.abs(got!.cx - want.x), Math.abs(got!.cy - want.y), Math.abs(got!.h - want.scale))
+      worst = Math.max(worst, err)
+      rows.push({ caso: 'pegatina', local, x: got!.cx.toFixed(3), wantX: want.x.toFixed(3), y: got!.cy.toFixed(3), wantY: want.y.toFixed(3), size: got!.h.toFixed(3), wantSize: want.scale.toFixed(3) })
+      expect(err, `pegatina a los ${local} ms`).toBeLessThanOrEqual(0.02)
+    }
+    for (const local of [300, 1200, 1900, 2600, 3400]) {
+      const frameLocal = (Math.floor(((5500 + local) * 30) / 1000) * 1000) / 30 - 5500
+      const want = boxAt(light.look!, frameLocal)
+      // El cuadrado blanco ocupa 400/1080 del alto del efecto (cover a 1920×1080): su lado, por el tamaño.
+      const got = await blob(moved.out, 5500 + local, (r, g, b) => r > 200 && g > 200 && b > 200)
+      expect(got, `luz a los ${local} ms`).not.toBeNull()
+      const err = Math.max(Math.abs(got!.cx - want.x), Math.abs(got!.cy - want.y), Math.abs(got!.h - (want.scale * 400) / 1080))
+      worst = Math.max(worst, err)
+      rows.push({ caso: 'luz', local, x: got!.cx.toFixed(3), wantX: want.x.toFixed(3), y: got!.cy.toFixed(3), wantY: want.y.toFixed(3), size: got!.h.toFixed(3), wantSize: ((want.scale * 400) / 1080).toFixed(3) })
+      expect(err, `luz a los ${local} ms`).toBeLessThanOrEqual(0.02)
+    }
+    console.table(rows)
+    console.log('Coste de guardar (10 s a 1080p, libx264):', { sinMovimiento: still.ms, conMovimiento: moved.ms, peorError: worst.toFixed(4) })
+    report.push({ caso: 'movimiento', sinMovimientoMs: still.ms, conMovimientoMs: moved.ms, peorError: worst, rows })
   })
 
   it('resumen', () => {
