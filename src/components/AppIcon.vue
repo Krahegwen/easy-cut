@@ -90,6 +90,8 @@ const ICONS: Record<IconName, string> = {
   heart: '<path d="M12 20s-7.5-4.6-7.5-10A4.3 4.3 0 0 1 12 7.3 4.3 4.3 0 0 1 19.5 10c0 5.4-7.5 10-7.5 10z"/>',
   whoosh: '<path d="M3 8h11a3 3 0 1 0-3-3M3 12h15a3 3 0 1 1-3 3M3 16h7"/>',
   laugh: '<circle cx="12" cy="12" r="8.5"/><path d="M8 9.5l1.6 1.2L8 11.9M16 9.5l-1.6 1.2 1.6 1.2"/><path d="M7.5 14h9a4.5 4.5 0 0 1-9 0z"/>',
+  headphones: '<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3.5" y="14" width="4" height="6" rx="1.5"/><rect x="16.5" y="14" width="4" height="6" rx="1.5"/>',
+  'add-row': '<rect x="3" y="5" width="18" height="5" rx="1.2"/><path d="M12 13.5v7M8.5 17h7"/>',
   drum: '<ellipse cx="12" cy="9" rx="7.5" ry="3"/><path d="M4.5 9v6.5c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V9"/><path d="M8 12.2v6M16 12.2v6M14.5 2.5 18 6.5M9.5 2.5 6 6.5"/>',
   up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
   down: '<path d="M12 5v14M6 13l6 6 6-6"/>',

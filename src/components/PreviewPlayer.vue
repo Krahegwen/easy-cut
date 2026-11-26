@@ -907,4 +907,22 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
   min-width: 110px;
   color: rgb(255 255 255 / 0.85);
 }
+/* En «Tu vídeo» la vista previa se puede encoger (divisor): baja, los controles ocupan menos alto. */
+@container preview (max-height: 340px) {
+  .stage {
+    margin: 8px 10px 0;
+  }
+  .controls {
+    gap: 10px;
+    padding: 6px 12px 8px;
+  }
+  .play {
+    min-height: 42px;
+    min-width: 132px;
+    font-size: 16px;
+  }
+  .clock {
+    font-size: 16px;
+  }
+}
 </style>

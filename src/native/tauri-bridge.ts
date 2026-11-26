@@ -451,11 +451,13 @@ export function createTauriBridge(): NativeBridge {
       void getCurrentWebview()
         .onDragDropEvent((event) => {
           const payload = event.payload
-          if (payload.type === 'enter') handlers.onHover?.(true)
+          // Tauri da la posición en píxeles físicos: a píxeles CSS, para compararla con el DOM.
+          const at = (p: { x: number; y: number }) => ({ x: p.x / window.devicePixelRatio, y: p.y / window.devicePixelRatio })
+          if (payload.type === 'enter' || payload.type === 'over') handlers.onHover?.(true, at(payload.position))
           else if (payload.type === 'leave') handlers.onHover?.(false)
           else if (payload.type === 'drop') {
             handlers.onHover?.(false)
-            handlers.onDrop(payload.paths)
+            handlers.onDrop(payload.paths, at(payload.position))
           }
         })
         .then((fn) => {

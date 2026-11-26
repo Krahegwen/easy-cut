@@ -1,14 +1,18 @@
 <script setup lang="ts">
-// Vista de pistas: regla de tiempo, filas proporcionales al tiempo y el cabezal que las cruza todas. Arriba,
-// las pistas de efectos (la de más arriba se ve encima); en medio, la fila «Vídeo» con los trozos (se eligen y
-// se reordenan arrastrando, como en la tira); debajo, las de sonido con su forma de onda. Los elementos se
-// arrastran (también a otra pista del mismo tipo), se recortan o alargan por sus asas y se pegan con imanes
-// (principio y final de los trozos, el cabezal y los demás elementos) dibujando una línea guía.
+// Vista de pistas (la única de «Tu vídeo»): regla de tiempo, filas proporcionales al tiempo y el cabezal que
+// las cruza todas. Arriba, las pistas de efectos (la de más arriba se ve encima); en medio, la fila «Vídeo» con
+// los trozos (se eligen, se reordenan arrastrando y se recortan o alargan por sus asas; cada uno con sus
+// indicadores) y, al final, «Añadir vídeos o sonidos» y «Grabarme»; debajo, las de sonido con su forma de onda,
+// y al pie, los botones para crear pistas nuevas. Los elementos se arrastran (también a otra pista del mismo
+// tipo), se recortan o alargan por sus asas y se pegan con imanes (principio y final de los trozos, el cabezal
+// y los demás elementos) dibujando una línea guía. Con muchas pistas, se desplaza hacia abajo.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  attachedCounts,
   clipInOut,
   formatClock,
   formatDuration,
+  formatDurationChange,
   itemLoopMs,
   projectTiming,
   resolveTracks,
@@ -19,6 +23,7 @@ import {
   type ResolvedItem,
   type Track,
 } from '../../domain'
+import { reapplyPauses } from '../../lib/pauses'
 import { library, store, tracks } from '../../store'
 import AppIcon from '../AppIcon.vue'
 import KeyHint from '../KeyHint.vue'
@@ -26,7 +31,7 @@ import ThumbImage from '../ThumbImage.vue'
 import TrackHeader from './TrackHeader.vue'
 
 const props = defineProps<{ playheadMs: number; playing: boolean }>()
-const emit = defineEmits<{ seek: [ms: number] }>()
+const emit = defineEmits<{ seek: [ms: number]; add: []; record: [] }>()
 
 const project = computed(() => store.project.value)
 const timing = computed(() => projectTiming(project.value))
@@ -51,11 +56,18 @@ const HEADER = computed(() => (viewWidth.value < 1000 ? 168 : 196))
 /** Píxeles por segundo. null = «Ver todo» (se ajusta al ancho). */
 const zoom = ref<number | null>(null)
 const ZOOMS = [2, 3, 5, 8, 12, 20, 32, 50, 80, 128, 200]
-const fitPx = computed(() => Math.max(0.5, (viewWidth.value - HEADER.value - 40) / (totalMs.value / 1000)))
-const pxPerSec = computed(() => zoom.value ?? fitPx.value)
+/**
+ * Sitio al final de la fila «Vídeo» para «Añadir vídeos o sonidos» y «Grabarme»: con «Ver todo» se ven justo
+ * detrás del último trozo; con zoom, se quedan pegados al borde derecho de la vista.
+ */
+const END_ROOM = 300
+const fitPx = computed(() => Math.max(0.5, (viewWidth.value - HEADER.value - END_ROOM - 12) / (totalMs.value / 1000)))
+/** Escala congelada mientras se recorta un trozo (con «Ver todo», la regla cambiaría bajo el puntero). */
+const frozenPx = ref<number | null>(null)
+const pxPerSec = computed(() => zoom.value ?? frozenPx.value ?? fitPx.value)
 const x = (ms: number) => (ms / 1000) * pxPerSec.value
 const ms = (px: number) => (px / pxPerSec.value) * 1000
-const contentWidth = computed(() => Math.max(viewWidth.value - HEADER.value, x(totalMs.value) + 40))
+const contentWidth = computed(() => Math.max(viewWidth.value - HEADER.value, x(totalMs.value) + END_ROOM + 12))
 
 function zoomBy(direction: 1 | -1, anchorMs = props.playheadMs) {
   const current = pxPerSec.value
@@ -163,6 +175,48 @@ function clipThumbStyle(c: Clip) {
   return url ? { backgroundImage: `url("${url}")` } : {}
 }
 
+type ClipPicture = 'own' | 'sound' | 'cover' | 'lost' | 'cover-lost'
+/** Lo que enseña el bloque: su imagen, la del vídeo de encima, «solo se oye» o el aviso de original perdido. */
+function clipPicture(c: Clip): ClipPicture {
+  if (store.missing.value[c.sourcePath]) return 'lost'
+  if (c.picture.kind === 'cover') return store.coverMissing(c) ? 'cover-lost' : 'cover'
+  return c.picture.kind === 'none' || !c.sourceHasVideo ? 'sound' : 'own'
+}
+type BadgeId = 'speed' | 'mute' | 'pauses' | 'cover' | 'sound' | 'attached'
+interface Badge {
+  id: BadgeId
+  icon: 'speed' | 'mute' | 'pauses' | 'cover-video' | 'wave' | 'tracks'
+  text: string
+}
+const attached = computed(() => attachedCounts(project.value))
+/** Indicadores de cada trozo (lo que decían sus tarjetas): velocidad, sin sonido, sin pausas, imagen, pegados. */
+function clipBadges(c: Clip): Badge[] {
+  const out: Badge[] = []
+  if (c.speed !== 1) out.push({ id: 'speed', icon: 'speed', text: c.speed < 1 ? 'Despacio' : c.speed === 4 ? 'Muy rápido' : 'Rápido' })
+  if (c.muted || c.speed === 4) out.push({ id: 'mute', icon: 'mute', text: 'Sin sonido' })
+  if (c.segments.length > 1) out.push({ id: 'pauses', icon: 'pauses', text: 'Sin pausas' })
+  const pic = clipPicture(c)
+  if (pic === 'cover') out.push({ id: 'cover', icon: 'cover-video', text: 'Vídeo encima' })
+  if (pic === 'sound') out.push({ id: 'sound', icon: 'wave', text: 'Solo se oye' })
+  const a = attached.value.get(c.id)
+  if (a) {
+    const parts: string[] = []
+    if (a.sounds) parts.push(a.sounds === 1 ? '1 sonido' : `${a.sounds} sonidos`)
+    if (a.effects) parts.push(a.effects === 1 ? '1 efecto' : `${a.effects} efectos`)
+    out.push({ id: 'attached', icon: 'tracks', text: `Lleva pegado ${parts.join(' y ')}` })
+  }
+  return out
+}
+function lostText(c: Clip): string | null {
+  const pic = clipPicture(c)
+  return pic === 'lost' ? 'No encuentro este vídeo' : pic === 'cover-lost' ? 'No encuentro el vídeo de encima' : null
+}
+/** Nombre accesible (y lo que leen las pruebas): número, duración, aviso e indicadores. */
+function clipLabel(c: Clip, i: number): string {
+  const extra = [lostText(c), ...clipBadges(c).map((b) => b.text)].filter((t): t is string => !!t).map((t) => t.toLowerCase())
+  return `Trozo ${i + 1}, dura ${formatDuration(timing.value.lengths[i]!)}${extra.length ? `: ${extra.join(', ')}` : ''}`
+}
+
 const clipDrag = ref<{ id: string; startX: number; x: number; active: boolean; target: number } | null>(null)
 const clipBlocks = ref<HTMLElement | null>(null)
 
@@ -207,6 +261,61 @@ function clipCancel() {
   window.removeEventListener('pointerup', clipUp)
   window.removeEventListener('pointercancel', clipCancel)
 }
+// ------------------------------------------------------------------ fila «Vídeo»: recortar por las asas
+
+/**
+ * Tirar del asa del principio o del final de un trozo lo acorta o lo alarga (hasta donde dé el original); los
+ * siguientes se recolocan. Se ve al momento, con el texto de cuánto duran el trozo y el vídeo, y entra en el
+ * historial al soltar (un solo paso). Con pausas quitadas, se vuelven a quitar en lo que se alarga.
+ */
+const clipTrim = ref<{ id: string; edge: 'start' | 'end'; startX: number; active: boolean; beforeClipMs: number; beforeTotalMs: number } | null>(null)
+
+function clipHandleDown(c: Clip, edge: 'start' | 'end', e: PointerEvent) {
+  if (e.button !== 0) return
+  e.stopPropagation()
+  e.preventDefault()
+  tracks.select(null)
+  store.select(c.id)
+  const i = project.value.clips.indexOf(c)
+  if (zoom.value === null) frozenPx.value = fitPx.value
+  clipTrim.value = { id: c.id, edge, startX: e.clientX, active: false, beforeClipMs: timing.value.lengths[i] ?? 0, beforeTotalMs: timing.value.totalMs }
+  window.addEventListener('pointermove', clipTrimMove)
+  window.addEventListener('pointerup', clipTrimUp)
+  window.addEventListener('pointercancel', clipTrimCancel)
+}
+function clipTrimMove(e: PointerEvent) {
+  const t = clipTrim.value
+  if (!t) return
+  if (!t.active && Math.abs(e.clientX - t.startX) > 3) t.active = true
+  if (!t.active) return
+  const id = t.id
+  tracks.previewClipTrim(id, t.edge, Math.round(ms(e.clientX - t.startX)), (p) => reapplyPauses(p, id))
+}
+function clipTrimUp() {
+  const t = clipTrim.value
+  stopClipTrim()
+  if (t?.active) store.commitPreview()
+}
+function clipTrimCancel() {
+  stopClipTrim()
+  store.cancelPreview()
+}
+function stopClipTrim() {
+  clipTrim.value = null
+  frozenPx.value = null
+  window.removeEventListener('pointermove', clipTrimMove)
+  window.removeEventListener('pointerup', clipTrimUp)
+  window.removeEventListener('pointercancel', clipTrimCancel)
+}
+/** «Trozo 2: 10 s → 8 s · Vídeo: 36 s → 34 s» mientras se recorta. */
+const trimLive = computed(() => {
+  const t = clipTrim.value
+  if (!t?.active) return null
+  const i = project.value.clips.findIndex((c) => c.id === t.id)
+  if (i < 0) return null
+  return `Trozo ${i + 1}: ${formatDurationChange(t.beforeClipMs, timing.value.lengths[i]!)} · Vídeo: ${formatDurationChange(t.beforeTotalMs, timing.value.totalMs)}`
+})
+
 /** Dónde se dibuja la marca de «aquí caerá» al reordenar (px desde el principio). */
 const clipDropX = computed(() => {
   const d = clipDrag.value
@@ -359,6 +468,7 @@ onBeforeUnmount(() => {
   observer?.disconnect()
   stopItemDrag()
   clipCancel()
+  stopClipTrim()
 })
 
 defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
@@ -370,6 +480,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
     data-testid="tracks-view"
     :data-px-per-sec="Math.round(pxPerSec * 100) / 100"
     :data-drag-render-ms="lastDragRenderMs"
+    :data-view-width="viewWidth"
     :style="{ '--header': `${HEADER}px` }"
   >
     <div ref="scroller" class="scroller" data-testid="tracks-scroller" @wheel="onWheel">
@@ -428,26 +539,56 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
         </template>
 
         <!-- Fila «Vídeo»: los trozos -->
-        <TrackHeader main />
-        <div ref="clipBlocks" class="row video-row" :class="{ off: project.mainMuted }" data-testid="video-row">
+        <TrackHeader main class="video-sticky" />
+        <div ref="clipBlocks" class="row video-row" :class="{ off: project.mainMuted, empty: project.clips.length === 0 }" data-testid="video-row">
           <button
             v-for="(c, i) in project.clips"
             :key="c.id"
             class="clip-block"
-            :class="{ selected: c.id === store.selectedClipId.value && !tracks.selectedItemId.value, missing: !!store.missing.value[c.sourcePath], dragging: clipDrag?.active && clipDrag.id === c.id }"
+            :class="{
+              selected: c.id === store.selectedClipId.value && !tracks.selectedItemId.value,
+              missing: clipPicture(c) === 'lost' || clipPicture(c) === 'cover-lost',
+              dragging: clipDrag?.active && clipDrag.id === c.id,
+              trimming: clipTrim?.active && clipTrim.id === c.id,
+              narrow: x(timing.lengths[i]!) < 64,
+            }"
             :style="{ left: `${x(timing.starts[i]!)}px`, width: `${Math.max(6, x(timing.lengths[i]!))}px` }"
             type="button"
             :data-clip-id="c.id"
             :data-testid="`clip-block-${i + 1}`"
-            :aria-label="`Trozo ${i + 1}, dura ${formatDuration(timing.lengths[i]!)}`"
+            :data-picture="clipPicture(c)"
+            :data-badges="clipBadges(c).map((b) => b.id).join(' ')"
+            :aria-label="clipLabel(c, i)"
+            :title="clipLabel(c, i)"
             @pointerdown="clipDown(c, $event)"
           >
             <span class="clip-thumb" :style="clipThumbStyle(c)">
-              <AppIcon v-if="!clipShowsThumb(c)" :name="store.missing.value[c.sourcePath] ? 'warning' : 'wave'" :size="22" />
+              <AppIcon v-if="!clipShowsThumb(c)" :name="lostText(c) ? 'warning' : 'wave'" :size="22" />
             </span>
             <span class="clip-number">{{ i + 1 }}</span>
+            <span v-if="lostText(c)" class="clip-lost" data-testid="clip-lost">{{ lostText(c) }}</span>
+            <span class="clip-badges" aria-hidden="true">
+              <span v-for="b in clipBadges(c)" :key="b.id" class="clip-badge" :class="`b-${b.id}`" :title="b.text"><AppIcon :name="b.icon" :size="14" /></span>
+            </span>
+            <span class="clip-duration" data-testid="clip-duration">{{ formatDuration(timing.lengths[i]!) }}</span>
+            <span class="clip-handle start" data-testid="clip-handle-start" title="Tira para que empiece antes o después" @pointerdown="clipHandleDown(c, 'start', $event)" />
+            <span class="clip-handle end" data-testid="clip-handle-end" title="Tira para que termine antes o después" @pointerdown="clipHandleDown(c, 'end', $event)" />
           </button>
           <span v-if="clipDropX !== null" class="drop-mark" :style="{ left: `${clipDropX}px` }" />
+          <!-- Al final de la fila (o, con zoom, pegados al borde derecho): lo que eran las tarjetas del final. -->
+          <div class="row-end" :style="{ marginLeft: `${x(project.clips.length ? timing.totalMs : 0) + 8}px` }" data-testid="video-row-end">
+            <button class="end-btn add" type="button" data-testid="add-more" @click="emit('add')">
+              <AppIcon name="plus" :size="22" />
+              <span class="end-text">Añadir vídeos o sonidos</span>
+            </button>
+            <button class="end-btn record" type="button" data-testid="record-more" @click="emit('record')">
+              <AppIcon name="camera" :size="22" />
+              <span class="end-text">Grabarme</span>
+            </button>
+            <p v-if="project.clips.length === 0" class="empty-invite" data-testid="empty-invite">
+              Tu vídeo está vacío: añade el primer vídeo o sonido, o grábate. También puedes soltarlos aquí.
+            </p>
+          </div>
         </div>
 
         <!-- Pistas de sonido -->
@@ -482,6 +623,21 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
           </div>
         </template>
 
+        <!-- Pistas nuevas a mano (sin límite) y cómo pasar algo de una pista a otra -->
+        <div class="add-row" data-testid="add-track-row">
+          <div class="add-row-inner" :style="{ width: `${viewWidth - 2}px` }">
+            <button class="add-track" type="button" :disabled="project.clips.length === 0" data-testid="add-sound-track" @click="tracks.addTrack('sound')">
+              <AppIcon name="add-row" :size="18" />
+              Pista de sonido
+            </button>
+            <button class="add-track fx" type="button" :disabled="project.clips.length === 0" data-testid="add-effect-track" @click="tracks.addTrack('effect')">
+              <AppIcon name="add-row" :size="18" />
+              Pista de efectos
+            </button>
+            <span class="add-hint muted">Para pasar un sonido o un efecto a otra pista, arrástralo hasta ella (o elígelo y pulsa ↑ o ↓).</span>
+          </div>
+        </div>
+
         <!-- Cabezal, guía de los imanes y el final del vídeo, sobre todas las filas -->
         <div class="overlay-col">
           <span class="end-shade" :style="{ left: `${x(totalMs)}px` }" />
@@ -490,26 +646,27 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
         </div>
       </div>
     </div>
+    <div v-if="trimLive" class="trim-live" data-testid="clip-trim-live" role="status">{{ trimLive }}</div>
   </section>
 </template>
 
 <style scoped>
 .tracks-view {
-  --row: 46px;
-  --video-row: 56px;
+  --row: 50px;
+  --video-row: 64px;
   --ruler: 32px;
+  --add-row: 40px;
   position: relative;
-  flex: 0 1 auto;
-  /* Al menos la regla, la fila «Vídeo» y una pista: el resto se desplaza. */
-  min-height: calc(var(--ruler) + var(--video-row) + var(--row) + 14px);
+  /* Ocupa todo el alto que deja el divisor; con muchas pistas, se desplaza (la regla y las cabeceras, fijas). */
+  flex: 1 1 auto;
+  min-height: calc(var(--ruler) + var(--video-row) + 14px);
   display: flex;
   flex-direction: column;
 }
 .scroller {
   overflow: auto;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-height: 0;
-  max-height: 330px;
   scrollbar-width: thin;
   border-top: 1px solid var(--border);
   background: var(--surface-2);
@@ -524,7 +681,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
   position: sticky;
   left: 0;
   top: 0;
-  z-index: 6;
+  z-index: 9; /* por encima de las cabeceras, que pasan por debajo al desplazar */
   height: var(--ruler);
   display: flex;
   align-items: center;
@@ -605,9 +762,136 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
   opacity: 0.4;
   filter: grayscale(0.7);
 }
+/*
+ * La fila «Vídeo» (y su cabecera) nunca se sale de la vista al desplazar hacia abajo con muchas pistas: se
+ * queda pegada bajo la regla o encima del pie. El pie (pistas nuevas), siempre abajo.
+ */
 .video-row {
+  position: sticky;
+  top: var(--ruler);
+  bottom: var(--add-row);
+  z-index: 3;
   height: var(--video-row);
   background: #eef1f4;
+  display: flex;
+  align-items: center;
+}
+.grid .video-sticky {
+  top: var(--ruler);
+  bottom: var(--add-row);
+  z-index: 7;
+}
+/* «Añadir vídeos o sonidos» y «Grabarme», detrás del último trozo; con zoom, pegados al borde derecho. */
+.row-end {
+  position: sticky;
+  right: 8px;
+  z-index: 3;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.end-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: calc(var(--video-row) - 12px);
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 2px dashed var(--border-strong);
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 650;
+  font-size: 15px;
+  line-height: 1.15;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+}
+.end-btn.add .end-text {
+  width: 104px;
+  white-space: normal;
+}
+.end-btn:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.empty-invite {
+  max-width: 520px;
+  margin-left: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--text-muted);
+}
+.add-row {
+  position: sticky;
+  bottom: 0;
+  z-index: 7;
+  grid-column: 1 / -1;
+  height: var(--add-row);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.add-row-inner {
+  position: sticky;
+  left: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  overflow: hidden;
+}
+.add-track {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: calc(var(--add-row) - 10px);
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1.5px solid #3c8f9b;
+  background: var(--surface);
+  color: #1f6670;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.add-track.fx {
+  border-color: #7b56b0;
+  color: #5b3590;
+}
+.add-track:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.add-track:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.add-hint {
+  min-width: 0;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trim-live {
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  padding: 3px 12px;
+  border-radius: 8px;
+  background: var(--text);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 650;
+  white-space: nowrap;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
 }
 .item {
   position: absolute;
@@ -761,6 +1045,105 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
 .clip-block.dragging {
   opacity: 0.45;
 }
+.clip-block.trimming {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.clip-lost {
+  position: absolute;
+  left: 44px;
+  right: 14px;
+  top: 6px;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.15;
+  color: var(--warn);
+  text-align: left;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  pointer-events: none;
+}
+.clip-badges {
+  position: absolute;
+  right: 13px;
+  top: 4px;
+  display: flex;
+  gap: 2px;
+  pointer-events: none;
+}
+.clip-badge {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 0.94);
+  color: var(--accent-hover);
+}
+.clip-badge.b-attached,
+.clip-badge.b-cover {
+  color: #5b3590;
+}
+.clip-duration {
+  position: absolute;
+  left: 13px;
+  bottom: 4px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 0.72);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 19px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.clip-block.missing .clip-badges,
+.clip-block.narrow .clip-badges,
+.clip-block.narrow .clip-lost {
+  display: none;
+}
+/* Asas para recortar o alargar el trozo desde las pistas. */
+.clip-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  z-index: 2;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.clip-handle.start {
+  left: 0;
+}
+.clip-handle.end {
+  right: 0;
+}
+.clip-handle::after {
+  content: '';
+  position: absolute;
+  top: 30%;
+  bottom: 30%;
+  left: 4px;
+  width: 4px;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.55);
+}
+.clip-block.selected .clip-handle::after,
+.clip-block:hover .clip-handle::after,
+.clip-block.trimming .clip-handle::after {
+  background: var(--accent);
+  box-shadow: 0 0 0 1.5px #fff;
+}
+.clip-block.narrow .clip-handle {
+  width: 8px;
+}
+.clip-block.narrow .clip-handle::after {
+  left: 2px;
+}
 .clip-thumb {
   position: absolute;
   inset: 0;
@@ -775,7 +1158,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
 }
 .clip-number {
   position: absolute;
-  left: 4px;
+  left: 13px;
   top: 4px;
   min-width: 24px;
   height: 24px;
@@ -806,7 +1189,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
 .overlay-col {
   position: absolute;
   top: 0;
-  bottom: 0;
+  bottom: var(--add-row);
   left: var(--header);
   right: 0;
   pointer-events: none;
@@ -837,14 +1220,15 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
 }
 @media (max-height: 860px) {
   .tracks-view {
-    --row: 40px;
-    --video-row: 48px;
+    --row: 44px;
+    --video-row: 56px;
     --ruler: 30px;
-  }
-  .scroller {
-    max-height: 260px;
+    --add-row: 36px;
   }
   .thumb {
     width: 44px;
+  }
+  .end-btn {
+    font-size: 14px;
   }
 }</style>

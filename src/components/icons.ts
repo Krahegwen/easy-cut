@@ -87,3 +87,5 @@ export type IconName =
   | 'down'
   | 'laugh'
   | 'drum'
+  | 'headphones'
+  | 'add-row'

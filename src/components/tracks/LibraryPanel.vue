@@ -559,12 +559,39 @@ function progressOf(a: LibraryAsset): number | null {
     padding: 4px 8px;
   }
 }
-@media (max-height: 760px) {
-  .filters {
-    padding-top: 6px;
+/*
+ * Ventana baja: la biblioteca comparte alto con las pistas (va junto a la vista previa), así que lo de arriba
+ * se aprieta para dejar sitio a la lista: buscador y categoría en una sola fila, y menos aire.
+ */
+@media (max-height: 860px) {
+  .head {
+    padding-top: 4px;
+    padding-bottom: 0;
+  }
+  .btn.small {
+    min-height: 36px;
   }
   .tab {
+    min-height: 36px;
+  }
+  .filters {
+    flex-wrap: nowrap;
+    padding: 6px 12px 4px;
+  }
+  .search {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .category {
+    flex: 0 1 168px;
+    min-width: 0;
+  }
+  .search,
+  .category {
     min-height: 38px;
+  }
+  .foot {
+    padding: 4px 14px;
   }
 }
 </style>
