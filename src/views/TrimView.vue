@@ -478,8 +478,8 @@ useShortcuts({
 }
 .playhead {
   position: absolute;
-  top: -10px;
-  bottom: -10px;
+  top: -8px;
+  bottom: -8px;
   width: 3px;
   transform: translateX(-50%);
   background: var(--text);
@@ -491,9 +491,10 @@ useShortcuts({
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
 }
 .range {
+  flex: 1;
+  min-width: 0;
   font-size: 18px;
   font-variant-numeric: tabular-nums;
   text-align: center;

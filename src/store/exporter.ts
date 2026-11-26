@@ -77,6 +77,8 @@ export interface ExportRequest {
   itemPath?: (item: TrackItem) => string | null
   /** Desde dónde se guarda (para el registro): «Tu vídeo» (por defecto) o «Solo recortar», «Exacto». */
   tool?: SaveTool
+  /** Nombre del fichero según los que ya hay (por defecto, «Vídeo del … (para WhatsApp).mp4»…). */
+  outputName?: (existingNames: readonly string[]) => string
 }
 
 function tail(text: string, lines = 25): string {
@@ -187,7 +189,8 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
     report.availableEncoders = availableEncoderList(encoders)
     report.requestedEncoder = chain[0]!
     const folder = await bridge.getOutputFolder()
-    const name = buildOutputFileName(request.now?.() ?? new Date(), preset, await bridge.listFileNames(folder))
+    const existing = await bridge.listFileNames(folder)
+    const name = request.outputName ? request.outputName(existing) : buildOutputFileName(request.now?.() ?? new Date(), preset, existing)
     const out = bridge.joinPath(folder, name)
     report.fileName = name
     throwIfCancelled()

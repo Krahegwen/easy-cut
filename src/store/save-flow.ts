@@ -12,6 +12,7 @@ import {
   type ProgressUpdate,
   type SaveLogEntry,
   type SaveOutcome,
+  buildTrimFileName,
   trimProject,
   type CopyPlan,
   type MediaInfo,
@@ -181,6 +182,7 @@ export function createSaveFlow(store: EditorStore, library: LibraryStore | null 
             media: { [info.path]: info },
             preset: 'high',
             tool: 'trim',
+            outputName: (names) => buildTrimFileName(info.path, names),
             onProgress: (u) => (progress.value = u),
             onRetry: (failed: VideoEncoder, next: VideoEncoder, stderr: string) => {
               retrying.value = true

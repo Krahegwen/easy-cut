@@ -43,16 +43,21 @@ function check(name, ok, detail = '') {
 }
 
 const phone = resolve(opts.media, 'trim', 'src-trim-phone.mov')
-const prores = resolve(opts.media, 'e2e-prores-pcm.mov')
-for (const p of [phone]) if (!existsSync(p)) throw new Error(`Falta ${p}: ejecuta pnpm test:ffmpeg`)
+if (!existsSync(phone)) throw new Error(`Falta ${phone}: ejecuta pnpm test:ffmpeg`)
 const LOCATION = '+40.4168-003.7038'
 
 const work = join(tmpdir(), `easy-cut e2e recortar ${process.pid}`)
 mkdirSync(work, { recursive: true })
 const source = join(work, 'toma del móvil.mov')
 copyFileSync(phone, source)
-const proresCopy = existsSync(prores) ? join(work, 'cámara prores.mov') : null
-if (proresCopy) copyFileSync(prores, proresCopy)
+// Un ProRes con sonido PCM (de cámara): no se puede copiar a MP4, y WebView2 tampoco lo enseña (pide el proxy).
+const proresCopy = join(work, 'cámara prores.mov')
+execFileSync('ffmpeg', [
+  '-hide_banner', '-loglevel', 'error', '-y',
+  '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=30:duration=4',
+  '-f', 'lavfi', '-i', 'sine=frequency=330:duration=4',
+  '-c:v', 'prores_ks', '-profile:v', '0', '-c:a', 'pcm_s16le', '-shortest', proresCopy,
+])
 
 const outputFolder = join(homedir(), 'Videos', 'Mis montajes (pruebas)')
 const filesBefore = new Set(existsSync(outputFolder) ? readdirSync(outputFolder) : [])
@@ -356,10 +361,14 @@ try {
   }
 
   // --- Un ProRes: «Rápido» no se ofrece y dice por qué; Esc vuelve a Inicio
-  if (proresCopy) {
+  {
     await queuePick([proresCopy])
     await app.click('[data-testid=trim-only]')
     await waitScreen('trim')
+    const shown = await app
+      .waitFor('const v = document.querySelector("[data-testid=trim-video]"); return v && v.readyState >= 2 && v.videoWidth > 0 && v.currentSrc.includes("proxies")', { timeoutMs: 60_000, what: 'vista previa ligera del ProRes' })
+      .then(() => true, () => false)
+    check('El ProRes se ve en la vista previa (con la vista previa ligera)', shown, await app.evaluate('return document.querySelector("[data-testid=trim-video]")?.currentSrc ?? ""'))
     const disabled = await app.evaluate('return document.querySelector("[data-testid=trim-mode-copy]").disabled')
     const note = (await app.text('[data-testid=trim-copy-note]')) ?? ''
     check('Con un ProRes, «Rápido» no se ofrece y lo explica', disabled && note.includes('ProRes') && (await T('return trim.effectiveMode.value')) === 'exact', note)
@@ -368,8 +377,6 @@ try {
     await app.key('Escape')
     await waitScreen('home')
     check('Esc (sin reproducir) vuelve a Inicio', true)
-  } else {
-    console.log('      (sin test-output/e2e-prores-pcm.mov: se salta lo del ProRes)')
   }
   await noErrorDialog('final')
 } catch (e) {

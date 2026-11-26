@@ -78,6 +78,8 @@ describe('Solo recortar', () => {
     expect(args).toContain('h264_nvenc')
     const [entry] = logged(state)
     expect(entry).toMatchObject({ result: 'ok', method: 'encode', tool: 'trim', target: 'high', durationMs: 4_200 })
+    // Con el nombre de «Solo recortar», no el de «Calidad alta».
+    expect(args[args.length - 1]).toBe('C:\\Users\\Ana\\Videos\\Mis montajes\\horizontal (recortado).mp4')
   })
 
   it('un formato que no se puede copiar (ProRes) guarda «Exacto» y dice por qué', async () => {
