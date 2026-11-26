@@ -963,12 +963,19 @@ onBeforeUnmount(() => {
  * Cuanto menos ancho, más botones se quedan en icono y tecla (el nombre sale al pasar el ratón): primero
  * copiar, pegar y quitar; lo último, «Empieza aquí», «Termina aquí» y «Partir», que dicen qué hace cada letra.
  */
-@container strip (max-width: 1600px) {
+@container strip (max-width: 2300px) {
   .clip-actions .long {
     display: none;
   }
 }
-@container strip (max-width: 1460px) {
+/* «Aparecer» y «A una esquina» se quedan en icono y tecla antes que «Empieza aquí», «Termina aquí» y «Partir». */
+@container strip (max-width: 1800px) {
+  .clip-actions .fade-txt,
+  .clip-actions .corner-txt {
+    display: none;
+  }
+}
+@container strip (max-width: 1760px) {
   /* RePág / AvPág siguen en el panel «Teclas»; aquí se queda «Mover», que explica las flechas. */
   .nav-keys {
     display: none;
@@ -988,7 +995,7 @@ onBeforeUnmount(() => {
   }
 }
 /* Con «Aparecer» y «A una esquina» la barra no cabe entera a 1280 px: los textos se van antes. */
-@container strip (max-width: 1340px) {
+@container strip (max-width: 1460px) {
   .clip-actions .txt {
     display: none;
   }
