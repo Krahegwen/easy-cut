@@ -5,6 +5,7 @@
 // ItemAnchor en project.ts). Aquí: resolver los tiempos, colocar sin solapes, mover, recortar, partir,
 // duplicar, imanes y lo que hace falta para la vista previa. Todo puro e inmutable, en milisegundos.
 
+import { effectiveFadeLengths, fadeGainAt, isEasing, type Easing } from './motion'
 import {
   anchorAt,
   anchorTimeMs,
@@ -21,7 +22,7 @@ import {
 
 /** Un elemento no puede quedar más corto que esto en pantalla. */
 export const MIN_ITEM_MS = 300
-/** Lo que duran la entrada y la salida suaves (una duración fija: nada de milisegundos en la interfaz). */
+/** Lo que duraban la entrada y la salida suaves del interruptor de antes (ahora: Corta / Media / Larga). */
 export const SOFT_FADE_MS: Record<TrackKind, number> = { sound: 1000, effect: 500 }
 /** Lo que dura de serie una imagen fija. */
 export const DEFAULT_STILL_MS = 4000
@@ -116,25 +117,14 @@ export function itemSourceTimeAt(item: TrackItem, localMs: number): number {
   return item.inMs + ((item.phaseMs + t) % itemLoopMs(item))
 }
 
-/** Entrada y salida suaves que caben en esta duración (entre las dos, como mucho lo que dura). */
+/** Entrada y salida que caben en esta duración (entre las dos, como mucho lo que dura). */
 export function effectiveFades(item: TrackItem, lengthMs: number): { inMs: number; outMs: number } {
-  let fadeIn = Math.max(0, item.fadeInMs)
-  let fadeOut = Math.max(0, item.fadeOutMs)
-  const total = fadeIn + fadeOut
-  if (total > lengthMs && total > 0) {
-    fadeIn = Math.floor((lengthMs * fadeIn) / total)
-    fadeOut = Math.floor((lengthMs * fadeOut) / total)
-  }
-  return { inMs: fadeIn, outMs: fadeOut }
+  return effectiveFadeLengths(item, lengthMs)
 }
 
-/** Factor de las entradas y salidas suaves (0..1) a los `localMs` ms de un elemento de `lengthMs`. */
+/** Factor de aparecer y desaparecer (0..1), con su curva, a los `localMs` ms de un elemento de `lengthMs`. */
 export function itemFadeAt(item: TrackItem, localMs: number, lengthMs: number): number {
-  const f = effectiveFades(item, lengthMs)
-  let g = 1
-  if (f.inMs > 0 && localMs < f.inMs) g = Math.min(g, Math.max(0, localMs) / f.inMs)
-  if (f.outMs > 0 && localMs > lengthMs - f.outMs) g = Math.min(g, Math.max(0, lengthMs - localMs) / f.outMs)
-  return Math.min(1, Math.max(0, g))
+  return fadeGainAt(item, localMs, lengthMs)
 }
 
 /** Elementos que suenan o se ven en `t`, o que empiezan en los próximos `aheadMs` (para cargarlos antes). */
@@ -252,6 +242,8 @@ export interface ItemDefaults {
   volume?: number
   fadeInMs?: number
   fadeOutMs?: number
+  fadeInEasing?: Easing
+  fadeOutEasing?: Easing
   look?: Partial<Omit<EffectLook, 'box'>> & { box?: Partial<EffectLook['box']> }
 }
 
@@ -300,6 +292,8 @@ export function createItem(input: NewItem): TrackItem {
     volume: clampVolume(d.volume ?? (input.kind === 'sound' ? 1 : 0)),
     fadeInMs: Math.max(0, Math.round(d.fadeInMs ?? 0)),
     fadeOutMs: Math.max(0, Math.round(d.fadeOutMs ?? 0)),
+    fadeInEasing: isEasing(d.fadeInEasing) ? d.fadeInEasing : 'linear',
+    fadeOutEasing: isEasing(d.fadeOutEasing) ? d.fadeOutEasing : 'linear',
     look,
   }
 }
@@ -594,14 +588,19 @@ export function setItemVolume(project: Project, itemId: string, volume: number):
   return updateItem(project, itemId, (i) => (i.volume === v ? i : { ...i, volume: v }))
 }
 
-/** «Entrada suave» / «Salida suave»: encendidas, con la duración fija de su tipo. */
-export function setItemFade(project: Project, itemId: string, which: 'in' | 'out', on: boolean): Project {
+/**
+ * Cómo aparece o desaparece: una duración (0 = de golpe) y una curva. Con `true` / `false`, el interruptor de
+ * antes («suave» lineal con la duración de su tipo, o de golpe).
+ */
+export function setItemFade(project: Project, itemId: string, which: 'in' | 'out', fade: boolean | { ms: number; easing: Easing }): Project {
   const found = findItem(project, itemId)
   if (!found) return project
-  const ms = on ? SOFT_FADE_MS[found.track.kind] : 0
+  const choice = typeof fade === 'boolean' ? { ms: fade ? SOFT_FADE_MS[found.track.kind] : 0, easing: 'linear' as Easing } : fade
+  const ms = Math.max(0, Math.round(Number.isFinite(choice.ms) ? choice.ms : 0))
+  const easing: Easing = isEasing(choice.easing) ? choice.easing : 'linear'
   return updateItem(project, itemId, (i) => {
-    if (which === 'in') return i.fadeInMs === ms ? i : { ...i, fadeInMs: ms }
-    return i.fadeOutMs === ms ? i : { ...i, fadeOutMs: ms }
+    if (which === 'in') return i.fadeInMs === ms && i.fadeInEasing === easing ? i : { ...i, fadeInMs: ms, fadeInEasing: easing }
+    return i.fadeOutMs === ms && i.fadeOutEasing === easing ? i : { ...i, fadeOutMs: ms, fadeOutEasing: easing }
   })
 }
 

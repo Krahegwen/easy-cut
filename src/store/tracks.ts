@@ -40,6 +40,7 @@ import {
   tracksOfKind,
   trimItemEnd,
   trimItemStart,
+  type Easing,
   type EffectLook,
   type LibraryAsset,
   type MediaInfo,
@@ -328,8 +329,9 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     editor.apply((p) => setItemVolume(p, itemId, volume))
   }
 
-  function setFade(itemId: string, which: 'in' | 'out', on: boolean) {
-    editor.apply((p) => setItemFade(p, itemId, which, on))
+  /** Cómo aparece o desaparece: duración (0 = de golpe) y curva (o el interruptor de antes, con true/false). */
+  function setFade(itemId: string, which: 'in' | 'out', fade: boolean | { ms: number; easing: Easing }) {
+    editor.apply((p) => setItemFade(p, itemId, which, fade))
   }
 
   function setRepeat(itemId: string, on: boolean) {

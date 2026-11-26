@@ -15,7 +15,9 @@ import ItemBar from '../components/tracks/ItemBar.vue'
 import LibraryPanel from '../components/tracks/LibraryPanel.vue'
 import TracksView from '../components/tracks/TracksView.vue'
 import type { PlayerTime } from '../components/player-types'
-import { clipDurationMs, clipStartTimes, formatDuration, isTrackMediaPath, removeCover, resolveTracks, setAspect, type AspectRatio } from '../domain'
+import { clipDurationMs, clipStartTimes, formatDuration, isTrackMediaPath, removeCover, resolveTracks, setAspect, setClipFade, type AspectRatio, type Easing } from '../domain'
+import FadePicker from '../components/FadePicker.vue'
+import { LAYER_PRIORITY } from '../lib/shortcuts'
 import KeyHint from '../components/KeyHint.vue'
 import KeysButton from '../components/KeysButton.vue'
 import { pasteFromClipboard, pickAndAddVideos } from '../lib/add-videos'
@@ -147,6 +149,23 @@ function clipSplitHere() {
   const c = clip.value
   if (c) tracks.splitClipAt(c.id, tracks.playheadMs.value)
 }
+
+// ------------------------------------------------------------------ aparecer y desaparecer del trozo
+
+const clipFadesOpen = ref(false)
+watch(() => clip.value?.id, () => (clipFadesOpen.value = false))
+function setFadeOfClip(which: 'in' | 'out', fade: { ms: number; easing: Easing }) {
+  const c = clip.value
+  if (c) store.apply((p) => setClipFade(p, c.id, which, fade))
+}
+const clipFadeOn = computed(() => !!clip.value && (clip.value.fadeInMs > 0 || clip.value.fadeOutMs > 0))
+useShortcuts({
+  id: 'clip-fades',
+  title: 'Aparecer y desaparecer',
+  priority: LAYER_PRIORITY.popover,
+  active: () => clipFadesOpen.value,
+  shortcuts: () => [{ id: 'clip-fades-close', keys: ['Escape'], label: 'Esc', description: 'cerrar', run: () => (clipFadesOpen.value = false) }],
+})
 
 // ------------------------------------------------------------------ copiar y pegar
 
@@ -493,6 +512,24 @@ onBeforeUnmount(() => {
                 <AppIcon name="arrow-right" />
               </button>
             </div>
+            <div class="pop-wrap">
+              <button
+                class="btn"
+                :class="{ selected: clipFadeOn }"
+                type="button"
+                :aria-expanded="clipFadesOpen"
+                aria-label="Aparecer y desaparecer"
+                :title="`Cómo aparece y desaparece el trozo ${index + 1} (desde negro y desde silencio)`"
+                data-testid="clip-fades"
+                @click="clipFadesOpen = !clipFadesOpen"
+              >
+                <AppIcon name="fade-in" />
+                <span class="txt fade-txt">Aparecer</span>
+              </button>
+              <div v-if="clipFadesOpen" class="popover card clip-fades-pop" data-testid="clip-fades-popover">
+                <FadePicker :fades="clip" subject="clip" @change="setFadeOfClip" />
+              </div>
+            </div>
             <div class="at-line" role="group" aria-label="En la línea">
               <button class="btn" type="button" :disabled="!lineInClip" aria-label="Empieza aquí" :title="`Que el trozo ${index + 1} empiece donde está la línea${lineHint}`" data-testid="clip-start-here" @click="clipStartHere">
                 <AppIcon name="start-here" />
@@ -535,6 +572,21 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.pop-wrap {
+  position: relative;
+  flex: none;
+}
+.clip-fades-pop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  width: min(600px, calc(100vw - 48px));
+  max-height: calc(100vh - 140px);
+  overflow: auto;
+  padding: 14px 16px;
+  box-shadow: var(--shadow-lg);
+}
 .save {
   margin-left: 8px;
 }
@@ -866,6 +918,7 @@ onBeforeUnmount(() => {
     display: none;
   }
   .clip-actions .tail .txt,
+  .clip-actions .fade-txt,
   .move-label {
     display: none;
   }

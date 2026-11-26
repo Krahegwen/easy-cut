@@ -152,12 +152,12 @@ describe('migración y lectura', () => {
       },
     })
     const p = parseProject(v1)
-    expect(p.version).toBe(4)
+    expect(p.version).toBe(5)
     expect(p.clips[0]!.picture).toEqual({ kind: 'own' })
     expect(p.clips[0]!.sourceHasVideo).toBe(true)
     expect(p.tracks).toEqual([])
     expect(p.mainMuted).toBe(false)
-    expect(JSON.parse(serializeProject(p)).version).toBe(4)
+    expect(JSON.parse(serializeProject(p)).version).toBe(5)
   })
 
   it('ida y vuelta con sonido, fondo liso, vídeo encima y esquina', () => {

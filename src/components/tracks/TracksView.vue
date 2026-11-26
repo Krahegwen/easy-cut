@@ -182,10 +182,10 @@ function clipPicture(c: Clip): ClipPicture {
   if (c.picture.kind === 'cover') return store.coverMissing(c) ? 'cover-lost' : 'cover'
   return c.picture.kind === 'none' || !c.sourceHasVideo ? 'sound' : 'own'
 }
-type BadgeId = 'speed' | 'mute' | 'pauses' | 'cover' | 'sound' | 'attached'
+type BadgeId = 'speed' | 'mute' | 'pauses' | 'cover' | 'sound' | 'attached' | 'fades'
 interface Badge {
   id: BadgeId
-  icon: 'speed' | 'mute' | 'pauses' | 'cover-video' | 'wave' | 'tracks'
+  icon: 'speed' | 'mute' | 'pauses' | 'cover-video' | 'wave' | 'tracks' | 'fade-in'
   text: string
 }
 const attached = computed(() => attachedCounts(project.value))
@@ -198,6 +198,10 @@ function clipBadges(c: Clip): Badge[] {
   const pic = clipPicture(c)
   if (pic === 'cover') out.push({ id: 'cover', icon: 'cover-video', text: 'Vídeo encima' })
   if (pic === 'sound') out.push({ id: 'sound', icon: 'wave', text: 'Solo se oye' })
+  if (c.fadeInMs > 0 || c.fadeOutMs > 0) {
+    const text = c.fadeInMs > 0 && c.fadeOutMs > 0 ? 'Aparece y desaparece poco a poco' : c.fadeInMs > 0 ? 'Aparece poco a poco' : 'Desaparece poco a poco'
+    out.push({ id: 'fades', icon: 'fade-in', text })
+  }
   const a = attached.value.get(c.id)
   if (a) {
     const parts: string[] = []

@@ -1,15 +1,16 @@
 <script setup lang="ts">
-// Lo que se puede hacer con el sonido o el efecto elegido: volumen, entrada y salida suaves, repetir, y en los
+// Lo que se puede hacer con el sonido o el efecto elegido: volumen, cómo aparece y desaparece, repetir, y en los
 // efectos «Tamaño y sitio», «Cómo se mezcla» y «Transparencia»; además mover a la línea, partir, duplicar y
 // quitar. Todo con botón y con su tecla dibujada (los arrastres de las pistas tienen siempre esta alternativa).
 // Siempre en una sola línea: cuando no hay sitio, los botones menos usados se quedan en icono y tecla (con su
 // nombre al pasar el ratón), para que la vista previa no se quede sin altura.
 import { computed, ref } from 'vue'
-import { MAX_ITEM_VOLUME, resolveTracks, type EffectMix } from '../../domain'
+import { MAX_ITEM_VOLUME, resolveTracks, type Easing, type EffectMix } from '../../domain'
 import { LAYER_PRIORITY } from '../../lib/shortcuts'
 import { useShortcuts } from '../../lib/use-shortcuts'
 import { store, tracks } from '../../store'
 import AppIcon from '../AppIcon.vue'
+import FadePicker from '../FadePicker.vue'
 import KeyHint from '../KeyHint.vue'
 
 const props = defineProps<{ playheadMs: number }>()
@@ -28,8 +29,8 @@ const playheadInside = computed(() => {
   return !!r && props.playheadMs > r.startMs + 300 && props.playheadMs < r.shownEndMs - 300
 })
 
-const open = ref<'volume' | 'mix' | 'opacity' | null>(null)
-function toggle(which: 'volume' | 'mix' | 'opacity') {
+const open = ref<'volume' | 'mix' | 'opacity' | 'fades' | null>(null)
+function toggle(which: 'volume' | 'mix' | 'opacity' | 'fades') {
   open.value = open.value === which ? null : which
 }
 
@@ -58,10 +59,20 @@ function setMix(mix: EffectMix) {
   open.value = null
 }
 
-function fade(which: 'in' | 'out') {
+function setFade(which: 'in' | 'out', fade: { ms: number; easing: Easing }) {
   const i = item.value
-  if (i) tracks.setFade(i.id, which, which === 'in' ? i.fadeInMs === 0 : i.fadeOutMs === 0)
+  if (i) tracks.setFade(i.id, which, fade)
 }
+/** Lo que se dice en el botón: «Aparece y desaparece» si hace las dos cosas poco a poco, si no, lo que haga. */
+const fadeSummary = computed(() => {
+  const i = item.value
+  if (!i) return ''
+  if (i.fadeInMs > 0 && i.fadeOutMs > 0) return 'Aparece y desaparece'
+  if (i.fadeInMs > 0) return 'Aparece poco a poco'
+  if (i.fadeOutMs > 0) return 'Desaparece poco a poco'
+  return 'De golpe'
+})
+const fadeSubject = computed(() => (!isEffect.value ? 'sound' : item.value?.look?.mix === 'light' ? 'light' : 'effect'))
 function repeat() {
   const i = item.value
   if (i && !i.still) tracks.setRepeat(i.id, !i.repeat)
@@ -218,14 +229,25 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
         </div>
       </div>
 
-      <button class="btn small toggle" :class="{ selected: item.fadeInMs > 0 }" type="button" :aria-pressed="item.fadeInMs > 0" title="Entrada suave" aria-label="Entrada suave" data-testid="item-fade-in" @click="fade('in')">
-        <AppIcon name="fade-in" />
-        <span class="txt fade-txt">Entrada suave</span>
-      </button>
-      <button class="btn small toggle" :class="{ selected: item.fadeOutMs > 0 }" type="button" :aria-pressed="item.fadeOutMs > 0" title="Salida suave" aria-label="Salida suave" data-testid="item-fade-out" @click="fade('out')">
-        <AppIcon name="fade-out" />
-        <span class="txt fade-txt">Salida suave</span>
-      </button>
+      <div class="pop-wrap">
+        <button
+          class="btn small toggle"
+          :class="{ selected: item.fadeInMs > 0 || item.fadeOutMs > 0 }"
+          type="button"
+          :aria-expanded="open === 'fades'"
+          :title="`Aparecer y desaparecer (ahora: ${fadeSummary})`"
+          aria-label="Aparecer y desaparecer"
+          data-testid="item-fades"
+          :data-summary="fadeSummary"
+          @click="toggle('fades')"
+        >
+          <AppIcon name="fade-in" />
+          <span class="txt fade-txt">Aparecer</span>
+        </button>
+        <div v-if="open === 'fades'" class="popover card fades-pop" data-testid="fades-popover">
+          <FadePicker :fades="item" :subject="fadeSubject" @change="setFade" />
+        </div>
+      </div>
       <button v-if="!item.still" class="btn small toggle" :class="{ selected: item.repeat }" type="button" :aria-pressed="item.repeat" title="Repetir" aria-label="Repetir" data-testid="item-repeat" @click="repeat">
         <AppIcon name="repeat" />
         <span class="txt">Repetir</span>
@@ -358,6 +380,11 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
 }
 .mix-pop {
   width: 380px;
+}
+.fades-pop {
+  width: min(600px, calc(100vw - 48px));
+  max-height: calc(100vh - 140px);
+  overflow: auto;
 }
 .choice {
   display: flex;

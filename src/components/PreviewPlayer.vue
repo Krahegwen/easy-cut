@@ -29,7 +29,9 @@ import {
   clipShowsOwnVideo,
   clipStartTimes,
   computeFramingLayout,
+  clipOutputMs,
   coverNeedsResync,
+  fadeGainAt,
   coverTimeAt,
   findSpanForSource,
   firstSpanOfClip,
@@ -233,7 +235,26 @@ function configure(el: HTMLVideoElement, clip: Clip, active: boolean) {
   if (el.playbackRate !== rate) el.playbackRate = rate
   el.preservesPitch = true
   el.muted = !active || isMutedClip(clip)
+  el.volume = active ? clipFade.value : 1
 }
+
+// ------------------------------------------------------------------ aparecer y desaparecer del trozo
+
+/**
+ * Factor (0..1) de aparecer y desaparecer del trozo activo en este instante (el mismo cálculo que al guardar):
+ * la imagen se oscurece hacia negro con una capa negra encima (debajo de los efectos, como en el fichero) y el
+ * sonido baja con el volumen del <video>.
+ */
+const clipFade = computed(() => {
+  const clip = activeClip.value
+  if (!clip || (clip.fadeInMs <= 0 && clip.fadeOutMs <= 0)) return 1
+  return fadeGainAt(clip, clipOutputAt(props.project, activeClipIndex.value, currentMs.value), clipOutputMs(clip))
+})
+watch(clipFade, (g) => {
+  const clip = activeClip.value
+  const el = clip ? elements.get(clip.id) : undefined
+  if (el && Math.abs(el.volume - g) > 0.001) el.volume = Math.min(1, Math.max(0, g))
+})
 
 /** Lleva un <video> al instante que le toca, si se ha desviado. */
 function sync(clip: Clip) {
@@ -837,6 +858,7 @@ defineExpose({
     :data-cover-ms="coverActualMs ?? ''"
     :data-cover-expected-ms="coverExpectedMs ?? ''"
     :data-main-muted="tracks && project.mainMuted ? '1' : '0'"
+    :data-clip-fade="clipFade.toFixed(3)"
   >
     <div ref="stage" class="stage">
       <div
@@ -900,6 +922,7 @@ defineExpose({
           @error="onError(clip)"
           @seeked="onSeeked(clip)"
         />
+        <div v-if="clipFade < 0.999" class="clip-fade" :style="{ opacity: String(1 - clipFade) }" data-testid="clip-fade" aria-hidden="true" />
         <TrackLayers
           v-if="tracks && frame.width > 0"
           :project="project"
@@ -1029,6 +1052,12 @@ defineExpose({
   position: absolute;
   object-fit: fill;
   transform-origin: 50% 50%;
+  pointer-events: none;
+}
+.clip-fade {
+  position: absolute;
+  inset: 0;
+  background: #000;
   pointer-events: none;
 }
 .video.inset {

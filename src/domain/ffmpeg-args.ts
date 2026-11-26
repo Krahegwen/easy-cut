@@ -3,6 +3,7 @@
 
 import { encoderVideoArgs, type VideoEncoder } from './encoders'
 import { effectRect, insetRect, PLAIN_BACKGROUND_HEX } from './layout'
+import { afadeCurve, effectiveFadeLengths, fadeGainAt, fadeGainExpr, num, type Fades } from './motion'
 import { computeOutputSpec, even, SOUND_BITRATE_KBPS, type OutputSpec, type PresetId } from './output'
 import {
   clipDisplaySize,
@@ -17,7 +18,7 @@ import {
   type TrackKind,
   type Viewable,
 } from './project'
-import { audibleOrVisible, effectiveFades, projectTiming, resolveTracks, type ProjectTiming } from './tracks'
+import { audibleOrVisible, projectTiming, resolveTracks, type ProjectTiming } from './tracks'
 
 export const AUDIO_SAMPLE_RATE = 48_000
 /** Microfundido en los bordes de cada rango conservado, para evitar clics. */
@@ -286,6 +287,41 @@ export function roundedMaskExpression(radius: number): string {
   return `255*lte(pow(max(0,abs(X-(W-1)/2)-(W/2-${r})),2)+pow(max(0,abs(Y-(H-1)/2)-(H/2-${r})),2),${r * r})`
 }
 
+/**
+ * afade de entrada y de salida, en muestras exactas y con la curva de cada uno (ver afadeCurve). Si las dos no
+ * caben, se reparten como en la vista previa.
+ */
+export function afadeFilters(f: Fades, samples: number): string[] {
+  const lengthMs = (samples * 1000) / AUDIO_SAMPLE_RATE
+  const { inMs, outMs } = effectiveFadeLengths(f, lengthMs)
+  const fadeIn = Math.min(samples, Math.round((inMs * AUDIO_SAMPLE_RATE) / 1000))
+  const fadeOut = Math.min(samples, Math.round((outMs * AUDIO_SAMPLE_RATE) / 1000))
+  const out: string[] = []
+  const curve = (c: string) => (c === 'tri' ? '' : `:curve=${c}`)
+  if (fadeIn > 0) out.push(`afade=t=in:ss=0:ns=${fadeIn}${curve(afadeCurve(f.fadeInEasing, 'in'))}`)
+  if (fadeOut > 0) out.push(`afade=t=out:ss=${samples - fadeOut}:ns=${fadeOut}${curve(afadeCurve(f.fadeOutEasing, 'out'))}`)
+  return out
+}
+
+/** ¿Las dos curvas son lineales (o no hay)? Entonces vale el `fade` de ffmpeg tal cual (lo de antes). */
+function linearFades(f: Fades): boolean {
+  return (f.fadeInMs <= 0 || f.fadeInEasing === 'linear') && (f.fadeOutMs <= 0 || f.fadeOutEasing === 'linear')
+}
+
+/**
+ * Multiplica la imagen (YUV de 8 bits, rango TV) por el factor de aparecer y desaparecer: hacia y desde negro.
+ * Se busca Y' = 16 + (Y − 16)·k (la saturación k lleva el color a gris): lo mismo que oscurecer la imagen k veces
+ * en RGB, que es lo que hace la vista previa. eq con eval=frame y gamma ≠ 1 usa su tabla en coma flotante,
+ * out = int(256·(c·(Y/255 − 0,5) + 0,5 + b)); de ahí c = 255k/256 y b = (16,5 + 111,5k)/256 − 0,5 (el 0,5 de
+ * más redondea). Con gamma = 1 eq usa otro camino en enteros con el brillo a saltos de 2,5 niveles: medido, se
+ * quedaba hasta 5 niveles por debajo.
+ */
+export function fadeToBlackFilter(f: Fades, lengthMs: number): string | null {
+  const k = fadeGainExpr(f, lengthMs)
+  if (!k) return null
+  return `eq=contrast='${num(255 / 256)}*${k}':brightness='(16.5+111.5*${k})/256-0.5':saturation='${k}':gamma=1.0001:eval=frame`
+}
+
 /** Cadenas de audio de un trozo, con el número exacto de muestras: deja [a{i}]. `silent` = fila principal silenciada. */
 function audioChains(clip: Clip, media: MediaInfo, i: number, input: number, samples: number, silent = false): string[] {
   if (silent || !clipKeepsAudio(clip, media)) {
@@ -316,6 +352,8 @@ function audioChains(clip: Clip, media: MediaInfo, i: number, input: number, sam
     // Mismo número exacto de muestras que de fotogramas: audio y vídeo duran lo mismo.
     `apad=whole_len=${samples}`,
     `atrim=end_sample=${samples}`,
+    // Cómo aparece y desaparece el trozo (también su sonido), en muestras y con su curva.
+    ...afadeFilters(clip, samples),
     AUDIO_FORMAT,
   ]
   chains.push(`[${aSeg}]${after.join(',')}[a${i}]`)
@@ -459,13 +497,9 @@ function itemAudioChains(p: PlannedItem, n: number, inputs: Inputs): string[] {
       'asetpts=PTS-STARTPTS',
     )
   }
-  const fades = effectiveFades(item, p.lengthMs)
-  const fadeIn = Math.round((fades.inMs * AUDIO_SAMPLE_RATE) / 1000)
-  const fadeOut = Math.round((fades.outMs * AUDIO_SAMPLE_RATE) / 1000)
   parts.push(`apad=whole_len=${samples}`, `atrim=end_sample=${samples}`)
   if (Math.abs(item.volume - 1) > 1e-6) parts.push(`volume=${Number(item.volume.toFixed(3))}`)
-  if (fadeIn > 0) parts.push(`afade=t=in:ss=0:ns=${fadeIn}`)
-  if (fadeOut > 0) parts.push(`afade=t=out:ss=${samples - fadeOut}:ns=${fadeOut}`)
+  parts.push(...afadeFilters(item, samples))
   if (startSample > 0) parts.push(`adelay=delays=${startSample}S:all=1`)
   return [`[${input}:a:0]${parts.join(',')}[t${n}]`]
 }
@@ -562,7 +596,8 @@ function effectChains(
     input = inputs.add(p.path, item.inMs, Math.min(item.outMs - item.inMs, lengthMs) + 500, [...alphaDecoder(p.media), '-an'])
   }
   const rect = effectRect(look, p.media.width, p.media.height, W, H, true)
-  const fades = effectiveFades(item, lengthMs)
+  const fades = effectiveFadeLengths(item, lengthMs)
+  const linear = linearFades(item)
   const offset = sec(((e.startFrame - region.startFrame) * 1000) / F)
   const timing = [...pre, 'setpts=PTS-STARTPTS', `fps=${F}`, `tpad=stop_mode=clone:stop=${frames}`, `trim=end_frame=${frames}`]
   const scale = `scale=${rect.width}:${rect.height}:flags=bicubic`
@@ -578,17 +613,51 @@ function effectChains(
     const parts = [...timing, scale]
     if (cx > 0 || cy > 0 || cw < rect.width || ch < rect.height) parts.push(`crop=${cw}:${ch}:${cx}:${cy}`)
     if (cw < W || ch < H) parts.push(`pad=${W}:${H}:${Math.max(0, rect.left)}:${Math.max(0, rect.top)}:black`)
+    if (!linear) {
+      // Con curva: se oscurece en YUV con eq (por fotograma), antes de pasar a RGB; el negro sigue negro.
+      parts.push('format=yuv420p', fadeToBlackFilter(item, lengthMs)!)
+    }
     parts.push('format=gbrp')
-    if (fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}`)
-    if (fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}`)
+    if (linear && fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}`)
+    if (linear && fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}`)
     return [`[${input}:v:0]${[...parts, ...tail].join(',')}[${label}]`]
   }
   // Normal: encima, con su transparencia; la del efecto y las suaves, en el canal alfa.
   const parts = [...timing, scale, 'format=gbrap']
-  if (look.opacity < 1) parts.push(`colorchannelmixer=aa=${Number(look.opacity.toFixed(3))}`)
-  if (fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}:alpha=1`)
-  if (fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}:alpha=1`)
+  if (linear) {
+    if (look.opacity < 1) parts.push(`colorchannelmixer=aa=${Number(look.opacity.toFixed(3))}`)
+    if (fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}:alpha=1`)
+    if (fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}:alpha=1`)
+  } else {
+    parts.push(...alphaCurveFilters(item, look.opacity, frames, F, label))
+  }
   return [`[${input}:v:0]${[...parts, ...tail].join(',')}[${label}]`]
+}
+
+/**
+ * Transparencia con curva en el canal alfa: ni `fade` (solo lineal) ni colorchannelmixer (un valor fijo) siguen
+ * una curva, así que sendcmd le cambia `aa` a colorchannelmixer en cada fotograma de la entrada y de la salida
+ * (el valor de la vista previa en ese fotograma) y lo deja en la transparencia del efecto el resto del tiempo.
+ * Barato: solo cambia un número por fotograma.
+ */
+export function alphaCurveFilters(f: Fades, opacity: number, frames: number, fps: number, name: string): string[] {
+  const lengthMs = (frames * 1000) / fps
+  const { inMs, outMs } = effectiveFadeLengths(f, lengthMs)
+  const target = `colorchannelmixer@${name}`
+  const value = (k: number) => num(Math.round(opacity * fadeGainAt(f, (k * 1000) / fps, lengthMs) * 1000) / 1000)
+  const cmds: string[] = []
+  let last: string | null = null
+  for (let k = 0; k < frames; k++) {
+    const ms = (k * 1000) / fps
+    // Solo los fotogramas de la entrada y de la salida (y el primero de después de la entrada).
+    if (!(ms < inMs + 1000 / fps || ms >= lengthMs - outMs - 1000 / fps)) continue
+    const v = value(k)
+    if (v === last) continue
+    cmds.push(`${num(ms / 1000)} ${target} aa ${v}`)
+    last = v
+  }
+  if (cmds.length <= 1 && value(0) === num(opacity)) return opacity < 1 ? [`colorchannelmixer=aa=${num(opacity)}`] : []
+  return [`sendcmd=c='${cmds.join(';')}'`, `${target}=aa=${value(0)}`]
 }
 
 /**
@@ -684,7 +753,17 @@ export function buildExportCommand(
       coverInput = inputs.add(clip.picture.sourcePath, coverSeekMs(clip.picture), (frames * 1000) / F + 1000)
     }
 
-    chains.push(...pictureChains(clip, i, mainInput, coverInput, media, coverMedia, spec, frames))
+    const picture = pictureChains(clip, i, mainInput, coverInput, media, coverMedia, spec, frames)
+    const fade = fadeToBlackFilter(clip, (frames * 1000) / F)
+    if (fade) {
+      // La imagen del trozo aparece desde negro y desaparece hacia negro (los efectos de encima, no).
+      const last = picture.length - 1
+      const tag = `[v${i}]`
+      if (!picture[last]!.endsWith(tag)) throw new Error('La imagen del trozo no acaba donde debe.')
+      picture[last] = `${picture[last]!.slice(0, -tag.length)}[v${i}nofade]`
+      picture.push(`[v${i}nofade]${fade},${BT709_SETPARAMS}[v${i}]`)
+    }
+    chains.push(...picture)
     chains.push(...audioChains(clip, media, i, mainInput, samples, project.mainMuted))
     concatInputs.push(`[v${i}][a${i}]`)
     totalFrames += frames

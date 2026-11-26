@@ -1,6 +1,8 @@
 // Modelo del proyecto y operaciones inmutables sobre él.
 // Todos los tiempos son milisegundos enteros. Nada de DOM ni de Node aquí.
 
+import { isEasing, type Easing } from './motion'
+
 export interface TimeRange {
   startMs: number
   endMs: number
@@ -109,6 +111,14 @@ export interface Clip {
   quarterTurns: QuarterTurns
   framing: Framing
   picture: Picture
+  /**
+   * Cómo aparece y desaparece el trozo (imagen desde/hacia negro y sonido a la vez): duración (ms; 0 = de
+   * golpe, lo de siempre) y curva. Ver motion.ts.
+   */
+  fadeInMs: number
+  fadeOutMs: number
+  fadeInEasing: Easing
+  fadeOutEasing: Easing
 }
 
 // ---------------------------------------------------------------------------
@@ -184,9 +194,11 @@ export interface TrackItem {
   durationMs: number | null
   /** 0 a 1,5 (1 = como viene). En los efectos, el sonido que traigan; por defecto 0. */
   volume: number
-  /** Entrada y salida suaves (ms; 0 = no). */
+  /** Cómo aparece y desaparece (ms; 0 = de golpe) y con qué curva (ver motion.ts). */
   fadeInMs: number
   fadeOutMs: number
+  fadeInEasing: Easing
+  fadeOutEasing: Easing
   /** Solo en los efectos: cómo se ve. */
   look: EffectLook | null
 }
@@ -236,10 +248,12 @@ export interface MediaEntry {
 }
 
 /**
- * Versión 4: el proyecto lleva `media` (la lista de sus ficheros, con sus datos). La 3 (con `mainMuted` y
- * `tracks`), la 2 (trozos con `picture` y `sourceHasVideo`) y la 1 se migran al leerlas.
+ * Versión 5: aparecer y desaparecer con curva (en trozos, sonidos y efectos). La 4 (con `media`, la lista de
+ * sus ficheros), la 3 (con `mainMuted` y `tracks`), la 2 (trozos con `picture` y `sourceHasVideo`) y la 1 se
+ * migran al leerlas: lo que tenía «entrada/salida suave» pasa a la curva «Al mismo ritmo» con la misma
+ * duración (se ve y se oye igual).
  */
-export const PROJECT_VERSION = 4 as const
+export const PROJECT_VERSION = 5 as const
 
 export interface Project {
   version: typeof PROJECT_VERSION
@@ -293,6 +307,10 @@ export function createClip(media: MediaInfo, id: string = defaultIdFactory()): C
     quarterTurns: 0,
     framing: { ...DEFAULT_FRAMING },
     picture: defaultPicture(hasVideo),
+    fadeInMs: 0,
+    fadeOutMs: 0,
+    fadeInEasing: 'linear',
+    fadeOutEasing: 'linear',
   }
 }
 
@@ -686,10 +704,12 @@ export function splitClip(
   right.push(...clip.segments.slice(segmentIndex + 1).map((s) => ({ ...s })))
   if (left.length === 0 || right.length === 0) return project
 
-  const first: Clip = { ...clip, segments: left }
+  // Cada parte se queda con su borde: la primera aparece como antes y la segunda desaparece como antes.
+  const first: Clip = { ...clip, segments: left, fadeOutMs: 0 }
   // El vídeo de encima corre en tiempo de salida: la segunda parte sigue donde iba.
   const second: Clip = {
     ...clip,
+    fadeInMs: 0,
     id: newId,
     segments: right,
     framing: { ...clip.framing },
@@ -713,6 +733,22 @@ export function setSpeed(project: Project, clipId: string, speed: Speed): Projec
 
 export function setMuted(project: Project, clipId: string, muted: boolean): Project {
   return updateClip(project, clipId, (clip) => (clip.muted === muted ? clip : { ...clip, muted }))
+}
+
+/** Cómo aparece o desaparece algo: duración (ms; 0 = de golpe) y curva. */
+export interface FadeChoice {
+  ms: number
+  easing: Easing
+}
+
+/** Cómo aparece (desde negro y desde silencio) o desaparece el trozo. */
+export function setClipFade(project: Project, clipId: string, which: 'in' | 'out', fade: FadeChoice): Project {
+  const ms = Math.max(0, Math.round(Number.isFinite(fade.ms) ? fade.ms : 0))
+  const easing = isEasing(fade.easing) ? fade.easing : 'linear'
+  return updateClip(project, clipId, (clip) => {
+    if (which === 'in') return clip.fadeInMs === ms && clip.fadeInEasing === easing ? clip : { ...clip, fadeInMs: ms, fadeInEasing: easing }
+    return clip.fadeOutMs === ms && clip.fadeOutEasing === easing ? clip : { ...clip, fadeOutMs: ms, fadeOutEasing: easing }
+  })
 }
 
 /** Gira el trozo 90° (1 = horario, -1 = antihorario). */
@@ -1280,6 +1316,9 @@ function parseTrackItem(raw: unknown, kind: TrackKind): TrackItem[] {
       volume: clampNumber(finiteOr(raw.volume, kind === 'sound' ? 1 : 0), 0, MAX_ITEM_VOLUME),
       fadeInMs: Math.max(0, Math.round(finiteOr(raw.fadeInMs, 0))),
       fadeOutMs: Math.max(0, Math.round(finiteOr(raw.fadeOutMs, 0))),
+      // Antes de la 5 eran lineales (el interruptor «suave»).
+      fadeInEasing: isEasing(raw.fadeInEasing) ? raw.fadeInEasing : 'linear',
+      fadeOutEasing: isEasing(raw.fadeOutEasing) ? raw.fadeOutEasing : 'linear',
       look: kind === 'effect' ? normalizeLook(raw.look) : null,
     },
   ]
@@ -1353,6 +1392,11 @@ function parseClip(raw: unknown, index: number, version: number): Clip {
     quarterTurns: turns,
     framing,
     picture,
+    // Antes de la 5 los trozos no aparecían ni desaparecían.
+    fadeInMs: version >= 5 ? Math.max(0, Math.round(finiteOr(raw.fadeInMs, 0))) : 0,
+    fadeOutMs: version >= 5 ? Math.max(0, Math.round(finiteOr(raw.fadeOutMs, 0))) : 0,
+    fadeInEasing: isEasing(raw.fadeInEasing) ? raw.fadeInEasing : 'linear',
+    fadeOutEasing: isEasing(raw.fadeOutEasing) ? raw.fadeOutEasing : 'linear',
   }
 }
 
