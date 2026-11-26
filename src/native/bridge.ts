@@ -32,6 +32,18 @@ export interface PickVideosOptions {
   sounds?: boolean
   /** Para las pistas: sonidos, vídeos e imágenes (PNG, JPG, WebP), con su propio título. */
   forTracks?: boolean
+  /** Título de la ventana (si no, el de serie según lo que se elige). */
+  title?: string
+}
+
+/** Un vídeo en marcha tal como está guardado. */
+export interface StoredProject {
+  id: string
+  json: string
+  /** Cuándo se cambió por última vez (ms desde 1970). */
+  modifiedMs: number
+  /** ¿Tiene copia anterior? */
+  hasBackup: boolean
 }
 
 /** Un fichero de la biblioteca: nombre (seguro), SHA-256 y tamaño, tal como vienen en el catálogo. */
@@ -207,13 +219,35 @@ export interface NativeBridge {
   /** Ficheros copiados en el Explorador (rutas completas) y la secuencia del portapapeles en ese momento. */
   clipboardFiles(): Promise<{ sequence: number; paths: string[] }>
 
-  /** Autoguardado del proyecto en curso (uno solo), en la carpeta de datos de la app. */
+  /**
+   * Autoguardado de antes (un solo vídeo a medias, `autosave.json`). Ya no se escribe: al arrancar se pasa a
+   * la lista de vídeos en marcha y se borra. Se queda para esa migración (y para las pruebas).
+   */
   saveAutosave(json: string): Promise<void>
   loadAutosave(): Promise<string | null>
   clearAutosave(): Promise<void>
 
-  /** Guarda el proyecto (JSON de domain/project.ts). Sin ruta, pregunta dónde. Devuelve la ruta o null si se cancela. */
-  saveProject(json: string, path?: string): Promise<string | null>
+  /**
+   * Los vídeos en marcha (la lista de Inicio): uno por fichero en la carpeta de datos de la app, por
+   * identificador (letras, números, «-» y «_»). Nunca se toca nada fuera de esa carpeta.
+   */
+  listProjects(): Promise<StoredProject[]>
+  readProject(id: string): Promise<string | null>
+  /** Guarda el vídeo (y, como mucho cada 10 minutos, deja el de antes como copia anterior). */
+  writeProject(id: string, json: string): Promise<void>
+  /** Borra el vídeo de la lista (con su copia y su historial). Los originales no se tocan nunca. */
+  deleteProject(id: string): Promise<void>
+  /** Vuelve a la copia anterior (y el de ahora pasa a ser la copia). Devuelve el JSON recuperado. */
+  restoreProjectBackup(id: string): Promise<string>
+  /** Historial de deshacer guardado del vídeo (JSON de domain/history-file.ts), o null. */
+  readProjectHistory(id: string): Promise<string | null>
+  writeProjectHistory(id: string, json: string): Promise<void>
+
+  /**
+   * Guarda el proyecto en un fichero .easycut (JSON de domain/project.ts). Sin ruta, pregunta dónde (con
+   * `suggestedName` como nombre). Devuelve la ruta o null si se cancela.
+   */
+  saveProject(json: string, path?: string, suggestedName?: string): Promise<string | null>
   /** Abre un proyecto guardado. Sin ruta, pregunta cuál. */
   loadProject(path?: string): Promise<{ path: string; json: string } | null>
 

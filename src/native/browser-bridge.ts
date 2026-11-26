@@ -2,9 +2,10 @@
 // Lo que necesita el sistema (ffmpeg, diálogos, ficheros) lanza un error claro; lo inofensivo funciona.
 
 import type { EncoderProbeResults } from '../domain/encoders'
-import { joinWindowsPath, type NativeBridge, type RunningProcess } from './bridge'
+import { joinWindowsPath, type NativeBridge, type RunningProcess, type StoredProject } from './bridge'
 
 const AUTOSAVE_KEY = 'easy-cut:autosave'
+const PROJECT_PREFIX = 'easy-cut:project:'
 
 export class DesktopOnlyError extends Error {
   constructor(what: string) {
@@ -72,6 +73,50 @@ export function createBrowserBridge(): NativeBridge {
       }
       return Promise.resolve()
     },
+    // En el navegador, los vídeos en marcha van en localStorage (solo para probar la interfaz).
+    listProjects() {
+      const out: StoredProject[] = []
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i)
+          if (!key?.startsWith(PROJECT_PREFIX)) continue
+          const raw = localStorage.getItem(key)
+          if (!raw) continue
+          const { json, modifiedMs } = JSON.parse(raw) as { json: string; modifiedMs: number }
+          out.push({ id: key.slice(PROJECT_PREFIX.length), json, modifiedMs, hasBackup: false })
+        }
+      } catch {
+        // Sin almacenamiento: lista vacía.
+      }
+      return Promise.resolve(out)
+    },
+    readProject(id) {
+      try {
+        const raw = localStorage.getItem(PROJECT_PREFIX + id)
+        return Promise.resolve(raw ? (JSON.parse(raw) as { json: string }).json : null)
+      } catch {
+        return Promise.resolve(null)
+      }
+    },
+    writeProject(id, json) {
+      try {
+        localStorage.setItem(PROJECT_PREFIX + id, JSON.stringify({ json, modifiedMs: Date.now() }))
+      } catch {
+        // Igual que el autoguardado.
+      }
+      return Promise.resolve()
+    },
+    deleteProject(id) {
+      try {
+        localStorage.removeItem(PROJECT_PREFIX + id)
+      } catch {
+        // Igual que arriba.
+      }
+      return Promise.resolve()
+    },
+    restoreProjectBackup: () => unavailable('Volver a la copia anterior'),
+    readProjectHistory: () => Promise.resolve(null),
+    writeProjectHistory: () => Promise.resolve(),
     saveProject: () => unavailable('Guardar el proyecto'),
     loadProject: () => unavailable('Abrir un proyecto'),
     saveRecording: () => unavailable('Guardar la grabación'),

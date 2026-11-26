@@ -204,11 +204,42 @@ export interface Track {
   items: TrackItem[]
 }
 
+// ---------------------------------------------------------------------------
+// Ficheros del proyecto («media pool»)
+
+/** Qué es un fichero traído al proyecto: un vídeo (con imagen), un sonido (sin imagen) o una imagen fija. */
+export type MediaKind = 'video' | 'sound' | 'image'
+
 /**
- * Versión 3: el proyecto lleva `mainMuted` y `tracks` (pistas de sonidos y efectos). La 2 (trozos con
- * `picture` y `sourceHasVideo`) y la 1 se migran al leerlas.
+ * Un fichero que se ha traído al proyecto, con lo que se sabe de él (lo que da ffprobe). Se queda en la
+ * lista aunque ya no lo use ningún trozo ni ninguna pista («De mi ordenador» lo vuelve a ofrecer), y sirve
+ * para comparar al volver a enlazar un original que se ha movido.
  */
-export const PROJECT_VERSION = 3 as const
+export interface MediaEntry {
+  path: string
+  kind: MediaKind
+  /** 0 en una imagen fija. */
+  durationMs: number
+  hasVideo: boolean
+  hasAudio: boolean
+  /** Ancho y alto visibles (con el giro aplicado); 0 si no tiene imagen o no se sabe. */
+  width: number
+  height: number
+  fps: number
+  sizeBytes: number | null
+  hasAlpha: boolean
+  /**
+   * ¿Son datos medidos con ffprobe? false en lo que viene de un proyecto anterior a la versión 4 (solo se
+   * sabía la duración y si tenía imagen): se completa al leer el fichero.
+   */
+  probed: boolean
+}
+
+/**
+ * Versión 4: el proyecto lleva `media` (la lista de sus ficheros, con sus datos). La 3 (con `mainMuted` y
+ * `tracks`), la 2 (trozos con `picture` y `sourceHasVideo`) y la 1 se migran al leerlas.
+ */
+export const PROJECT_VERSION = 4 as const
 
 export interface Project {
   version: typeof PROJECT_VERSION
@@ -220,6 +251,8 @@ export interface Project {
   mainMuted: boolean
   /** Pistas de sonidos y efectos. El orden de las de efectos es el de apilado: la primera, encima. */
   tracks: Track[]
+  /** Ficheros traídos al proyecto, en el orden en que se trajeron (ver MediaEntry). */
+  media: MediaEntry[]
 }
 
 /** Ningún trozo ni parte de un corte puede quedar más corto que esto (tiempo de salida). */
@@ -234,7 +267,7 @@ export const MAX_ZOOM = 4
 // Creación
 
 export function createProject(aspect: AspectRatio = '16:9'): Project {
-  return { version: PROJECT_VERSION, aspect, clips: [], targetDurationMs: null, mainMuted: false, tracks: [] }
+  return { version: PROJECT_VERSION, aspect, clips: [], targetDurationMs: null, mainMuted: false, tracks: [], media: [] }
 }
 
 export type IdFactory = () => string
@@ -887,29 +920,208 @@ export function clipDisplaySize(clip: Viewable, media: Pick<MediaInfo, 'width' |
 }
 
 // ---------------------------------------------------------------------------
+// Ficheros del proyecto («media pool»): lo básico, que hace falta también al leer un proyecto
+
+/** Qué es un fichero según lo que dice ffprobe. */
+export function mediaKindOf(info: Pick<MediaInfo, 'hasVideo' | 'isStill'>): MediaKind {
+  if (info.isStill) return 'image'
+  return info.hasVideo !== false ? 'video' : 'sound'
+}
+
+/** La entrada de la lista de ficheros con lo que ha medido ffprobe. */
+export function mediaEntryFromInfo(info: MediaInfo): MediaEntry {
+  const kind = mediaKindOf(info)
+  const hasVideo = kind !== 'sound'
+  return {
+    path: info.path,
+    kind,
+    durationMs: kind === 'image' ? 0 : Math.max(0, Math.round(info.durationMs)),
+    hasVideo,
+    hasAudio: kind !== 'image' && info.hasAudio,
+    width: hasVideo ? Math.max(0, Math.round(info.width)) : 0,
+    height: hasVideo ? Math.max(0, Math.round(info.height)) : 0,
+    fps: hasVideo && Number.isFinite(info.fps) ? info.fps : 0,
+    sizeBytes: typeof info.sizeBytes === 'number' && Number.isFinite(info.sizeBytes) ? info.sizeBytes : null,
+    hasAlpha: info.hasAlpha === true,
+    probed: true,
+  }
+}
+
+/** Todos los ficheros del ordenador que usa el proyecto (trozos, vídeos de encima y pistas), sin repetir. */
+export function usedMediaPaths(project: Project): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  const add = (p: string) => {
+    if (seen.has(p)) return
+    seen.add(p)
+    out.push(p)
+  }
+  for (const c of project.clips) {
+    add(c.sourcePath)
+    if (c.picture.kind === 'cover') add(c.picture.sourcePath)
+  }
+  for (const t of project.tracks) for (const i of t.items) if (i.source.type === 'file') add(i.source.path)
+  return out
+}
+
+/**
+ * Lo poco que se sabe de un fichero por cómo lo usa el proyecto (sin ffprobe): para los proyectos de antes
+ * de la versión 4 o un fichero que falta. El trozo sabe más que el vídeo de encima y que la pista.
+ */
+function inferredEntry(project: Project, path: string): MediaEntry | null {
+  const base = (kind: MediaKind, durationMs: number, hasAudio: boolean): MediaEntry => ({
+    path,
+    kind,
+    durationMs: kind === 'image' ? 0 : Math.max(0, Math.round(durationMs)),
+    hasVideo: kind !== 'sound',
+    hasAudio,
+    width: 0,
+    height: 0,
+    fps: 0,
+    sizeBytes: null,
+    hasAlpha: false,
+    probed: false,
+  })
+  const clip = project.clips.find((c) => c.sourcePath === path)
+  // De un trozo no se guardaba si tenía sonido: se supone que sí (es lo normal).
+  if (clip) return base(clip.sourceHasVideo ? 'video' : 'sound', clip.sourceDurationMs, true)
+  for (const c of project.clips) {
+    if (c.picture.kind === 'cover' && c.picture.sourcePath === path) return base('video', c.picture.sourceDurationMs, true)
+  }
+  for (const t of project.tracks) {
+    for (const i of t.items) {
+      if (i.source.type !== 'file' || i.source.path !== path) continue
+      const kind: MediaKind = i.still ? 'image' : t.kind === 'effect' ? 'video' : 'sound'
+      return base(kind, i.sourceDurationMs, i.hasAudio)
+    }
+  }
+  return null
+}
+
+function sameEntry(a: MediaEntry, b: MediaEntry): boolean {
+  return (
+    a.path === b.path &&
+    a.kind === b.kind &&
+    a.durationMs === b.durationMs &&
+    a.hasVideo === b.hasVideo &&
+    a.hasAudio === b.hasAudio &&
+    a.width === b.width &&
+    a.height === b.height &&
+    a.fps === b.fps &&
+    a.sizeBytes === b.sizeBytes &&
+    a.hasAlpha === b.hasAlpha &&
+    a.probed === b.probed
+  )
+}
+
+/**
+ * Deja en la lista de ficheros todo lo que usa el proyecto: lo que falte se añade al final (con lo medido
+ * en `known`, si se sabe; si no, con lo que dice el propio proyecto), y lo que estaba sin medir se completa
+ * con `known`. Nunca quita nada. Devuelve el mismo objeto si no cambia nada.
+ */
+export function syncMediaPool(project: Project, known: Readonly<Record<string, MediaInfo>> = {}): Project {
+  let media: MediaEntry[] | null = null
+  const at = new Map(project.media.map((m, i) => [m.path, i]))
+  const list = () => (media ??= project.media.slice())
+  for (const path of usedMediaPaths(project)) {
+    const info = known[path]
+    const i = at.get(path)
+    if (i === undefined) {
+      const entry = info ? mediaEntryFromInfo(info) : inferredEntry(project, path)
+      if (!entry) continue
+      at.set(path, list().length)
+      list().push(entry)
+    } else if (info && !(media ?? project.media)[i]!.probed) {
+      list()[i] = mediaEntryFromInfo(info)
+    }
+  }
+  return media ? { ...project, media } : project
+}
+
+/**
+ * Pone o actualiza la entrada de un fichero con lo medido (sin tocar nada más). Devuelve el mismo objeto si
+ * ya estaba igual.
+ */
+export function upsertMediaEntry(project: Project, info: MediaInfo): Project {
+  const entry = mediaEntryFromInfo(info)
+  const i = project.media.findIndex((m) => m.path === info.path)
+  if (i >= 0 && sameEntry(project.media[i]!, entry)) return project
+  const media = project.media.slice()
+  if (i >= 0) media[i] = entry
+  else media.push(entry)
+  return { ...project, media }
+}
+
+/**
+ * Une la lista de ficheros del proyecto con otra más nueva (la de antes de deshacer o rehacer): la lista de
+ * ficheros no se deshace, porque lo que se ha traído se queda a mano aunque se deshaga el trozo que lo usaba.
+ * Para un mismo fichero gana `newer`. Devuelve el mismo objeto si no cambia nada.
+ */
+export function mergeMediaPool(project: Project, newer: readonly MediaEntry[]): Project {
+  if (newer === project.media) return project
+  let changed = false
+  const byPath = new Map(newer.map((m) => [m.path, m]))
+  const media = project.media.map((m) => {
+    const n = byPath.get(m.path)
+    if (n && !sameEntry(n, m)) {
+      changed = true
+      return n
+    }
+    return m
+  })
+  const have = new Set(project.media.map((m) => m.path))
+  for (const n of newer) {
+    if (have.has(n.path)) continue
+    media.push(n)
+    have.add(n.path)
+    changed = true
+  }
+  return changed ? { ...project, media } : project
+}
+
+// ---------------------------------------------------------------------------
 // Serialización
 
 export const PROJECT_FILE_APP = 'easy-cut'
+/** Nombre de un proyecto: hasta esta longitud. */
+export const MAX_PROJECT_NAME_LENGTH = 80
 
 interface ProjectFile {
   app: typeof PROJECT_FILE_APP
   version: number
+  /** Nombre que se enseña en la lista de Inicio (va fuera del proyecto: cambiarlo no se deshace). */
+  name?: string
   project: Omit<Project, 'version'>
 }
 
-export function serializeProject(project: Project): string {
+export function serializeProject(project: Project, meta: { name?: string } = {}): string {
   const file: ProjectFile = {
     app: PROJECT_FILE_APP,
     version: PROJECT_VERSION,
+    ...(meta.name ? { name: meta.name } : {}),
     project: {
       aspect: project.aspect,
       clips: project.clips,
       targetDurationMs: project.targetDurationMs,
       mainMuted: project.mainMuted,
       tracks: project.tracks,
+      media: project.media,
     },
   }
   return JSON.stringify(file, null, 2)
+}
+
+/** Lee un proyecto guardado con su nombre ('' si no lo tiene). Lanza ProjectFormatError como parseProject. */
+export function parseProjectFile(json: string): { project: Project; name: string } {
+  const project = parseProject(json)
+  let name = ''
+  try {
+    const data = JSON.parse(json) as unknown
+    if (isObject(data) && typeof data.name === 'string') name = data.name.trim().slice(0, MAX_PROJECT_NAME_LENGTH)
+  } catch {
+    // parseProject ya lo habría rechazado.
+  }
+  return { project, name }
 }
 
 export class ProjectFormatError extends Error {
@@ -942,7 +1154,38 @@ export function parseProject(json: string): Project {
   const target = typeof p.targetDurationMs === 'number' && p.targetDurationMs > 0 ? Math.round(p.targetDurationMs) : null
   // Migración 1/2 → 3: sin pistas y con el sonido de la fila principal puesto.
   const tracks = version < 3 || !Array.isArray(p.tracks) ? [] : parseTracks(p.tracks)
-  return { version: PROJECT_VERSION, aspect, clips, targetDurationMs: target, mainMuted: version >= 3 && p.mainMuted === true, tracks }
+  // Migración 1/2/3 → 4: la lista de ficheros sale de lo que usa el proyecto (sin medir: se mide al abrirlo).
+  // En la 4, la guardada, y lo que falte en ella (un fichero a mano en el JSON) se añade igual.
+  const media = version >= 4 && Array.isArray(p.media) ? parseMediaPool(p.media) : []
+  const project: Project = { version: PROJECT_VERSION, aspect, clips, targetDurationMs: target, mainMuted: version >= 3 && p.mainMuted === true, tracks, media }
+  return syncMediaPool(project)
+}
+
+function parseMediaPool(raw: unknown[]): MediaEntry[] {
+  const out: MediaEntry[] = []
+  const seen = new Set<string>()
+  for (const m of raw) {
+    if (!isObject(m) || typeof m.path !== 'string' || m.path === '' || seen.has(m.path)) continue
+    const kind: MediaKind | null = m.kind === 'video' || m.kind === 'sound' || m.kind === 'image' ? m.kind : null
+    if (!kind) continue
+    seen.add(m.path)
+    const hasVideo = kind !== 'sound'
+    const size = finiteOr(m.sizeBytes, NaN)
+    out.push({
+      path: m.path,
+      kind,
+      durationMs: kind === 'image' ? 0 : Math.max(0, Math.round(finiteOr(m.durationMs, 0))),
+      hasVideo,
+      hasAudio: kind !== 'image' && m.hasAudio !== false,
+      width: hasVideo ? Math.max(0, Math.round(finiteOr(m.width, 0))) : 0,
+      height: hasVideo ? Math.max(0, Math.round(finiteOr(m.height, 0))) : 0,
+      fps: hasVideo ? Math.max(0, finiteOr(m.fps, 0)) : 0,
+      sizeBytes: Number.isFinite(size) && size >= 0 ? Math.round(size) : null,
+      hasAlpha: m.hasAlpha === true,
+      probed: m.probed === true,
+    })
+  }
+  return out
 }
 
 /** Límites de los valores de un elemento. */

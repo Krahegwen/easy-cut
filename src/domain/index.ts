@@ -1,6 +1,7 @@
 // Punto de entrada de la capa de dominio.
 export * from './project'
 export * from './history'
+export * from './history-file'
 export * from './durations'
 export * from './probe'
 export * from './output'
@@ -18,3 +19,5 @@ export * from './paste'
 export * from './tracks'
 export * from './library'
 export * from './save-log'
+export * from './media-pool'
+export * from './projects'

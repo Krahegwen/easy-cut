@@ -109,7 +109,7 @@ fn cache_dir(app: &AppHandle, sub: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = separate_in_dev(app.path().app_data_dir().map_err(|e| e.to_string())?);
     fs::create_dir_all(&dir).map_err(io_err("No se puede crear la carpeta de datos"))?;
     Ok(dir)
@@ -404,17 +404,21 @@ pub async fn pick_videos(
     default_folder: Option<String>,
     sounds: Option<bool>,
     for_tracks: Option<bool>,
+    title: Option<String>,
 ) -> Result<Vec<String>, String> {
     let folder = default_folder.map(PathBuf::from).filter(|p| p.is_dir()).or_else(|| app.path().video_dir().ok());
     let sounds = sounds.unwrap_or(false);
     let for_tracks = for_tracks.unwrap_or(false);
-    let title = match (multiple, sounds) {
+    // Un título propio («¿Dónde está ahora «boda.mp4»?»), recortado por si acaso.
+    let custom: Option<String> = title.map(|t| t.chars().filter(|c| !c.is_control()).take(150).collect());
+    let default_title = match (multiple, sounds) {
         _ if for_tracks => "Elige sonidos, vídeos o imágenes para las pistas",
         (true, true) => "Elige los vídeos o sonidos",
         (false, true) => "Elige un vídeo o un sonido",
         (true, false) => "Elige los vídeos",
         (false, false) => "Elige un vídeo",
     };
+    let title = custom.as_deref().filter(|t| !t.trim().is_empty()).unwrap_or(default_title);
     let mut dialog = app.dialog().file().set_parent(&window).set_title(title);
     if for_tracks {
         let all: Vec<&str> = AUDIO_EXTENSIONS.iter().chain(VIDEO_EXTENSIONS.iter()).chain(IMAGE_EXTENSIONS.iter()).copied().collect();
@@ -656,7 +660,13 @@ pub fn clear_autosave(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn save_project(app: AppHandle, window: WebviewWindow, json: String, path: Option<String>) -> Result<Option<String>, String> {
+pub async fn save_project(
+    app: AppHandle,
+    window: WebviewWindow,
+    json: String,
+    path: Option<String>,
+    suggested_name: Option<String>,
+) -> Result<Option<String>, String> {
     let target = match path {
         Some(p) => Some(PathBuf::from(p)),
         None => {
@@ -666,7 +676,10 @@ pub async fn save_project(app: AppHandle, window: WebviewWindow, json: String, p
                 .file()
                 .set_parent(&window)
                 .set_title("Guardar el proyecto")
-                .set_file_name(format!("Proyecto.{PROJECT_EXTENSION}"))
+                .set_file_name(format!(
+                    "{}.{PROJECT_EXTENSION}",
+                    sanitize_file_stem(suggested_name.as_deref().unwrap_or(""), "Proyecto")
+                ))
                 .add_filter("Proyecto de Easy Cut", &[PROJECT_EXTENSION]);
             if let Ok(dir) = output_folder(&app) {
                 dialog = dialog.set_directory(dir);
