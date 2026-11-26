@@ -50,6 +50,8 @@ export function createBrowserBridge(): NativeBridge {
     // En el navegador no se pueden leer los ficheros del portapapeles: nunca hay ninguno.
     clipboardSequence: () => Promise.resolve(0),
     clipboardFiles: () => Promise.resolve({ sequence: 0, paths: [] }),
+    // La ventana del navegador no se toca: la vista previa ocupa la pestaña y ya está.
+    setWindowFullscreen: () => Promise.resolve(false),
     saveAutosave(json) {
       try {
         localStorage.setItem(AUTOSAVE_KEY, json)

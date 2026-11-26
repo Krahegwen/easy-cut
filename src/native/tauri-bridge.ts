@@ -318,6 +318,7 @@ export function createTauriBridge(): NativeBridge {
     copyFileToClipboard: (path) => invoke<void>('copy_file_to_clipboard', { path }),
     clipboardSequence: () => invoke<number>('clipboard_sequence'),
     clipboardFiles: () => invoke<{ sequence: number; paths: string[] }>('clipboard_files'),
+    setWindowFullscreen: (on) => invoke<boolean>('set_window_fullscreen', { on }),
 
     saveAutosave: (json) => invoke<void>('save_autosave', { json }),
     loadAutosave: () => invoke<string | null>('load_autosave'),

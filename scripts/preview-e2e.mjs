@@ -1,7 +1,8 @@
 // Prueba de extremo a extremo de la vista previa de «Tu vídeo», en la app Tauri real por CDP y con los botones y
 // las teclas de verdad (en el modo de pruebas: sin sonido y sin quitar el foco):
 //
-// - Pantalla completa: entrar con el botón y con F; se ve lo mismo (los mismos sonidos y efectos montados, el
+// - Pantalla completa: entrar con el botón y con F; el reproductor pasa a la capa superior (Popover API) y ocupa
+//   la ventana (en el modo de pruebas la ventana no se pone a pantalla completa del sistema); se ve lo mismo (los mismos sonidos y efectos montados, el
 //   mismo encuadre relativo del vídeo de encima y de los efectos, la misma forma del marco); los controles
 //   (reproducir/pausa, posición, salir) se ven y se pulsan; Espacio, ← →, Inicio/Fin valen dentro; Esc y F salen
 //   sin parar la reproducción ni irse a Inicio; F1 sale para enseñar la lista de teclas; cada tecla dibujada
@@ -173,6 +174,17 @@ async function playerKeyHintsAreShortcuts(where) {
   check(`Cada tecla dibujada en el reproductor vale (${where})`, res.missing.length === 0 && res.drawn.length > 0, res.missing.length ? `sin atajo: ${res.missing.join(', ')}` : res.drawn.join(' '))
 }
 
+/**
+ * ¿Se ve encima de todo? Para lo que no se pulsa (`pointer-events: none`, como el aviso de repaso): dentro de la
+ * ventana, visible y, mirando qué hay pintado en su centro (con el puntero activado solo para mirar), nada encima.
+ */
+const visibleOnTop = (selector) =>
+  app.evaluate(`const el = document.querySelector(args.s); if (!el) return false; const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0 || r.right > innerWidth + 1 || r.bottom > innerHeight + 1 || r.left < -1 || r.top < -1) return false;
+    const cs = getComputedStyle(el); if (cs.visibility !== 'visible' || Number(cs.opacity) === 0) return false;
+    const before = el.style.pointerEvents; el.style.pointerEvents = 'auto';
+    try { const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!hit && (hit === el || el.contains(hit)) } finally { el.style.pointerEvents = before }`, { s: selector })
+
 /** ¿Se ve y se puede pulsar? (dentro de la ventana y no tapado por otra cosa). */
 const reachable = (selector) =>
   app.evaluate(`const el = document.querySelector(args.s); if (!el) return false; const r = el.getBoundingClientRect();
@@ -294,12 +306,18 @@ try {
   await playerKeyHintsAreShortcuts('normal')
   await shot('preview-01-normal.png')
 
+  // Los elementos de antes, para ver que no se vuelve a montar nada.
+  await app.evaluate('window.__previewMediaBefore = [...document.querySelectorAll("[data-testid=player] video, [data-testid=player] audio, [data-testid=player] img")]; return true')
   // Entrar con el botón.
   await app.click('[data-testid=fullscreen-enter]')
   const entered = await app
-    .waitFor('const p = document.querySelector("[data-testid=player]"); return document.fullscreenElement === p && p.dataset.fullscreen === "1"', { timeoutMs: 5000, what: 'pantalla completa' })
+    .waitFor('const p = document.querySelector("[data-testid=player]"); return p.matches(":popover-open") && p.dataset.fullscreen === "1"', { timeoutMs: 5000, what: 'pantalla completa' })
     .catch(() => false)
-  check('El botón pone la vista previa a pantalla completa (Fullscreen API sobre el reproductor)', entered === true, await app.evaluate('return String(document.fullscreenElement?.dataset?.testid ?? null)'))
+  check(
+    'El botón pone la vista previa a pantalla completa (el mismo reproductor, en la capa superior)',
+    entered === true,
+    JSON.stringify(await app.evaluate('const p = document.querySelector("[data-testid=player]"); return { popover: p.matches(":popover-open"), fullscreen: p.dataset.fullscreen }')),
+  )
   await sleep(700)
   {
     const full = await layoutSnapshot()
@@ -307,6 +325,9 @@ try {
     check('Ocupa toda la ventana', Math.abs(view.w - view.iw) <= 2 && Math.abs(view.h - view.ih) <= 2, JSON.stringify(view))
     check('El marco es más grande y con la misma forma', full.frameW > before.frameW && Math.abs(full.aspect - before.aspect) < 0.01, `${Math.round(before.frameW)}×${Math.round(before.frameH)} → ${Math.round(full.frameW)}×${Math.round(full.frameH)}`)
     check('Los mismos sonidos y efectos montados', JSON.stringify(full.mounted) === JSON.stringify(before.mounted), `${before.mounted.join(',')} / ${full.mounted.join(',')}`)
+    const same = await app.evaluate(`const old = window.__previewMediaBefore; const now = [...document.querySelectorAll("[data-testid=player] video, [data-testid=player] audio, [data-testid=player] img")];
+      return { before: old.length, now: now.length, kept: old.every((e) => e.isConnected && now.includes(e)) }`)
+    check('No se vuelve a montar nada (los mismos elementos <video>, <audio> e <img>)', same.kept && same.before === same.now && same.now > 0, JSON.stringify(same))
     check('El vídeo de encima con el mismo encuadre relativo', sameRect(full.cover, before.cover), JSON.stringify({ antes: before.cover, ahora: full.cover }))
     const fxBefore = before.effects.find((e) => e.id === fx.id)
     const fxFull = full.effects.find((e) => e.id === fx.id)
@@ -361,7 +382,7 @@ try {
   await app.key(' ')
   await sleep(600)
   await app.key('Escape')
-  await app.waitFor('return document.querySelector("[data-testid=player]").dataset.fullscreen === "0" && !document.fullscreenElement', { timeoutMs: 5000, what: 'salir con Esc' }).catch(() => false)
+  await app.waitFor('return document.querySelector("[data-testid=player]").dataset.fullscreen === "0" && !document.querySelector(":popover-open")', { timeoutMs: 5000, what: 'salir con Esc' }).catch(() => false)
   await sleep(500)
   {
     const d = await playerData()
@@ -423,7 +444,8 @@ try {
   // ================================================================ repasar más rápido
 
   const pastBefore = await S('return store.history.value.past.length')
-  const reviewText = await app.evaluate('return document.querySelector("[data-testid=review-rate]")?.textContent.replace(/\\s+/g, " ").trim() ?? null')
+  // El nombre y cada botón por separado (sus textos van pegados en el DOM, sin espacios entre ellos).
+  const reviewText = await app.evaluate('const g = document.querySelector("[data-testid=review-rate]"); return g ? [...g.querySelectorAll(".review-label, button")].map((e) => e.textContent.trim()).join(" ") : null')
   check('«Repasar más rápido» se llama así y ofrece 1×, 1,5× y 2×', reviewText === 'Repasar más rápido 1× 1,5× 2×', reviewText ?? '(no está)')
   check('A 1280×800 el nombre «Repasar más rápido» se ve', await reachable('[data-testid=review-rate] .review-label'))
   check('A 1× no hay aviso', !(await app.evaluate('return !!document.querySelector("[data-testid=review-notice]")')))
@@ -434,7 +456,7 @@ try {
     await sleep(200)
     const label = rate === 1.5 ? '1,5×' : '2×'
     const notice = await app.text('[data-testid=review-notice]')
-    check(`A ${label}: el aviso se ve`, notice === `Repasando a ${label} · el vídeo guardado no cambia` && (await reachable('[data-testid=review-notice]')), notice ?? '(ninguno)')
+    check(`A ${label}: el aviso se ve`, notice === `Repasando a ${label} · el vídeo guardado no cambia` && (await visibleOnTop('[data-testid=review-notice]')), notice ?? '(ninguno)')
     check(`A ${label}: el botón queda marcado`, (await app.evaluate(`return document.querySelector('[data-testid="review-rate-${rate}"]').getAttribute('aria-pressed')`)) === 'true' && (await playerData()).rate === rate)
     // Trozo 1 (normal, con vídeo encima, el sonido y el efecto): de 2,5 s a unos 7 s del montaje.
     await app.key(' ')
@@ -467,14 +489,17 @@ try {
   await app.key('f')
   await app.waitFor('return document.querySelector("[data-testid=player]").dataset.fullscreen === "1"', { timeoutMs: 5000 }).catch(() => false)
   await sleep(500)
-  check('A pantalla completa, el aviso de repaso también se ve', await reachable('[data-testid=review-notice]'))
+  check('A pantalla completa, el aviso de repaso también se ve', await visibleOnTop('[data-testid=review-notice]'))
   await shot('preview-05-pantalla-completa-2x.png')
   await app.key('Escape')
   await sleep(600)
 
   // El vídeo que se guarda no cambia: ni la velocidad de los trozos ni el historial.
   check('Repasar no cambia el proyecto (velocidades) ni deja pasos de deshacer', JSON.stringify(await S('return store.project.value.clips.map((c) => c.speed)')) === '[1,2,1]' && (await S('return store.history.value.past.length')) === pastBefore)
-  check('Ni se guarda en el autoguardado', !(await S('return JSON.stringify(store.project.value).includes("review")')))
+  // Ninguna clave del vídeo guardado habla del repaso (las rutas sí pueden: «preview-e2e», «Música de repaso»).
+  const reviewKeys = await S(`const keys = []; const walk = (v) => { if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { if (/review|repas/i.test(k)) keys.push(k); walk(x) } };
+    walk(JSON.parse(domain.serializeProject(store.project.value, { name: store.projectName.value }))); return keys`)
+  check('Ni se guarda en el autoguardado (ninguna clave del vídeo guardado)', reviewKeys.length === 0, reviewKeys.join(', '))
 
   // Al ir a Guardar y volver, otra vez a 1×.
   await app.click('[data-testid=save-video]')

@@ -18,6 +18,8 @@ export interface FakeBridgeState {
   encoders: Record<string, boolean>
   /** Portapapeles del sistema: secuencia y ficheros copiados en el Explorador. */
   clipboard: { sequence: number; paths: string[] }
+  /** Ventana a pantalla completa del sistema (lo último pedido con setWindowFullscreen). */
+  windowFullscreen: boolean
   /** Biblioteca: ficheros ya descargados (nombre → ruta) y descargas pedidas. */
   library: Record<string, string>
   libraryFetches: string[]
@@ -60,6 +62,7 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     ffmpegHangs: false,
     encoders: { h264_nvenc: true, libx264: true },
     clipboard: { sequence: 1, paths: [] },
+    windowFullscreen: false,
     library: {},
     libraryFetches: [],
     saveLog: [],
@@ -134,6 +137,10 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     copyFileToClipboard: async () => {},
     clipboardSequence: async () => state.clipboard.sequence,
     clipboardFiles: async () => ({ sequence: state.clipboard.sequence, paths: [...state.clipboard.paths] }),
+    setWindowFullscreen: async (on) => {
+      state.windowFullscreen = on
+      return true
+    },
     saveAutosave: async (json) => {
       state.autosave = json
     },

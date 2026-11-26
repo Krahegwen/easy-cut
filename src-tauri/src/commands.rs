@@ -541,6 +541,20 @@ pub fn reveal_in_folder(app: AppHandle, path: String) -> Result<(), String> {
     result.map_err(|e| format!("No se ha podido mostrar {path} en el Explorador: {e}"))
 }
 
+/// Ventana a pantalla completa del sistema, o como estaba (la vista previa a pantalla completa; la vista previa
+/// ya ocupa la ventana por su cuenta). En el modo de pruebas no se toca: la ventana está detrás y sin foco, y a
+/// pantalla completa taparía el escritorio de quien use el PC. Devuelve si ha cambiado algo.
+#[tauri::command]
+pub fn set_window_fullscreen(window: tauri::WebviewWindow, on: bool) -> Result<bool, String> {
+    if crate::test_window::enabled() {
+        return Ok(false);
+    }
+    window
+        .set_fullscreen(on)
+        .map_err(|e| format!("No se ha podido cambiar la pantalla completa de la ventana: {e}"))?;
+    Ok(true)
+}
+
 /// Copia el fichero al portapapeles como «fichero» (CF_HDROP), para pegarlo con Ctrl+V en WhatsApp o el Explorador.
 #[tauri::command]
 pub async fn copy_file_to_clipboard(path: String) -> Result<(), String> {

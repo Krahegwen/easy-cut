@@ -9,10 +9,13 @@
 // segundo <video> silenciado que sigue el tiempo de salida del trozo (se recoloca si se separa más de
 // 150 ms y se queda en su última imagen si se acaba), con el vídeo del trozo en pequeño en una esquina.
 //
-// Pantalla completa (`fullscreenable`): la Fullscreen API sobre la raíz del propio reproductor. Así no se
-// vuelve a montar nada (los <video>, el vídeo de encima y las pistas siguen siendo los mismos elementos, en el
-// mismo instante) y la capa superior del navegador se salta el `container-type` de «Tu vídeo», que con una
-// capa `position: fixed` la dejaría encerrada en su columna. En WebView2 ocupa al menos toda la ventana.
+// Pantalla completa (`fullscreenable`): la raíz del propio reproductor pasa a la capa superior del navegador con
+// la Popover API (`popover="manual"` + `showPopover()`), sin moverla en el DOM. Así no se vuelve a montar nada
+// (los <video>, el vídeo de encima y las pistas siguen siendo los mismos elementos, en el mismo instante) y la
+// capa superior se salta el `container-type` de «Tu vídeo», que con una capa `position: fixed` la dejaría
+// encerrada en su columna. Ocupa la ventana, y la ventana se pone a pantalla completa del sistema
+// (`setWindowFullscreen`; en el modo de pruebas no). No es la Fullscreen API: WebView2 la rechaza («not
+// granted») si la ventana no está activa, que es como corren las pruebas, y no se podría probar.
 //
 // «Repasar más rápido» (`reviewable`): un factor que solo vive aquí (se pierde al salir de la pantalla, así
 // que vuelve solo a 1× al guardar o al reabrir) y multiplica el playbackRate de todo lo que suena: el trozo
@@ -678,30 +681,56 @@ watch(reviewRate, () => {
 
 const root = ref<HTMLDivElement | null>(null)
 const fullscreen = ref(false)
-/** Cuándo se salió de la pantalla completa (para que el mismo Esc no haga además lo de la pantalla). */
+/** Cuándo se salió de la pantalla completa (para que un Esc rezagado no haga además lo de la pantalla). */
 let exitedAt = Number.NEGATIVE_INFINITY
 const FULLSCREEN_LAYER = 'preview-fullscreen'
 const ESC_GRACE_MS = 400
+/** ¿Se ha pedido poner la ventana a pantalla completa del sistema (y hay que dejarla como estaba)? */
+let windowFullscreenAsked = false
+/** Las peticiones a la ventana, en orden: entrar y salir muy seguido no se cruzan. */
+let windowQueue: Promise<unknown> = Promise.resolve()
 
-function onFullscreenChange() {
-  const now = !!root.value && document.fullscreenElement === root.value
-  if (fullscreen.value && !now) exitedAt = performance.now()
-  fullscreen.value = now
+function setWindowFullscreen(on: boolean) {
+  windowQueue = windowQueue
+    .then(() => store.bridge.setWindowFullscreen(on))
+    .catch((err) => console.warn('[easy-cut] no se ha podido cambiar la pantalla completa de la ventana', err))
 }
 
-async function enterFullscreen() {
+function enterFullscreen() {
   const el = root.value
   if (!props.fullscreenable || !el || fullscreen.value) return
   try {
-    await el.requestFullscreen({ navigationUI: 'hide' })
+    // El atributo solo mientras dura: un popover cerrado es `display: none`.
+    el.setAttribute('popover', 'manual')
+    el.showPopover()
   } catch (err) {
+    el.removeAttribute('popover')
     console.warn('[easy-cut] no se ha podido poner la vista previa a pantalla completa', err)
     store.showToast('No se ha podido poner la vista previa a pantalla completa.')
+    return
   }
+  fullscreen.value = true
+  windowFullscreenAsked = true
+  setWindowFullscreen(true)
 }
 
 function exitFullscreen() {
-  if (root.value && document.fullscreenElement === root.value) void document.exitFullscreen().catch(() => {})
+  if (!fullscreen.value) return
+  const el = root.value
+  if (el) {
+    try {
+      if (el.matches(':popover-open')) el.hidePopover()
+    } catch {
+      // Ya no estaba en la capa superior.
+    }
+    el.removeAttribute('popover')
+  }
+  fullscreen.value = false
+  exitedAt = performance.now()
+  if (windowFullscreenAsked) {
+    windowFullscreenAsked = false
+    setWindowFullscreen(false)
+  }
 }
 
 function toggleFullscreen() {
@@ -729,7 +758,7 @@ if (props.fullscreenable) {
       { id: 'fullscreen-keys', keys: ['F1'], label: 'F1', description: 'ver la lista de teclas (sale de la pantalla completa)', run: openKeysPanel, inText: true },
     ],
   })
-  // Justo después de salir, un Esc que llegue tarde (el navegador también sale con Esc) no hace nada más.
+  // Justo después de salir, un Esc que llegue tarde (una tecla que se repite, dos pulsaciones) no hace nada más.
   useShortcuts({
     id: `${FULLSCREEN_LAYER}-grace`,
     title: 'Pantalla completa',
@@ -756,12 +785,10 @@ onMounted(() => {
     if (el) stageSize.value = { width: el.clientWidth, height: el.clientHeight }
   })
   if (stage.value) observer.observe(stage.value)
-  document.addEventListener('fullscreenchange', onFullscreenChange)
   locateAt(0)
   void activate(false)
 })
 onBeforeUnmount(() => {
-  document.removeEventListener('fullscreenchange', onFullscreenChange)
   exitFullscreen()
   observer?.disconnect()
   cancelAnimationFrame(raf)
@@ -1105,11 +1132,21 @@ defineExpose({
   min-width: 110px;
   color: rgb(255 255 255 / 0.85);
 }
-/* Pantalla completa: sin bordes redondeados y la imagen con algo más de aire. */
+/* Pantalla completa: en la capa superior (popover) y ocupando toda la ventana, sin lo que el navegador pone de
+   serie a un popover (borde, relleno, tamaño ajustado al contenido y colores del sistema); sin bordes redondeados
+   y la imagen con algo más de aire. */
 .player.is-fullscreen {
+  position: fixed;
+  inset: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
   border-radius: 0;
-  width: 100%;
-  height: 100%;
+  color: inherit;
 }
 .player.is-fullscreen .stage {
   margin: 20px 24px 0;

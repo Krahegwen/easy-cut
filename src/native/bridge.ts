@@ -229,6 +229,13 @@ export interface NativeBridge {
   clipboardFiles(): Promise<{ sequence: number; paths: string[] }>
 
   /**
+   * Pone la ventana de la app a pantalla completa del sistema o la deja como estaba (para la vista previa a
+   * pantalla completa). Devuelve si ha cambiado algo: en el modo de pruebas (ventana detrás, sin foco) y en el
+   * navegador no se toca la ventana y devuelve false.
+   */
+  setWindowFullscreen(on: boolean): Promise<boolean>
+
+  /**
    * Autoguardado de antes (un solo vídeo a medias, `autosave.json`). Ya no se escribe: al arrancar se pasa a
    * la lista de vídeos en marcha y se borra. Se queda para esa migración (y para las pruebas).
    */

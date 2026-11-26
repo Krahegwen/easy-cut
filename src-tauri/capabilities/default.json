@@ -32,6 +32,7 @@
     "allow-copy-file-to-clipboard",
     "allow-clipboard-sequence",
     "allow-clipboard-files",
+    "allow-set-window-fullscreen",
     "allow-save-autosave",
     "allow-load-autosave",
     "allow-clear-autosave",

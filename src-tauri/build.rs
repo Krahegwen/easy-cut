@@ -22,6 +22,7 @@ const COMMANDS: &[&str] = &[
     "copy_file_to_clipboard",
     "clipboard_sequence",
     "clipboard_files",
+    "set_window_fullscreen",
     "save_autosave",
     "load_autosave",
     "clear_autosave",

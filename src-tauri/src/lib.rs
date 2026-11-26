@@ -71,6 +71,7 @@ pub fn run() {
             commands::copy_file_to_clipboard,
             commands::clipboard_sequence,
             commands::clipboard_files,
+            commands::set_window_fullscreen,
             commands::save_autosave,
             commands::load_autosave,
             commands::clear_autosave,
