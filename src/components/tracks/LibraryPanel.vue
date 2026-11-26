@@ -1,14 +1,14 @@
 <script setup lang="ts">
 // «Añadir sonidos y efectos»: la biblioteca (Sonidos / Efectos, por categorías y con buscador) y «De mi
-// ordenador». Se prueba antes de poner: los sonidos suenan al pulsar su tarjeta; los efectos se ven en su
-// tarjeta (en bucle) y, con «Probar sobre mi vídeo», en la vista previa. «Poner aquí» lo pone donde está la línea.
+// ordenador». Se prueba antes de poner: los sonidos suenan con su botón o dejando el ratón un momento encima
+// (src/lib/hover-preview.ts); los efectos se mueven en su tarjeta con el ratón encima o el foco (quietos si no)
+// y, con «Probar sobre mi vídeo», en la vista previa. «Poner aquí» lo pone donde está la línea.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   baseName,
   countByCategory,
   describeMediaEntry,
   describeUsage,
-  formatClock,
   formatDuration,
   libraryFetchMessage,
   mediaUsage,
@@ -22,13 +22,23 @@ import {
   type LibraryIcon,
   type MediaEntry,
 } from '../../domain'
+import { createHoverPreview, hoverSoundPlan } from '../../lib/hover-preview'
 import { LAYER_PRIORITY } from '../../lib/shortcuts'
+import { CancelledError } from '../../native/bridge'
 import { useShortcuts } from '../../lib/use-shortcuts'
 import { library, store, tracks } from '../../store'
 import AppIcon from '../AppIcon.vue'
 import type { IconName } from '../icons'
 import KeyHint from '../KeyHint.vue'
 import CreditsDialog from './CreditsDialog.vue'
+import LibraryWhere from './LibraryWhere.vue'
+
+/**
+ * Con el vídeo reproduciéndose en la vista previa, pasar el ratón no hace sonar nada (se mezclaría con el vídeo
+ * y no se oiría bien ninguno de los dos); el botón sí. Los efectos y los vídeos de «De mi ordenador» no suenan,
+ * así que sí se mueven.
+ */
+const props = defineProps<{ previewPlaying?: boolean }>()
 
 const tab = computed(() => tracks.libraryTab.value)
 const query = ref('')
@@ -45,6 +55,8 @@ const categoryName = computed(() => categories.value.find((c) => c.id === catego
 
 watch(tab, () => {
   category.value = null
+  hover.release()
+  focusFx.value = null
   stopSound()
 })
 
@@ -80,37 +92,82 @@ function iconOf(id: string): IconName {
   return c ? ICONS[c.icon] : 'star'
 }
 
-// ------------------------------------------------------------------ probar un sonido
+// ------------------------------------------------------------------ probar un sonido (botón o pasando el ratón)
+
+// Lo que suena se identifica con una clave: «a:<id>» (biblioteca) o «p:<ruta>» («De mi ordenador»).
+const assetKey = (a: LibraryAsset) => `a:${a.id}`
+const poolKey = (m: MediaEntry) => `p:${m.path}`
 
 const audio = ref<HTMLAudioElement | null>(null)
-const playingId = ref<string | null>(null)
+const playingKey = ref<string | null>(null)
+/** Vídeo de «De mi ordenador» que se está viendo en su miniatura (sin sonido si es por pasar el ratón). */
+const poolVideo = ref<{ path: string; muted: boolean } | null>(null)
+
+async function playSrc(key: string, src: string) {
+  stopSound()
+  const el = audio.value
+  if (!el) return
+  el.src = src
+  playingKey.value = key
+  await el.play()
+}
+
 async function toggleSound(a: LibraryAsset) {
-  if (playingId.value === a.id) {
+  const key = assetKey(a)
+  hover.claim(key)
+  if (playingKey.value === key) {
     stopSound()
     return
   }
   stopSound()
   try {
     const path = await library.ensureAsset(a)
-    const el = audio.value
-    if (!el) return
-    el.src = store.mediaSrc(path)
-    playingId.value = a.id
-    await el.play()
+    await playSrc(key, store.mediaSrc(path))
   } catch (e) {
-    playingId.value = null
-    store.showError(libraryFetchMessage(a.name, e), e)
+    playingKey.value = null
+    if (!(e instanceof CancelledError)) store.showError(libraryFetchMessage(a.name, e), e)
   }
 }
 function stopSound() {
   const el = audio.value
   if (el && !el.paused) el.pause()
-  playingId.value = null
+  playingKey.value = null
+  poolVideo.value = null
+}
+
+/** Botón de una tarjeta de «De mi ordenador»: un sonido suena; un vídeo se ve (con su sonido) en la miniatura. */
+async function togglePool(m: MediaEntry) {
+  const key = poolKey(m)
+  hover.claim(key)
+  if (playingKey.value === key) {
+    stopSound()
+    return
+  }
+  stopSound()
+  if (m.kind === 'video') {
+    playingKey.value = key
+    poolVideo.value = { path: m.path, muted: false }
+    return
+  }
+  try {
+    await playSrc(key, store.mediaSrc(m.path))
+  } catch (e) {
+    playingKey.value = null
+    console.warn('[easy-cut] no se ha podido escuchar', m.path, e)
+  }
 }
 
 // ------------------------------------------------------------------ vistas previas de los efectos
 
+// Quietas en un fotograma, pintado en un <canvas>; se mueve (con su <video>) la que tiene el ratón encima (tras
+// el retardo) o el foco del teclado. Medido con scripts/library-perf.mjs: todas moviéndose, el renderer gastaba
+// la mitad más y la página pintaba a la mitad de fotogramas; y un <video> en pausa a la vista seguía costando en
+// cada fotograma (con 14 tarjetas, el hilo principal del 16 % al 47 % mientras se reproduce el vídeo).
+const POSTER_AT = 0.45
 const previews = ref<Record<string, string>>({})
+const previewEls = new Map<string, HTMLVideoElement>()
+const hoverFx = ref<string | null>(null)
+const focusFx = ref<string | null>(null)
 watch(
   [tab, results],
   () => {
@@ -124,14 +181,129 @@ watch(
   },
   { immediate: true },
 )
+function registerPreview(id: string, el: unknown) {
+  if (el instanceof HTMLVideoElement) previewEls.set(id, el)
+  else previewEls.delete(id)
+}
+const posterEls = new Map<string, HTMLCanvasElement>()
+function registerPoster(id: string, el: unknown) {
+  if (el instanceof HTMLCanvasElement) posterEls.set(id, el)
+  else posterEls.delete(id)
+}
+/** Copia al canvas el fotograma de la vista previa (solo si está quieta: se ve el canvas, no el vídeo). */
+function drawPoster(id: string, v: HTMLVideoElement) {
+  const c = posterEls.get(id)
+  if (!c || isMoving(id) || !v.videoWidth) return
+  if (c.width !== v.videoWidth || c.height !== v.videoHeight) {
+    c.width = v.videoWidth
+    c.height = v.videoHeight
+  }
+  const ctx = c.getContext('2d')
+  if (!ctx) return
+  ctx.clearRect(0, 0, c.width, c.height)
+  ctx.drawImage(v, 0, 0)
+}
+function toPoster(v: HTMLVideoElement) {
+  if (Number.isFinite(v.duration) && v.duration > 0) v.currentTime = v.duration * POSTER_AT
+}
+function isMoving(id: string): boolean {
+  return hoverFx.value === id || focusFx.value === id
+}
+function syncPreview(id: string) {
+  const v = previewEls.get(id)
+  if (!v) return
+  if (isMoving(id)) {
+    v.currentTime = 0
+    void v.play().catch(() => {})
+  } else {
+    v.pause()
+    toPoster(v)
+  }
+}
+watch([hoverFx, focusFx], ([h, f], [oh, of]) => {
+  for (const id of new Set([h, f, oh, of])) if (id) syncPreview(id)
+})
+
+// ------------------------------------------------------------------ pasar el ratón por encima
+
+const hover = createHoverPreview<string>({
+  allowed: (key) => !(props.previewPlaying && soundKey(key)),
+  async start(key, signal) {
+    if (key.startsWith('fx:')) {
+      hoverFx.value = key.slice(3)
+      return
+    }
+    if (key.startsWith('p:')) {
+      const m = pool.value.find((x) => x.path === key.slice(2))
+      if (!m || isLost(m.path) || m.kind === 'image') return
+      stopSound()
+      if (m.kind === 'video') {
+        playingKey.value = key
+        poolVideo.value = { path: m.path, muted: true }
+      } else if (m.kind === 'sound') await playSrc(key, store.mediaSrc(m.path))
+      return
+    }
+    const a = library.asset(key.slice(2))
+    if (!a) return
+    const plan = hoverSoundPlan(a, library.isDownloaded(a))
+    if (plan === 'skip') return
+    // Si lo trae esta prueba (y no otra cosa que ya lo estuviera trayendo), al salir antes de que suene se cancela.
+    const ownFetch = plan === 'fetch' && library.downloadProgress(a) === null
+    if (ownFetch) signal.addEventListener('abort', () => signal.reason !== 'claimed' && library.cancel(a.file))
+    try {
+      const path = await library.ensureAsset(a)
+      if (signal.aborted) return
+      await playSrc(key, store.mediaSrc(path))
+    } catch (e) {
+      if (!(e instanceof CancelledError)) console.warn(`[easy-cut] no se ha podido probar ${a.id}`, e)
+    }
+  },
+  stop(key) {
+    if (key.startsWith('fx:')) {
+      if (hoverFx.value === key.slice(3)) hoverFx.value = null
+    } else if (playingKey.value === key) stopSound()
+  },
+})
+
+/** ¿Suena? (los efectos no; un vídeo de «De mi ordenador» se ve sin sonido). */
+function soundKey(key: string): boolean {
+  if (key.startsWith('a:')) return true
+  if (key.startsWith('p:')) return pool.value.find((m) => m.path === key.slice(2))?.kind === 'sound'
+  return false
+}
+
+/** Solo el ratón (o el lápiz): un toque en una pantalla táctil no es «pasar por encima». */
+function onEnter(e: PointerEvent, key: string) {
+  if (e.pointerType === 'mouse' || e.pointerType === 'pen') hover.enter(key)
+}
+function onLeave(e: PointerEvent, key: string) {
+  if (e.pointerType === 'mouse' || e.pointerType === 'pen') hover.leave(key)
+}
+/** El foco del teclado en una tarjeta de efecto la mueve (no suena nada); en un sonido, nada. */
+function onFocusIn(a: LibraryAsset) {
+  if (a.kind === 'effect') focusFx.value = a.id
+}
+function onFocusOut(a: LibraryAsset, e: FocusEvent) {
+  const card = e.currentTarget as HTMLElement
+  if (focusFx.value === a.id && !card.contains(e.relatedTarget as Node | null)) focusFx.value = null
+}
+
+watch(
+  () => props.previewPlaying,
+  (p) => {
+    if (p && hover.active !== null && soundKey(hover.active)) hover.release()
+  },
+)
 
 async function put(a: LibraryAsset) {
+  hover.release()
   stopSound()
   if (tracks.trying.value?.asset.id === a.id) tracks.trying.value = null
   await tracks.addAsset(a, tracks.playheadMs.value)
 }
 
 function close() {
+  hover.release()
   stopSound()
   tracks.closeLibrary()
 }
@@ -149,7 +321,10 @@ useShortcuts({
   ],
 })
 
-onBeforeUnmount(stopSound)
+onBeforeUnmount(() => {
+  hover.release()
+  stopSound()
+})
 
 function progressOf(a: LibraryAsset): number | null {
   return library.downloadProgress(a)
@@ -241,16 +416,36 @@ function poolThumb(m: MediaEntry): string | null {
           v-for="a in results"
           :key="a.id"
           class="asset"
-          :class="{ playing: playingId === a.id, trying: tracks.trying.value?.asset.id === a.id }"
+          :class="{ playing: playingKey === assetKey(a) || isMoving(a.id), trying: tracks.trying.value?.asset.id === a.id }"
           :data-asset-id="a.id"
+          :data-moving="isMoving(a.id) ? '1' : '0'"
           data-testid="library-asset"
+          @pointerenter="onEnter($event, a.kind === 'sound' ? assetKey(a) : `fx:${a.id}`)"
+          @pointerleave="onLeave($event, a.kind === 'sound' ? assetKey(a) : `fx:${a.id}`)"
+          @focusin="onFocusIn(a)"
+          @focusout="onFocusOut(a, $event)"
         >
-          <button v-if="a.kind === 'sound'" class="listen" type="button" :aria-label="playingId === a.id ? `Parar «${a.name}»` : `Escuchar «${a.name}»`" :data-testid="`library-listen-${a.id}`" @click="toggleSound(a)">
-            <AppIcon :name="playingId === a.id ? 'stop' : 'play'" :size="22" />
+          <button v-if="a.kind === 'sound'" class="listen" type="button" :aria-label="playingKey === assetKey(a) ? `Parar «${a.name}»` : `Escuchar «${a.name}»`" :data-testid="`library-listen-${a.id}`" @click="toggleSound(a)">
+            <AppIcon :name="playingKey === assetKey(a) ? 'stop' : 'play'" :size="22" />
           </button>
           <div v-else class="preview">
             <img v-if="a.still && previews[a.id]" :src="previews[a.id]" alt="" draggable="false" />
-            <video v-else-if="previews[a.id]" :src="previews[a.id]" muted loop autoplay playsinline disablepictureinpicture />
+            <template v-else-if="previews[a.id]">
+              <!-- Quieta, un fotograma pintado en un canvas: un <video> en pausa a la vista seguía costando cada fotograma. -->
+              <canvas v-show="!isMoving(a.id)" :ref="(el) => registerPoster(a.id, el)" class="poster" data-testid="library-poster" />
+              <video
+                v-show="isMoving(a.id)"
+                :ref="(el) => registerPreview(a.id, el)"
+                :src="previews[a.id]"
+                muted
+                loop
+                playsinline
+                preload="auto"
+                disablepictureinpicture
+                @loadedmetadata="isMoving(a.id) ? syncPreview(a.id) : toPoster($event.target as HTMLVideoElement)"
+                @seeked="drawPoster(a.id, $event.target as HTMLVideoElement)"
+              />
+            </template>
             <span v-else class="spinner" />
           </div>
           <div class="info">
@@ -303,13 +498,39 @@ function poolThumb(m: MediaEntry): string | null {
           v-for="m in pool"
           :key="m.path"
           class="pool-item"
-          :class="{ lost: isLost(m.path) }"
+          :class="{ lost: isLost(m.path), playing: playingKey === poolKey(m) }"
           :data-path="m.path"
           :data-kind="m.kind"
           :data-uses="usesOf(m.path)"
           data-testid="pool-item"
+          @pointerenter="onEnter($event, poolKey(m))"
+          @pointerleave="onLeave($event, poolKey(m))"
         >
-          <span class="pool-pic" :class="m.kind" aria-hidden="true">
+          <!-- Un sonido o un vídeo se prueban con su botón (o dejando el ratón encima); una imagen ya se ve. -->
+          <button
+            v-if="m.kind !== 'image' && !isLost(m.path)"
+            class="pool-pic playable"
+            :class="m.kind"
+            type="button"
+            :aria-label="playingKey === poolKey(m) ? `Parar «${baseName(m.path)}»` : m.kind === 'sound' ? `Escuchar «${baseName(m.path)}»` : `Ver «${baseName(m.path)}»`"
+            data-testid="pool-listen"
+            @click="togglePool(m)"
+          >
+            <video
+              v-if="poolVideo?.path === m.path"
+              :src="store.mediaSrc(m.path)"
+              :muted="poolVideo.muted"
+              autoplay
+              playsinline
+              disablepictureinpicture
+              data-testid="pool-video"
+              @ended="stopSound"
+            />
+            <img v-else-if="poolThumb(m)" :src="poolThumb(m)!" alt="" draggable="false" />
+            <AppIcon v-else :name="m.kind === 'sound' ? 'music' : 'film'" :size="24" />
+            <span class="pool-play" aria-hidden="true"><AppIcon :name="playingKey === poolKey(m) ? 'stop' : 'play'" :size="16" /></span>
+          </button>
+          <span v-else class="pool-pic" :class="m.kind" aria-hidden="true">
             <img v-if="poolThumb(m)" :src="poolThumb(m)!" alt="" draggable="false" />
             <AppIcon v-else :name="isLost(m.path) ? 'warning' : m.kind === 'sound' ? 'music' : m.kind === 'image' ? 'image' : 'film'" :size="24" />
           </span>
@@ -346,10 +567,10 @@ function poolThumb(m: MediaEntry): string | null {
 
     <footer class="foot">
       <span v-if="tracks.adding.value" class="adding"><span class="spinner" /> Trayendo «{{ tracks.adding.value }}»…</span>
-      <span v-else class="where muted" data-testid="library-where">«Poner aquí» lo pone donde está la línea: {{ formatClock(tracks.playheadMs.value) }}</span>
+      <LibraryWhere v-else />
       <button class="link" type="button" data-testid="library-credits" @click="creditsOpen = true">Créditos de la biblioteca</button>
     </footer>
-    <audio ref="audio" @ended="playingId = null" />
+    <audio ref="audio" :data-playing="playingKey ?? ''" data-testid="library-audio" @ended="playingKey = null" />
     <CreditsDialog v-if="creditsOpen" @close="creditsOpen = false" />
   </aside>
 </template>
@@ -539,6 +760,7 @@ function poolThumb(m: MediaEntry): string | null {
   background-size: 16px 16px;
 }
 .preview video,
+.preview canvas,
 .preview img {
   width: 100%;
   height: 100%;
@@ -665,10 +887,39 @@ function poolThumb(m: MediaEntry): string | null {
   background: var(--accent-soft);
   color: var(--accent);
 }
-.pool-pic img {
+.pool-pic img,
+.pool-pic video {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.pool-pic.playable {
+  position: relative;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.pool-pic.playable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* El botón de reproducir se ve siempre (no hace falta pasar el ratón para saber que se puede escuchar). */
+.pool-play {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+}
+.pool-item.playing {
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 .pool-pic.image img {
   object-fit: contain;

@@ -405,7 +405,7 @@ onBeforeUnmount(() => {
             Arrastra los trozos y lo que hay en las pistas para moverlos; tira de sus bordes para recortarlos.
           </p>
         </aside>
-        <LibraryPanel v-else class="side-library" />
+        <LibraryPanel v-else class="side-library" :preview-playing="playing" />
       </div>
 
       <!-- Divisor: se arrastra, o se elige uno de los tres tamaños (nada depende solo de arrastrar). -->
