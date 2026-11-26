@@ -6,6 +6,7 @@ import ConfirmDialog from './components/ConfirmDialog.vue'
 import ErrorDialog from './components/ErrorDialog.vue'
 import KeysPanel from './components/KeysPanel.vue'
 import PreparingOverlay from './components/PreparingOverlay.vue'
+import RelinkDialog from './components/RelinkDialog.vue'
 import ToastBar from './components/ToastBar.vue'
 import { addVideos } from './lib/add-videos'
 import { installShortcutListener } from './lib/use-shortcuts'
@@ -59,7 +60,7 @@ onMounted(() => {
       hoverPoint.value = h ? (at ?? null) : null
     },
   })
-  void store.loadAutosaveSummary()
+  void store.loadProjects()
   // Solo en la app instalada: unos segundos después de arrancar mira si hay versión nueva (sin bloquear nada).
   if (updaterEnabled) updater.start()
 })
@@ -87,6 +88,7 @@ onBeforeUnmount(() => {
   <PreparingOverlay />
   <ToastBar />
   <ConfirmDialog />
+  <RelinkDialog />
   <UpdateDialog />
   <ErrorDialog />
   <KeysPanel />

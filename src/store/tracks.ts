@@ -152,7 +152,7 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
    * «De mi ordenador» (o soltar/pegar ficheros en la vista de pistas): sonidos, vídeos e imágenes en
    * `atMs`, uno detrás de otro. Un solo paso de deshacer. Devuelve cuántos se han puesto.
    */
-  async function addFiles(paths: readonly string[], atMs: number): Promise<number> {
+  async function addFiles(paths: readonly string[], atMs: number, asKind?: TrackKind): Promise<number> {
     const usable = paths.filter(isTrackMediaPath)
     if (usable.length === 0) {
       if (paths.length > 0) editor.showToast('Eso no es un sonido, un vídeo ni una imagen.')
@@ -166,7 +166,10 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     const failed: string[] = []
     for (const path of usable) {
       try {
-        const { kind, info } = await probeForTracks(path)
+        const probed = await probeForTracks(path)
+        const info = probed.info
+        // «Ponerlo como sonido» un vídeo: se usa su sonido. Una imagen o algo sin sonido no puede ser un sonido.
+        const kind: TrackKind = asKind === 'sound' && !info.isStill && info.hasAudio ? 'sound' : asKind === 'effect' && (info.isStill || info.hasVideo) ? 'effect' : probed.kind
         editor.setMedia(info)
         editor.setMissing(path, false)
         const item = createItem({
@@ -217,6 +220,28 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
       return 0
     }
     return paths.length ? addFiles(paths, atMs) : 0
+  }
+
+  // ---------------------------------------------------------------- «De mi ordenador»: lo ya traído
+
+  /** Lo vuelve a poner como trozo, al final del vídeo (un vídeo o un sonido; una imagen todavía no). */
+  async function addPoolClip(path: string): Promise<boolean> {
+    if (isImagePath(path)) return false
+    const before = new Set(editor.history.value.present.clips.map((c) => c.id))
+    const res = await editor.addClipsFromPaths([path])
+    const added = editor.history.value.present.clips.findIndex((c) => !before.has(c.id))
+    if (res.added === 0 || added < 0) {
+      editor.showToast(`No he podido leer «${baseName(path)}».`)
+      return false
+    }
+    editor.select(editor.history.value.present.clips[added]!.id)
+    editor.showToast(`Añadido al final: es el trozo ${added + 1}.`, { label: 'Deshacer', run: editor.undo })
+    return true
+  }
+
+  /** Lo pone en una pista, donde está la línea: encima (como efecto) o como sonido. */
+  function addPoolItem(path: string, kind: TrackKind): Promise<number> {
+    return addFiles([path], playheadMs.value, kind)
   }
 
   // ---------------------------------------------------------------- mover, recortar, partir…
@@ -456,6 +481,8 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     addAsset,
     addFiles,
     pickFiles,
+    addPoolClip,
+    addPoolItem,
     previewMove,
     previewTrim,
     previewLook,

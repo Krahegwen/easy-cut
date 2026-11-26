@@ -803,6 +803,10 @@ function done() {
               <p>No encuentro el vídeo de encima ({{ baseName(cover.sourcePath) }}). Puede que se haya movido o borrado.</p>
             </div>
             <div class="pair">
+              <button class="btn primary" type="button" data-testid="cover-relink" @click="store.relink(cover.sourcePath)">
+                <AppIcon name="relink" />
+                Buscarlo
+              </button>
               <button class="btn" type="button" data-testid="cover-change" @click="changeCover">
                 <AppIcon name="folder" />
                 Elegir otro

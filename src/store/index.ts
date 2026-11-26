@@ -25,7 +25,7 @@ const appBridge: NativeBridge = import.meta.env.DEV
     }
   : nativeBridge
 
-export type { PreparingItem, Screen } from './editor'
+export type { PreparingItem, ProjectListEntry, RelinkCandidate, RelinkOffer, Screen } from './editor'
 
 export const store = createEditorStore(appBridge)
 export const library = createLibraryStore(appBridge, store.setMedia)
@@ -74,5 +74,18 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
     liveTracks,
     /** Atajos que valen ahora (capas activas): para contrastar las teclas dibujadas con lo que hacen. */
     shortcuts: describeActiveShortcuts,
+    /**
+     * Punto de partida limpio para las pruebas: sin vídeos en marcha ni autoguardado de antes (en desarrollo
+     * todo esto está en la subcarpeta `pruebas`). Deja la app en Inicio con un vídeo vacío.
+     */
+    async resetProjects() {
+      store.startNewProject()
+      await store.flushAutosave()
+      for (const p of await nativeBridge.listProjects()) await nativeBridge.deleteProject(p.id)
+      await nativeBridge.clearAutosave()
+      await store.loadProjects()
+      store.go('home')
+      return true
+    },
   }
 }

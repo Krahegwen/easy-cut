@@ -89,3 +89,6 @@ export type IconName =
   | 'drum'
   | 'headphones'
   | 'add-row'
+  | 'pencil'
+  | 'more'
+  | 'relink'
