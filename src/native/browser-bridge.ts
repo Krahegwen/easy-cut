@@ -117,6 +117,8 @@ export function createBrowserBridge(): NativeBridge {
     restoreProjectBackup: () => unavailable('Volver a la copia anterior'),
     readProjectHistory: () => Promise.resolve(null),
     writeProjectHistory: () => Promise.resolve(),
+    // En el navegador no hay caché en disco.
+    cleanCache: () => Promise.resolve({ ran: false, deleted: 0, freedBytes: 0, keptBytes: 0 }),
     saveProject: () => unavailable('Guardar el proyecto'),
     loadProject: () => unavailable('Abrir un proyecto'),
     saveRecording: () => unavailable('Guardar la grabación'),

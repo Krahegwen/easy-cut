@@ -108,6 +108,12 @@ pub fn cache_key(path: &str, stamp: &FileStamp, parts: &[&str]) -> String {
     digest.iter().take(16).map(|b| format!("{b:02x}")).collect()
 }
 
+/// Etiqueta corta (12 hex) de un fichero original tal como está: va delante del nombre de sus miniaturas y
+/// formas de onda en la caché, para que la limpieza sepa de quién son sin poder volver atrás desde la clave.
+pub fn source_tag(path: &str, stamp: &FileStamp) -> String {
+    cache_key(path, stamp, &["source-tag"])[..12].to_string()
+}
+
 /// Ancho y alto de un JPEG leyendo su cabecera SOF. None si no es un JPEG válido.
 pub fn jpeg_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.len() < 4 || bytes[0] != 0xFF || bytes[1] != 0xD8 {

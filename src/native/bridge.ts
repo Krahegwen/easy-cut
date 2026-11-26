@@ -36,6 +36,15 @@ export interface PickVideosOptions {
   title?: string
 }
 
+/** Lo que ha hecho la limpieza de la caché. */
+export interface CacheCleanupReport {
+  /** false si no tocaba (se hizo hace menos de un día). */
+  ran: boolean
+  deleted: number
+  freedBytes: number
+  keptBytes: number
+}
+
 /** Un vídeo en marcha tal como está guardado. */
 export interface StoredProject {
   id: string
@@ -242,6 +251,13 @@ export interface NativeBridge {
   /** Historial de deshacer guardado del vídeo (JSON de domain/history-file.ts), o null. */
   readProjectHistory(id: string): Promise<string | null>
   writeProjectHistory(id: string, json: string): Promise<void>
+
+  /**
+   * Limpia la caché de la app (miniaturas, formas de onda, proxies, temporales y biblioteca descargada) sin
+   * tocar lo que usan `sources` (ficheros originales) ni `libraryFiles` (nombres en la caché de la
+   * biblioteca). Como mucho una vez al día, salvo con `force`. Ver src-tauri/src/cache_cleanup.rs.
+   */
+  cleanCache(sources: readonly string[], libraryFiles: readonly string[], force?: boolean): Promise<CacheCleanupReport>
 
   /**
    * Guarda el proyecto en un fichero .easycut (JSON de domain/project.ts). Sin ruta, pregunta dónde (con

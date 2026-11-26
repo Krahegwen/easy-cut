@@ -12,7 +12,7 @@ import { addVideos } from './lib/add-videos'
 import { installShortcutListener } from './lib/use-shortcuts'
 import UpdateDialog from './components/UpdateDialog.vue'
 import type { DropPoint } from './native/bridge'
-import { store, tracks, updater, updaterEnabled } from './store'
+import { cacheCleaner, store, tracks, updater, updaterEnabled } from './store'
 import ClipEditorView from './views/ClipEditorView.vue'
 import DoneView from './views/DoneView.vue'
 import EditorView from './views/EditorView.vue'
@@ -60,12 +60,15 @@ onMounted(() => {
       hoverPoint.value = h ? (at ?? null) : null
     },
   })
-  void store.loadProjects()
+  // La lista de Inicio (y, una vez, pasar a ella el autoguardado de antes); después, un rato más tarde, la
+  // limpieza de la caché (como mucho una vez al día; nunca lo que usan los vídeos de la lista).
+  void store.loadProjects().then(() => cacheCleaner.schedule())
   // Solo en la app instalada: unos segundos después de arrancar mira si hay versión nueva (sin bloquear nada).
   if (updaterEnabled) updater.start()
 })
 onBeforeUnmount(() => {
   updater.stop()
+  cacheCleaner.stop()
   stopKeys?.()
   window.removeEventListener('beforeunload', onBeforeUnload)
   stopDrop?.()

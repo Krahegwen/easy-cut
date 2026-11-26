@@ -44,6 +44,7 @@
     "allow-restore-project-backup",
     "allow-read-project-history",
     "allow-write-project-history",
+    "allow-clean-cache",
     "allow-recording-begin",
     "allow-recording-append",
     "allow-recording-finish",

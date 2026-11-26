@@ -34,6 +34,7 @@ const COMMANDS: &[&str] = &[
     "restore_project_backup",
     "read_project_history",
     "write_project_history",
+    "clean_cache",
     "recording_begin",
     "recording_append",
     "recording_finish",

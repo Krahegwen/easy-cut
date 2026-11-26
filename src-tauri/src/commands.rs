@@ -17,7 +17,7 @@ use tokio::sync::{oneshot, Semaphore};
 
 use crate::binaries::{resolve_tool, Tool};
 use crate::files::{
-    cache_key, file_stamp, is_inside, jpeg_size, sanitize_file_stem, unique_path, write_atomic,
+    cache_key, file_stamp, is_inside, jpeg_size, sanitize_file_stem, source_tag, unique_path, write_atomic,
 };
 use crate::process::{run_process, LineSink, ProcessRegistry, Stream, ToolOutput};
 
@@ -211,9 +211,12 @@ pub async fn make_thumbnail(
     let height = height.clamp(16, 1080) & !1;
     let stamp = file_stamp(Path::new(&path)).map_err(|e| format!("No se encuentra el vídeo {path}: {e}"))?;
     let key = cache_key(&path, &stamp, &["thumb-v1", &time_ms.to_string(), &height.to_string()]);
+    // La etiqueta del original delante: la limpieza de la caché no borra lo de los vídeos de la lista.
+    let key = format!("{}-{key}", source_tag(&path, &stamp));
     let dir = cache_dir(&app, "thumbs")?;
     let final_path = dir.join(format!("{key}.jpg"));
     if let Some(found) = read_thumbnail(&final_path) {
+        crate::cache_cleanup::touch(&final_path);
         return Ok(found);
     }
     if state.registry.is_cancelled(&job_id) {
@@ -306,10 +309,12 @@ pub async fn make_waveform(
     let height = height.clamp(16, 512);
     let stamp = file_stamp(Path::new(&path)).map_err(|e| format!("No se encuentra el fichero {path}: {e}"))?;
     let key = cache_key(&path, &stamp, &["wave-v1", &width.to_string(), &height.to_string()]);
+    let key = format!("{}-{key}", source_tag(&path, &stamp));
     let dir = cache_dir(&app, "waves")?;
     let final_path = dir.join(format!("{key}.png"));
     let found = |p: &Path| fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false);
     if found(&final_path) {
+        crate::cache_cleanup::touch(&final_path);
         return Ok(ThumbnailFile { path: path_string(&final_path), width, height });
     }
     let _slot = state.thumbnail_slots.acquire().await.map_err(|e| e.to_string())?;
@@ -354,6 +359,9 @@ pub fn cache_entry(app: AppHandle, state: State<'_, AppState>, kind: String, pat
     let final_path = dir.join(format!("{key}.{ext}"));
     let tmp_path = dir.join(format!("{key}.{}.part.{ext}", state.next_id()));
     let exists = fs::metadata(&final_path).map(|m| m.len() > 0).unwrap_or(false);
+    if exists {
+        crate::cache_cleanup::touch(&final_path);
+    }
     Ok(CacheEntry { path: path_string(&final_path), tmp_path: path_string(&tmp_path), exists })
 }
 

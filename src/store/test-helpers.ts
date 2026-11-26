@@ -43,6 +43,8 @@ export interface FakeBridgeState {
   exported: { json: string; suggestedName?: string }[]
   /** Lo que devuelve «Abrir un fichero de proyecto». */
   projectFile: { path: string; json: string } | null
+  /** Limpiezas de la caché pedidas. */
+  cleanups: { sources: string[]; libraryFiles: string[]; force: boolean }[]
 }
 
 export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { bridge: NativeBridge; state: FakeBridgeState } {
@@ -71,6 +73,7 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     projectsFail: false,
     exported: [],
     projectFile: null,
+    cleanups: [],
     ...initial,
   }
   for (const p of Object.keys(state.media)) state.existing.add(p)
@@ -165,6 +168,10 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     readProjectHistory: async (id) => state.histories[id] ?? null,
     writeProjectHistory: async (id, json) => {
       state.histories[id] = json
+    },
+    cleanCache: async (sources, libraryFiles, force) => {
+      state.cleanups.push({ sources: [...sources], libraryFiles: [...libraryFiles], force: !!force })
+      return { ran: true, deleted: 0, freedBytes: 0, keptBytes: 0 }
     },
     saveProject: async (json, path, suggestedName) => {
       state.exported.push({ json, suggestedName })

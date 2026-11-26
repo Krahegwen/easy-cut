@@ -73,6 +73,14 @@ pub fn is_allowed_url(url: &reqwest::Url) -> bool {
         && url.host_str().map(|h| ALLOWED_HOSTS.contains(&h)).unwrap_or(false)
 }
 
+/// ¿Es un nombre de la caché de la biblioteca (`<16 hex>-<fichero seguro>`)? Para la limpieza de la caché.
+pub fn is_safe_cache_name(name: &str) -> bool {
+    match name.split_once('-') {
+        Some((sha, file)) => sha.len() == 16 && sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) && is_safe_file_name(file),
+        None => false,
+    }
+}
+
 /// Nombre en la caché: el principio del SHA-256 delante, para que una versión nueva con el mismo nombre no pise a la vieja.
 pub fn cache_file_name(file: &str, sha256: &str) -> String {
     format!("{}-{file}", &sha256[..16])

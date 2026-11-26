@@ -27,6 +27,7 @@ import {
 import {
   CancelledError,
   joinWindowsPath,
+  type CacheCleanupReport,
   type DownloadProgress,
   type FileDropHandlers,
   type NativeBridge,
@@ -329,6 +330,7 @@ export function createTauriBridge(): NativeBridge {
     restoreProjectBackup: (id) => invoke<string>('restore_project_backup', { id }),
     readProjectHistory: (id) => invoke<string | null>('read_project_history', { id }),
     writeProjectHistory: (id, json) => invoke<void>('write_project_history', { id, json }),
+    cleanCache: (sources, libraryFiles, force) => invoke<CacheCleanupReport>('clean_cache', { sources: [...sources], libraryFiles: [...libraryFiles], force: force ?? false }),
 
     saveProject: (json, path, suggestedName) => invoke<string | null>('save_project', { json, path: path ?? null, suggestedName: suggestedName ?? null }),
     loadProject: (path) => invoke<{ path: string; json: string } | null>('load_project', { path: path ?? null }),
