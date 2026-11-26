@@ -171,6 +171,30 @@ export function edgeFades<F extends Fades>(fades: F, entry: ResolvedJoin | null,
   }
 }
 
+/**
+ * Aparecer y desaparecer de un trozo con las juntas sin solape (a negro / a blanco): su sonido baja al final y sube
+ * al principio, «Al mismo ritmo», lo que dura cada mitad del paso. Donde no hay junta, lo del trozo; con solape, nada
+ * (el sonido se cruza en el paso). En ms.
+ */
+export function dipFades(fades: Fades, entry: ResolvedJoin | null, exit: ResolvedJoin | null): Fades {
+  const f = edgeFades(fades, entry, exit)
+  return {
+    fadeInMs: entry && !entry.overlap ? entry.head : f.fadeInMs,
+    fadeOutMs: exit && !exit.overlap ? exit.tail : f.fadeOutMs,
+    fadeInEasing: entry && !entry.overlap ? 'linear' : f.fadeInEasing,
+    fadeOutEasing: exit && !exit.overlap ? 'linear' : f.fadeOutEasing,
+  }
+}
+
+/**
+ * «El vídeo de este trozo» en un paso: el del que sale se desvanece y el del que entra aparece, sea cual sea el tipo,
+ * lo que dura el paso por su lado («Al mismo ritmo»). En ms.
+ */
+export function clipVideoJoinFades(entry: ResolvedJoin | null, exit: ResolvedJoin | null): Fades {
+  const side = (j: ResolvedJoin | null, which: 'in' | 'out') => (!j ? 0 : j.overlap ? j.overlapUnits : which === 'in' ? j.head : j.tail)
+  return { fadeInMs: side(entry, 'in'), fadeOutMs: side(exit, 'out'), fadeInEasing: 'linear', fadeOutEasing: 'linear' }
+}
+
 // ---------------------------------------------------------------------------
 // Cómo se ve cada instante del paso (vista previa; el fichero sigue las mismas fórmulas)
 

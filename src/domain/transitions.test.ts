@@ -156,7 +156,7 @@ describe('tiempos con transiciones', () => {
   it('lo de pistas: lo pegado al que entra y a los siguientes se adelanta; lo del anterior y lo del principio, no', () => {
     let p = addTrack(base(), createTrack('sound', 's', 'Sonidos'))
     const mk = (id: string) => createItem({ id, kind: 'sound', source: { type: 'file', path: `${id}.m4a` }, name: id, sourceDurationMs: 500, hasAudio: true })
-    for (const [id, at] of [['onA', 5000], ['onB', 12_000], ['onC', 25_000]] as const) p = insertItem(p, mk(id), 'sound', at, { id: 's' }, { trackId: 's' }).project
+    for (const [id, at] of [['onA', 5000], ['onB', 12_000], ['onC', 25_000]] as const) p = (insertItem(p, mk(id), 'sound', at, { id: 's' }, { trackId: 's' }) as { project: Project }).project
     p = { ...p, tracks: p.tracks.map((t) => ({ ...t, items: [...t.items, { ...mk('zero'), anchor: { clipId: null, offsetMs: 3000 } }] })) }
     const before = Object.fromEntries(resolveTracks(p).map((r) => [r.item.id, r.startMs]))
     p = setTransition(p, 'b', fade1s)
