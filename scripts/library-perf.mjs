@@ -183,7 +183,7 @@ async function metrics() {
 
 async function videoQuality() {
   return app.evaluate(`let dropped = 0, total = 0;
-    for (const v of document.querySelectorAll('[data-testid=preview-frame] > video.video:not(.cover)')) { const q = v.getVideoPlaybackQuality(); dropped += q.droppedVideoFrames; total += q.totalVideoFrames }
+    for (const v of document.querySelectorAll('[data-testid=preview-frame] video.video:not(.cover)')) { const q = v.getVideoPlaybackQuality(); dropped += q.droppedVideoFrames; total += q.totalVideoFrames }
     const cards = [...document.querySelectorAll('[data-testid=library-asset] .preview video')];
     return { dropped, total, cardVideos: cards.length, cardPlaying: cards.filter((v) => !v.paused).length }`)
 }
