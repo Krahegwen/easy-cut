@@ -3,7 +3,25 @@
 // ordenador». Se prueba antes de poner: los sonidos suenan al pulsar su tarjeta; los efectos se ven en su
 // tarjeta (en bucle) y, con «Probar sobre mi vídeo», en la vista previa. «Poner aquí» lo pone donde está la línea.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { countByCategory, formatClock, formatDuration, libraryFetchMessage, searchLibrary, type LibraryAsset, type LibraryCategory, type LibraryIcon } from '../../domain'
+import {
+  baseName,
+  countByCategory,
+  describeMediaEntry,
+  describeUsage,
+  formatClock,
+  formatDuration,
+  libraryFetchMessage,
+  mediaUsage,
+  NO_USAGE,
+  poolActions,
+  poolForDisplay,
+  searchLibrary,
+  usageTotal,
+  type LibraryAsset,
+  type LibraryCategory,
+  type LibraryIcon,
+  type MediaEntry,
+} from '../../domain'
 import { LAYER_PRIORITY } from '../../lib/shortcuts'
 import { useShortcuts } from '../../lib/use-shortcuts'
 import { library, store, tracks } from '../../store'
@@ -136,6 +154,41 @@ onBeforeUnmount(stopSound)
 function progressOf(a: LibraryAsset): number | null {
   return library.downloadProgress(a)
 }
+
+// ------------------------------------------------------------------ «De mi ordenador»: lo ya traído
+
+const pool = computed(() => (tab.value === 'computer' ? poolForDisplay(store.project.value) : []))
+const usage = computed(() => mediaUsage(store.project.value))
+function usesOf(path: string): number {
+  return usageTotal(usage.value.get(path) ?? NO_USAGE)
+}
+function usageText(path: string): string {
+  return describeUsage(usage.value.get(path) ?? NO_USAGE)
+}
+function isLost(path: string): boolean {
+  return !!store.missing.value[path]
+}
+const poolThumbs = ref<Record<string, string | null>>({})
+watch(
+  pool,
+  (list) => {
+    for (const m of list) {
+      if (m.path in poolThumbs.value || m.kind === 'sound' || isLost(m.path)) continue
+      if (m.kind === 'image') {
+        poolThumbs.value = { ...poolThumbs.value, [m.path]: store.mediaSrc(m.path) }
+        continue
+      }
+      poolThumbs.value = { ...poolThumbs.value, [m.path]: null }
+      void store.thumbnail(m.path, Math.min(1000, Math.round(m.durationMs / 2)), 96).then((t) => {
+        poolThumbs.value = { ...poolThumbs.value, [m.path]: t?.url ?? null }
+      })
+    }
+  },
+  { immediate: true },
+)
+function poolThumb(m: MediaEntry): string | null {
+  return isLost(m.path) ? null : (poolThumbs.value[m.path] ?? null)
+}
 </script>
 
 <template>
@@ -234,14 +287,61 @@ function progressOf(a: LibraryAsset): number | null {
     </template>
 
     <div v-else class="computer" data-testid="library-computer">
-      <p>Sonidos (MP3, M4A, WAV…), vídeos o imágenes (PNG, JPG): un logo, una pegatina, un marco.</p>
-      <button class="btn primary large" type="button" data-testid="library-pick-files" @click="tracks.pickFiles(tracks.playheadMs.value)">
-        <AppIcon name="folder" />
-        Elegir del ordenador
-      </button>
-      <p class="muted">
-        También puedes soltarlos aquí o pegarlos con <KeyHint k="Ctrl V" />. Se ponen donde está la línea: los sonidos en una pista de sonido; los vídeos y las imágenes, en una de efectos.
-      </p>
+      <div class="computer-head">
+        <button class="btn primary" type="button" data-testid="library-pick-files" @click="tracks.pickFiles(tracks.playheadMs.value)">
+          <AppIcon name="folder" />
+          Elegir del ordenador
+        </button>
+        <p class="muted small-text">
+          Sonidos, vídeos o imágenes (un logo, una pegatina…). También puedes soltarlos aquí o pegarlos con <KeyHint k="Ctrl V" />
+        </p>
+      </div>
+      <h3 v-if="pool.length" class="pool-title">Ya traídos a este vídeo</h3>
+      <p v-else class="muted pool-empty" data-testid="pool-empty">Aquí saldrán los vídeos, sonidos e imágenes que traigas a este vídeo, para volver a usarlos.</p>
+      <ul v-if="pool.length" class="pool" data-testid="pool-list">
+        <li
+          v-for="m in pool"
+          :key="m.path"
+          class="pool-item"
+          :class="{ lost: isLost(m.path) }"
+          :data-path="m.path"
+          :data-kind="m.kind"
+          :data-uses="usesOf(m.path)"
+          data-testid="pool-item"
+        >
+          <span class="pool-pic" :class="m.kind" aria-hidden="true">
+            <img v-if="poolThumb(m)" :src="poolThumb(m)!" alt="" draggable="false" />
+            <AppIcon v-else :name="isLost(m.path) ? 'warning' : m.kind === 'sound' ? 'music' : m.kind === 'image' ? 'image' : 'film'" :size="24" />
+          </span>
+          <span class="pool-info">
+            <strong class="asset-name" :title="m.path">{{ baseName(m.path) }}</strong>
+            <span class="meta muted">
+              <span class="meta-text">{{ describeMediaEntry(m) }} · <span data-testid="pool-uses">{{ usageText(m.path) }}</span></span>
+            </span>
+            <span v-if="isLost(m.path)" class="pool-lost" data-testid="pool-lost">No lo encuentro: puede que se haya movido o borrado.</span>
+          </span>
+          <span class="pool-buttons">
+            <button v-if="isLost(m.path)" class="btn small primary" type="button" data-testid="pool-relink" @click="store.relink(m.path)">
+              <AppIcon name="relink" />
+              Buscarlo
+            </button>
+            <template v-else>
+              <button v-if="poolActions(m).clip" class="btn small" type="button" :title="`Añadir «${baseName(m.path)}» al final del vídeo, como un trozo`" data-testid="pool-as-clip" @click="tracks.addPoolClip(m.path)">
+                <AppIcon name="plus" />
+                Trozo
+              </button>
+              <button v-if="poolActions(m).effect" class="btn small" type="button" :title="`Poner «${baseName(m.path)}» encima del vídeo, donde está la línea`" data-testid="pool-as-effect" @click="tracks.addPoolItem(m.path, 'effect')">
+                <AppIcon name="light" />
+                Encima
+              </button>
+              <button v-if="poolActions(m).sound" class="btn small" type="button" :title="`Poner el sonido de «${baseName(m.path)}» en una pista, donde está la línea`" data-testid="pool-as-sound" @click="tracks.addPoolItem(m.path, 'sound')">
+                <AppIcon name="sound" />
+                Sonido
+              </button>
+            </template>
+          </span>
+        </li>
+      </ul>
     </div>
 
     <footer class="foot">
@@ -497,12 +597,107 @@ function progressOf(a: LibraryAsset): number | null {
 }
 .computer {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 18px 16px;
+  gap: 8px;
+  padding: 10px 12px 0;
   font-size: 16px;
+}
+.computer-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.computer-head .btn {
+  flex: none;
+}
+.small-text {
+  font-size: 14px;
+  line-height: 1.3;
+}
+.pool-title {
+  font-size: 15px;
+  margin-top: 2px;
+}
+.pool-empty {
+  font-size: 15px;
+}
+.pool {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 12px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pool-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    'pic info'
+    'buttons buttons';
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 8px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+}
+.pool-item.lost {
+  border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
+  background: var(--warn-soft);
+}
+.pool-pic {
+  grid-area: pic;
+  width: 72px;
+  height: 40px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #1c2229;
+  color: #c7d3de;
+  display: grid;
+  place-items: center;
+}
+.pool-pic.sound {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.pool-pic img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.pool-pic.image img {
+  object-fit: contain;
+}
+.pool-info {
+  grid-area: info;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.pool-info .asset-name {
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  font-size: 15px;
+}
+.pool-lost {
+  font-size: 14px;
+  color: var(--warn);
+  font-weight: 600;
+}
+.pool-buttons {
+  grid-area: buttons;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.pool-buttons .btn.small {
+  min-height: 36px;
 }
 .foot {
   display: flex;

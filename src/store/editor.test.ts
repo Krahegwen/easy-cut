@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
-import { createProject, parseProject, serializeProject, setInOut, setSpeed, addClip, createClip } from '../domain'
+import { setInOut, setSpeed } from '../domain'
 import { createEditorStore } from './editor'
 import { createFakeBridge, mediaSet } from './test-helpers'
 
@@ -137,62 +137,6 @@ describe('store del editor', () => {
     expect(store.editingClipId.value).toBeNull()
   })
 
-  it('autoguarda con espera tras cada cambio y borra el autoguardado si no quedan trozos', async () => {
-    const { bridge, state } = createFakeBridge({ media: mediaSet() })
-    const store = createEditorStore(bridge, { autosaveDelayMs: 500 })
-    await store.addClipsFromPaths([H, V])
-    await nextTick()
-    expect(state.autosave).toBeNull()
-    await vi.advanceTimersByTimeAsync(600)
-    expect(parseProject(state.autosave!).clips).toHaveLength(2)
-    store.removeClip(store.project.value.clips[0]!.id)
-    store.removeClip(store.project.value.clips[0]!.id)
-    await nextTick()
-    await vi.advanceTimersByTimeAsync(600)
-    expect(state.autosave).toBeNull()
-  })
-
-  it('ofrece seguir con un autoguardado y vuelve a comprobar los originales', async () => {
-    const media = mediaSet()
-    let saved = createProject('9:16')
-    saved = addClip(saved, createClip(media[V]!, 'a'))
-    saved = addClip(saved, createClip(media[H]!, 'b'))
-    const { bridge, state } = createFakeBridge({ media, autosave: serializeProject(saved) })
-    state.existing.delete(H) // el original se ha movido
-    const store = createEditorStore(bridge)
-    await store.loadAutosaveSummary()
-    expect(store.autosave.value).toMatchObject({ clipCount: 2, durationMs: 18_000 })
-    await store.resumeAutosave()
-    expect(store.screen.value).toBe('editor')
-    expect(store.project.value.clips.map((c) => c.id)).toEqual(['a', 'b'])
-    expect(store.missing.value[H]).toBe(true)
-    expect(store.missing.value[V]).toBeUndefined()
-    expect(store.hasMissing.value).toBe(true)
-    // La vista previa no incluye el que falta; no se puede arreglar.
-    expect(store.playableProject.value.clips.map((c) => c.id)).toEqual(['a'])
-    store.openClipEditor('b')
-    expect(store.screen.value).toBe('editor')
-    expect(store.undoable.value).toBe(false)
-  })
-
-  it('un autoguardado dañado o vacío no se ofrece', async () => {
-    const { bridge } = createFakeBridge({ autosave: '{roto' })
-    const store = createEditorStore(bridge)
-    await store.loadAutosaveSummary()
-    expect(store.autosave.value).toBeNull()
-  })
-
-  it('empezar uno nuevo borra el autoguardado y el proyecto', async () => {
-    const { bridge, state } = createFakeBridge({ media: mediaSet(), autosave: 'x' })
-    const store = createEditorStore(bridge)
-    await store.addClipsFromPaths([H])
-    store.startNewProject()
-    await Promise.resolve()
-    expect(store.project.value.clips).toHaveLength(0)
-    expect(state.autosave).toBeNull()
-    expect(store.undoable.value).toBe(false)
-  })
-
   it('proxy de vista previa: se pide una vez y cambia la URL', async () => {
     const { bridge } = createFakeBridge({ media: mediaSet() })
     const spy = vi.spyOn(bridge, 'makePreviewProxy')
@@ -318,17 +262,4 @@ describe('copiar y pegar trozos', () => {
     expect(store.pasteAvailable.value).toBe(true)
   })
 
-  it('volver a Inicio con un vídeo abierto lo ofrece para seguir (y empezar otro pregunta)', async () => {
-    const { bridge } = createFakeBridge({ media: mediaSet() })
-    const store = createEditorStore(bridge)
-    await store.addClipsFromPaths([H, V])
-    store.go('editor')
-    store.apply((p) => setSpeed(p, store.project.value.clips[0]!.id, 2))
-    store.go('home')
-    expect(store.autosave.value?.clipCount).toBe(2)
-    await store.resumeAutosave()
-    expect(store.screen.value).toBe('editor')
-    // Se sigue con el mismo vídeo y su deshacer.
-    expect(store.undoable.value).toBe(true)
-  })
 })

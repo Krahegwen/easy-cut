@@ -7,6 +7,7 @@ import { describeActiveShortcuts } from '../lib/use-shortcuts'
 import { createUpdater, type UpdaterBackend } from '../lib/updater'
 import { bridge as nativeBridge, isDesktop, type NativeBridge, type PickVideosOptions } from '../native'
 import { createTauriUpdaterBackend } from '../native/tauri-updater'
+import { createCacheCleaner } from './cache'
 import { createEditorStore } from './editor'
 import { createLibraryStore } from './library'
 import { createSaveFlow } from './save-flow'
@@ -25,12 +26,13 @@ const appBridge: NativeBridge = import.meta.env.DEV
     }
   : nativeBridge
 
-export type { PreparingItem, Screen } from './editor'
+export type { PreparingItem, ProjectListEntry, RelinkCandidate, RelinkOffer, Screen } from './editor'
 
 export const store = createEditorStore(appBridge)
 export const library = createLibraryStore(appBridge, store.setMedia)
 export const tracks = createTracksStore(store, library)
 export const saveFlow = createSaveFlow(store, library, { appVersion: __APP_VERSION__ })
+export const cacheCleaner = createCacheCleaner(appBridge, store, library)
 
 /** ¿Se actualiza sola? Solo la app instalada (compilación release); ni `tauri dev` ni el navegador. */
 export const updaterEnabled = isDesktop && !import.meta.env.DEV
@@ -66,6 +68,7 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
     updater,
     library,
     tracks,
+    cacheCleaner,
     /** La próxima vez que la interfaz abra «elegir vídeos», devuelve estas rutas sin diálogo. */
     queuePickedVideos(paths: string[]) {
       devPickQueue.push(paths)
@@ -74,5 +77,20 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
     liveTracks,
     /** Atajos que valen ahora (capas activas): para contrastar las teclas dibujadas con lo que hacen. */
     shortcuts: describeActiveShortcuts,
+    /**
+     * Punto de partida limpio para las pruebas: sin vídeos en marcha ni autoguardado de antes (en desarrollo
+     * todo esto está en la subcarpeta `pruebas`). Deja la app en Inicio con un vídeo vacío.
+     */
+    async resetProjects() {
+      // Primero, que acabe la lectura del arranque (que puede estar pasando a la lista el autoguardado de antes).
+      await store.loadProjects()
+      store.startNewProject()
+      await store.flushAutosave()
+      for (const p of await nativeBridge.listProjects()) await nativeBridge.deleteProject(p.id)
+      await nativeBridge.clearAutosave()
+      await store.loadProjects()
+      store.go('home')
+      return true
+    },
   }
 }

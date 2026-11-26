@@ -14,6 +14,12 @@ Cada versión publicada, de la más nueva a la más antigua. La sección de una 
 - **Teleprompter:** el texto se pinta por donde deberías ir leyendo, palabra a palabra, al ritmo elegido: lo ya leído se apaga, la palabra de ahora sale en ámbar y subrayada, y lo que falta sigue en blanco. Respeta la pausa, «Más despacio / Más rápido» y «Retroceder un poco», al ensayar y al grabar.
 - «¡Listo!» dice cuánto ha tardado el guardado y si se ha hecho con la tarjeta gráfica o con el procesador, con «Copiar detalles» para pasárselo a quien te ayuda. La app apunta cada guardado (con qué se hizo, cuánto tardó y cómo acabó) en un registro de las últimas 200 veces, sin rutas de tus ficheros.
 - Arreglado: con la ventana muy grande, los botones de la cabecera de una pista se salían de su fila.
+- **Varios vídeos a la vez.** Inicio enseña tus vídeos en marcha, cada uno con su miniatura, su nombre («Vídeo del 26 de noviembre», que puedes cambiar), cuánto dura y cuándo lo tocaste. Se abren con un toque y se pueden duplicar o borrar (borrar nunca toca tus vídeos originales, y en el aviso hay «Deshacer»). Cada uno se guarda solo mientras lo haces, así que «Hacer un vídeo nuevo» ya no pregunta: el que tenías a medias se queda en la lista. El que tenías a medias de antes también aparece ahí.
+- Cada vídeo se puede **guardar en un fichero** (para llevarlo a otro ordenador) y abrir uno guardado así. Y si un cambio lo estropea, **«Volver a como estaba hace un rato»**: la app guarda una copia de cada vídeo de antes de tus últimos cambios.
+- **Deshacer sigue funcionando después de cerrar la app**: al volver a abrir un vídeo, puedes deshacer lo último que hiciste.
+- **«De mi ordenador» se acuerda de todo lo que has traído** a cada vídeo, aunque ya no lo uses: cada vídeo, sonido o imagen con su miniatura, su duración y cuántas veces se usa, para volver a ponerlo como trozo, encima del vídeo o como sonido.
+- **Si un vídeo original se ha movido**, «Buscarlo» te deja decir dónde está ahora y se arregla en todos los sitios donde se usa (trozos, vídeo de encima y pistas), sin perder nada de lo hecho. Si el que eliges no es igual que el de antes (dura distinto, otro tamaño, sin sonido…), te lo dice antes. Y si faltaban varios de la misma carpeta, los busca todos en la carpeta nueva.
+- La app limpia sola, como mucho una vez al día, las miniaturas, vistas previas y descargas de la biblioteca que hace mucho que no usa, sin tocar nada de los vídeos de tu lista.
 
 ## [0.3.0] - 2026-11-25
 

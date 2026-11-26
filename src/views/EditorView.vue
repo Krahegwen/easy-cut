@@ -69,7 +69,7 @@ function setShape(a: AspectRatio) {
 
 function save() {
   if (store.hasMissing.value) {
-    store.showToast('Antes de guardar, quita los trozos (o los vídeos de encima) que no encuentro.')
+    store.showToast('Antes de guardar, busca («Buscarlo») o quita los trozos, vídeos de encima o sonidos que no encuentro.')
     return
   }
   player.value?.pause()
@@ -451,6 +451,10 @@ onBeforeUnmount(() => {
           <template v-if="clipMissing">
             <p class="lost"><AppIcon name="warning" /> No encuentro este vídeo. Puede que se haya movido o borrado.</p>
             <span class="spacer" />
+            <button class="btn primary" type="button" data-testid="relink-clip" @click="store.relink(clip.sourcePath)">
+              <AppIcon name="relink" />
+              Buscarlo
+            </button>
             <button class="btn danger" type="button" data-testid="remove-clip" @click="store.removeClip(clip.id)">
               <AppIcon name="trash" />
               Quitarlo del vídeo
@@ -460,6 +464,10 @@ onBeforeUnmount(() => {
           <template v-else-if="clipCoverMissing">
             <p class="lost" data-testid="cover-lost-panel"><AppIcon name="warning" /> No encuentro el vídeo de encima de este trozo.</p>
             <span class="spacer" />
+            <button v-if="clip.picture.kind === 'cover'" class="btn primary" type="button" data-testid="relink-cover" @click="store.relink(clip.picture.sourcePath)">
+              <AppIcon name="relink" />
+              Buscarlo
+            </button>
             <button class="btn" type="button" data-testid="remove-lost-cover" @click="dropLostCover">
               <AppIcon name="close" />
               Quitar el vídeo de encima

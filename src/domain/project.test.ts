@@ -30,6 +30,7 @@ import {
   trimClip,
   type Clip,
   type Project,
+  syncMediaPool,
 } from './project'
 import { fakeMedia } from './test-helpers'
 
@@ -367,8 +368,8 @@ describe('serialización', () => {
     p = setTargetDuration(setAspect(p, '1:1'), 60_000)
     const json = serializeProject(p)
     expect(JSON.parse(json).app).toBe('easy-cut')
-    expect(JSON.parse(json).version).toBe(3)
-    expect(parseProject(json)).toEqual(p)
+    expect(JSON.parse(json).version).toBe(4)
+    expect(parseProject(json)).toEqual(syncMediaPool(p))
   })
 
   it('rechaza ficheros que no son proyectos o son de una versión futura', () => {

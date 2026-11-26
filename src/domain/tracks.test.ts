@@ -15,6 +15,7 @@ import {
   trimClip,
   type Project,
   type TrackItem,
+  syncMediaPool,
 } from './project'
 import { fakeAudio, fakeMedia } from './test-helpers'
 import {
@@ -441,7 +442,7 @@ describe('guardar y leer (versión 3)', () => {
     p = put(p, createItem({ id: 'logo', kind: 'effect', source: { type: 'file', path: 'C:\\logo.png' }, name: 'logo', sourceDurationMs: 0, still: true, hasAudio: false }), 'effect', 1000, 'e')
     p = setTrackMuted(setMainMuted(p, true), 'mus', true)
     const back = parseProject(serializeProject(p))
-    expect(back).toEqual(p)
+    expect(back).toEqual(syncMediaPool(p))
     const logo = findItem(back, 'logo')!.item
     expect([logo.still, logo.durationMs, logo.look!.fit]).toEqual([true, 4000, 'contain'])
   })
@@ -453,7 +454,7 @@ describe('guardar y leer (versión 3)', () => {
       project: { aspect: '16:9', clips: [{ id: 'a', sourcePath: 'a.mp4', sourceDurationMs: 5000, sourceHasVideo: true, segments: [{ startMs: 0, endMs: 5000 }], picture: { kind: 'own' } }], mainMuted: true, tracks: [{ id: 'x', kind: 'sound', items: [] }] },
     })
     const p = parseProject(v2)
-    expect(p.version).toBe(3)
+    expect(p.version).toBe(4)
     expect(p.tracks).toEqual([])
     expect(p.mainMuted).toBe(false)
   })

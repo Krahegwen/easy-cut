@@ -27,6 +27,24 @@ export interface FakeBridgeState {
   saveLogFails: boolean
   /** Peso de los ficheros guardados (por defecto, 1 MB si existe). */
   fileSizes: Record<string, number>
+  /** Vídeos en marcha guardados (id → JSON, cuándo y la copia anterior). */
+  projects: Record<string, { json: string; modifiedMs: number; backup?: string }>
+  /** Historiales de deshacer guardados. */
+  histories: Record<string, string>
+  /** Ids escritos, en orden. */
+  writes: string[]
+  /** Reloj de las escrituras (ms; sube 1 s en cada una). */
+  clock: number
+  /** Si es true, guardar un vídeo falla. */
+  writeFails: boolean
+  /** Si es true, leer la lista falla. */
+  projectsFail: boolean
+  /** Lo exportado a .easycut. */
+  exported: { json: string; suggestedName?: string }[]
+  /** Lo que devuelve «Abrir un fichero de proyecto». */
+  projectFile: { path: string; json: string } | null
+  /** Limpiezas de la caché pedidas. */
+  cleanups: { sources: string[]; libraryFiles: string[]; force: boolean }[]
 }
 
 export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { bridge: NativeBridge; state: FakeBridgeState } {
@@ -47,6 +65,15 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     saveLog: [],
     saveLogFails: false,
     fileSizes: {},
+    projects: {},
+    histories: {},
+    writes: [],
+    clock: 1_800_000_000_000,
+    writeFails: false,
+    projectsFail: false,
+    exported: [],
+    projectFile: null,
+    cleanups: [],
     ...initial,
   }
   for (const p of Object.keys(state.media)) state.existing.add(p)
@@ -114,8 +141,43 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     clearAutosave: async () => {
       state.autosave = null
     },
-    saveProject: async () => null,
-    loadProject: async () => null,
+    listProjects: async () => {
+      if (state.projectsFail) throw new Error('no se puede leer la carpeta')
+      return Object.entries(state.projects).map(([id, p]) => ({ id, json: p.json, modifiedMs: p.modifiedMs, hasBackup: !!p.backup }))
+    },
+    readProject: async (id) => state.projects[id]?.json ?? null,
+    writeProject: async (id, json) => {
+      if (state.writeFails) throw new Error('disco lleno')
+      state.clock += 1000
+      const before = state.projects[id]
+      state.projects[id] = { json, modifiedMs: state.clock, backup: before ? before.json : undefined }
+      state.writes.push(id)
+    },
+    deleteProject: async (id) => {
+      delete state.projects[id]
+      delete state.histories[id]
+    },
+    restoreProjectBackup: async (id) => {
+      const p = state.projects[id]
+      if (!p?.backup) throw new Error('No hay copia anterior de este vídeo')
+      state.clock += 1000
+      state.projects[id] = { json: p.backup, modifiedMs: state.clock, backup: p.json }
+      delete state.histories[id]
+      return p.backup
+    },
+    readProjectHistory: async (id) => state.histories[id] ?? null,
+    writeProjectHistory: async (id, json) => {
+      state.histories[id] = json
+    },
+    cleanCache: async (sources, libraryFiles, force) => {
+      state.cleanups.push({ sources: [...sources], libraryFiles: [...libraryFiles], force: !!force })
+      return { ran: true, deleted: 0, freedBytes: 0, keptBytes: 0 }
+    },
+    saveProject: async (json, path, suggestedName) => {
+      state.exported.push({ json, suggestedName })
+      return path ?? `C:\\Users\\Ana\\Videos\\Mis montajes\\${suggestedName ?? 'Proyecto'}.easycut`
+    },
+    loadProject: async () => state.projectFile,
     saveRecording: async () => ({ path: '', durationMs: 0, kind: 'video' }),
     beginRecording: async (_name, _ext, kind = 'video') => ({
       tempPath: 'C:\\tmp\\rec.mp4',

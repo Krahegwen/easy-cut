@@ -1,6 +1,7 @@
 // Shell de escritorio de easy-cut (Tauri 2): ffmpeg/ffprobe como sidecar, diálogos, ficheros y permisos.
 
 mod binaries;
+mod cache_cleanup;
 mod clipboard;
 mod commands;
 mod files;
@@ -8,6 +9,7 @@ mod job_object;
 mod library;
 mod media_permissions;
 mod process;
+mod projects;
 mod test_window;
 
 use tauri::{Manager, RunEvent};
@@ -74,6 +76,14 @@ pub fn run() {
             commands::clear_autosave,
             commands::save_project,
             commands::load_project,
+            projects::list_projects,
+            projects::read_project,
+            projects::write_project,
+            projects::delete_project,
+            projects::restore_project_backup,
+            projects::read_project_history,
+            projects::write_project_history,
+            cache_cleanup::clean_cache,
             commands::recording_begin,
             commands::recording_append,
             commands::recording_finish,

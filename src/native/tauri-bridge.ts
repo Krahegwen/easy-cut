@@ -27,6 +27,7 @@ import {
 import {
   CancelledError,
   joinWindowsPath,
+  type CacheCleanupReport,
   type DownloadProgress,
   type FileDropHandlers,
   type NativeBridge,
@@ -34,6 +35,7 @@ import {
   type ProcessResult,
   type ProgressCallback,
   type RunningProcess,
+  type StoredProject,
   type Thumbnail,
   type ThumbnailRequest,
 } from './bridge'
@@ -200,6 +202,7 @@ export function createTauriBridge(): NativeBridge {
         defaultFolder: options.defaultFolder ?? null,
         sounds: options.sounds ?? false,
         forTracks: options.forTracks ?? false,
+        title: options.title ?? null,
       })
     },
 
@@ -320,7 +323,16 @@ export function createTauriBridge(): NativeBridge {
     loadAutosave: () => invoke<string | null>('load_autosave'),
     clearAutosave: () => invoke<void>('clear_autosave'),
 
-    saveProject: (json, path) => invoke<string | null>('save_project', { json, path: path ?? null }),
+    listProjects: () => invoke<StoredProject[]>('list_projects'),
+    readProject: (id) => invoke<string | null>('read_project', { id }),
+    writeProject: (id, json) => invoke<void>('write_project', { id, json }),
+    deleteProject: (id) => invoke<void>('delete_project', { id }),
+    restoreProjectBackup: (id) => invoke<string>('restore_project_backup', { id }),
+    readProjectHistory: (id) => invoke<string | null>('read_project_history', { id }),
+    writeProjectHistory: (id, json) => invoke<void>('write_project_history', { id, json }),
+    cleanCache: (sources, libraryFiles, force) => invoke<CacheCleanupReport>('clean_cache', { sources: [...sources], libraryFiles: [...libraryFiles], force: force ?? false }),
+
+    saveProject: (json, path, suggestedName) => invoke<string | null>('save_project', { json, path: path ?? null, suggestedName: suggestedName ?? null }),
     loadProject: (path) => invoke<{ path: string; json: string } | null>('load_project', { path: path ?? null }),
 
     async saveRecording(data, suggestedName, onProgress) {

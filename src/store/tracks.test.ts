@@ -178,3 +178,30 @@ describe('guardar con pistas', () => {
     expect(s.state.tempFiles[script]).toContain('amix=inputs=2:normalize=0')
   })
 })
+
+describe('«De mi ordenador»: lo ya traído', () => {
+  it('un vídeo quitado se vuelve a poner como trozo, encima (efecto) y como sonido; una imagen, solo encima', async () => {
+    const s = setup()
+    const [a] = await withClips(s)
+    await s.tracks.addFiles([LOGO], 0)
+    s.editor.removeClip(a!)
+    s.editor.removeClip(s.editor.project.value.clips[0]!.id)
+    expect(s.editor.project.value.clips).toHaveLength(0)
+    expect(s.editor.project.value.media.map((m) => m.path)).toEqual([H, LOGO])
+    expect(await s.tracks.addPoolClip(H)).toBe(true)
+    expect(s.editor.project.value.clips.map((c) => c.sourcePath)).toEqual([H])
+    expect(s.editor.toast.value?.message).toBe('Añadido al final: es el trozo 1.')
+    s.tracks.playheadMs.value = 2000
+    expect(await s.tracks.addPoolItem(H, 'effect')).toBe(1)
+    expect(await s.tracks.addPoolItem(H, 'sound')).toBe(1)
+    const kinds = s.editor.project.value.tracks.flatMap((t) => t.items.filter((i) => i.source.type === 'file' && i.source.path === H).map(() => t.kind))
+    expect(kinds.sort()).toEqual(['effect', 'sound'])
+    const sound = resolveTracks(s.editor.project.value).find((r) => r.item.source.type === 'file' && r.item.source.path === H && r.item.look === null)!
+    expect(sound.startMs).toBe(2000)
+    expect(sound.item).toMatchObject({ hasAudio: true, still: false, volume: 1 })
+    // Una imagen no puede ser un trozo ni un sonido: se queda como efecto.
+    expect(await s.tracks.addPoolClip(LOGO)).toBe(false)
+    await s.tracks.addPoolItem(LOGO, 'sound')
+    expect(s.editor.project.value.tracks.filter((t) => t.kind === 'sound').flatMap((t) => t.items)).toHaveLength(1)
+  })
+})

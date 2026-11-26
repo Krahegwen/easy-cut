@@ -17,6 +17,11 @@ const props = defineProps<{ playheadMs: number }>()
 const found = computed(() => tracks.selectedItem.value)
 const item = computed(() => found.value?.item ?? null)
 const isEffect = computed(() => found.value?.track.kind === 'effect')
+/** Ruta del fichero del elemento si no se encuentra (para «Buscarlo»). */
+const lostPath = computed(() => {
+  const s = item.value?.source
+  return s?.type === 'file' && store.missingItems.value.some((i) => i.id === item.value!.id) ? s.path : null
+})
 const resolved = computed(() => (item.value ? resolveTracks(store.project.value).find((r) => r.item.id === item.value!.id) ?? null : null))
 const playheadInside = computed(() => {
   const r = resolved.value
@@ -133,6 +138,21 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
         <AppIcon name="check" />
         Listo
         <KeyHint k="Esc" />
+      </button>
+    </div>
+
+    <!-- Un fichero del ordenador que ya no está: se dice y se ofrece buscarlo (o quitarlo). -->
+    <div v-else-if="lostPath" class="item-bar lost-mode" data-testid="item-lost">
+      <AppIcon name="warning" :size="22" />
+      <span class="hint"><strong>No encuentro «{{ item.name }}».</strong> Puede que se haya movido o borrado.</span>
+      <button class="btn small primary" type="button" data-testid="relink-item" @click="store.relink(lostPath)">
+        <AppIcon name="relink" />
+        Buscarlo
+      </button>
+      <button class="btn small danger" type="button" data-testid="item-lost-remove" @click="tracks.remove(item.id)">
+        <AppIcon name="trash" />
+        Quitarlo
+        <KeyHint k="Supr" />
       </button>
     </div>
 
@@ -368,6 +388,15 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
   border-radius: 12px;
   background: var(--accent-soft);
   color: var(--accent-hover);
+}
+.lost-mode {
+  padding: 0 4px 0 12px;
+  border-radius: 12px;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.lost-mode .hint {
+  color: var(--text);
 }
 .hint {
   flex: 1;
