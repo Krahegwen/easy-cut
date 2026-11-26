@@ -61,6 +61,10 @@ for (const [name, rgb] of Object.entries(COLORS)) {
   ff(['-f', 'lavfi', '-i', `color=c=${hex}:size=1280x720:rate=30:duration=6`, '-f', 'lavfi', '-i', `sine=frequency=${hz}:sample_rate=48000:duration=6`, '-vf', `drawbox=x='mod(t*200,1180)':y=40:w=100:h=40:color=white:t=fill,scale=out_color_matrix=bt709:out_range=tv`, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-g', '30', '-c:a', 'aac', '-b:a', '192k', '-shortest', path])
 }
 
+// Un original con una pausa (de 4 a 7 s), de `pnpm test:ffmpeg`, para «Quitar pausas».
+const silence = resolve(opts.media, 'src-silence-middle-720p30.mp4')
+if (!existsSync(silence)) throw new Error(`Falta ${silence}: ejecuta pnpm test:ffmpeg`)
+
 const outputFolder = join(homedir(), 'Videos', 'Mis montajes (pruebas)')
 const filesBefore = new Set(existsSync(outputFolder) ? readdirSync(outputFolder) : [])
 
@@ -173,19 +177,48 @@ const mix = (a, b, k) => a.map((v, i) => v * (1 - k) + b[i] * k)
  */
 async function startSampler() {
   await app.evaluate(`window.__samples = []; const pl = document.querySelector('[data-testid=player]');
-    const dropped = () => [...document.querySelectorAll('[data-testid=clip-layer] video')].reduce((s, v) => s + (v.getVideoPlaybackQuality?.().droppedVideoFrames ?? 0), 0);
-    window.__droppedStart = dropped();
-    const loop = () => { const d = pl.dataset; window.__samples.push({ ms: Number(d.currentMs), p: d.joinProgress, inc: d.incomingMs, exp: d.incomingExpectedMs, playing: d.playing, rate: d.reviewRate, dropped: dropped() - window.__droppedStart });
+    const q = (k) => [...document.querySelectorAll('[data-testid=clip-layer] video')].reduce((s, v) => s + (v.getVideoPlaybackQuality?.()[k] ?? 0), 0);
+    window.__droppedStart = q('droppedVideoFrames'); window.__totalStart = q('totalVideoFrames');
+    const loop = () => { const d = pl.dataset;
+      const layer = document.querySelector('[data-layer-role=in]'); const cv = layer?.querySelector('video.cover');
+      const cover = cv ? { ms: Math.round(cv.currentTime * 1000), shown: getComputedStyle(cv).visibility !== 'hidden' && getComputedStyle(layer).visibility !== 'hidden' && Number(getComputedStyle(layer).opacity) > 0 } : null;
+      window.__samples.push({ ms: Number(d.currentMs), p: d.joinProgress, inc: d.incomingMs, exp: d.incomingExpectedMs, playing: d.playing, rate: d.reviewRate, dropped: q('droppedVideoFrames') - window.__droppedStart, total: q('totalVideoFrames') - window.__totalStart, cover });
       if (window.__samples.length < 2000 && (d.playing === '1' || window.__samples.length < 30)) requestAnimationFrame(loop) };
     requestAnimationFrame(loop); return true`)
 }
 async function readSampler() {
   return app.evaluate('return window.__samples')
 }
-function driftOf(samples) {
+/**
+ * Deriva del que entra en el paso (en tiempo del montaje: la del original entre su velocidad) y fotogramas perdidos de
+ * la pasada: cuántos y qué parte del total que han pintado los <video> de los trozos.
+ */
+function driftOf(samples, speed = 1) {
   const inPaso = samples.filter((s) => s.p !== '' && s.inc !== '' && s.exp !== '')
-  const drifts = inPaso.map((s) => Math.abs(Number(s.inc) - Number(s.exp)))
-  return { n: inPaso.length, max: drifts.length ? Math.max(...drifts) : null, dropped: samples.length ? samples[samples.length - 1].dropped : 0 }
+  const drifts = inPaso.map((s) => Math.abs(Number(s.inc) - Number(s.exp)) / speed)
+  const last = samples[samples.length - 1]
+  const dropped = last?.dropped ?? 0
+  const total = last?.total ?? 0
+  return { n: inPaso.length, max: drifts.length ? Math.round(Math.max(...drifts)) : null, dropped, total, ratio: total > 0 ? Number((dropped / total).toFixed(3)) : 0 }
+}
+
+/**
+ * Fotogramas perdidos: como mucho un 5 % de los pintados en la pasada (y nunca menos de 3, porque la ventana de pruebas,
+ * detrás de las demás, pinta pocos: 49–59 en una pasada por un paso, 141 en dos). Medido en esta máquina: 0–2 perdidos
+ * por pasada, y una vez 6 a pantalla completa. Un atasco de verdad (el que entra decodificando a trompicones) pierde
+ * muchos más en las dos pasadas. Si una pasada se pasa, se repite una vez antes de darlo por malo.
+ */
+const MAX_DROPPED_RATIO = 0.05
+/** Con pocos fotogramas en la pasada (la ventana de pruebas, detrás, pinta menos), 3 perdidos aún no son un atasco. */
+const MAX_DROPPED_FLOOR = 3
+const droppedOk = (d) => d.dropped <= Math.max(MAX_DROPPED_FLOOR, MAX_DROPPED_RATIO * d.total)
+async function passWithRetry(run) {
+  let d = await run()
+  if (!droppedOk(d)) {
+    console.log(`      fotogramas perdidos ${d.dropped}/${d.total}: se repite la pasada`)
+    d = { ...(await run()), retried: true }
+  }
+  return d
 }
 
 // ================================================================== prueba
@@ -318,6 +351,30 @@ try {
     check('Un paso de deshacer lo deja en 1 s', (await entries())[1]?.durationMs === 1000)
   }
 
+  // ============================================================ C2. El final del trozo que sale, con el paso puesto
+  {
+    const px = await pxPerSec()
+    const handle = await app.center('[data-testid=join-out-handle-2]')
+    check('El asa del final del trozo 1 se ve encima del trozo 2 (no está tapada)', !handle.covered && handle.w > 0, JSON.stringify(handle))
+    await app.drag({ x: handle.x, y: handle.y }, { x: handle.x - px, y: handle.y }, 10)
+    await sleep(300)
+    let t = await timeline()
+    const want = await S('return domain.clipTimeline(store.project.value).overlaps[1]')
+    check('Tirar de ella acorta el trozo 1 (5 s) y el paso se mantiene en 1 s, como dice el dominio', t.starts[1] === 4000 && t.overlaps[1] === 1000 && want === 1000, JSON.stringify(t))
+    await app.key('z', { ctrl: true })
+    await sleep(200)
+    // Hasta casi nada: el paso se limita a lo que queda del trozo 1.
+    const h2 = await app.center('[data-testid=join-out-handle-2]')
+    await app.drag({ x: h2.x, y: h2.y }, { x: h2.x - 5.9 * px, y: h2.y }, 12)
+    await sleep(300)
+    t = await timeline()
+    const len1 = await S('return domain.clipOutputMs(store.project.value.clips[0])')
+    check('Muy corto, el paso se limita a lo que dura el trozo 1', len1 < 1000 && t.overlaps[1] === len1 && t.starts[1] === 0, `trozo 1 ${len1} ms · ${JSON.stringify(t)}`)
+    await app.key('z', { ctrl: true })
+    await sleep(200)
+    check('Deshacer lo deja como estaba', (await timeline()).starts[1] === 5000)
+  }
+
   // ============================================================ D. «Probar» y reproducir a través del paso
   {
     await app.click('[data-testid=join-btn-2]')
@@ -336,7 +393,8 @@ try {
     check('Esc cierra el desplegable', !(await picker()))
   }
 
-  const playThrough = async (label) => {
+  /** Una pasada a través del paso 1 → 2 desde 3,5 s; devuelve la deriva, el avance visto y los perdidos. */
+  const onePass = async (speed = 1) => {
     await seekTo(3500)
     await startSampler()
     await app.key(' ')
@@ -345,9 +403,13 @@ try {
     await app.key(' ')
     await sleep(200)
     const s = await readSampler()
-    const d = driftOf(s)
     const progress = s.filter((x) => x.p !== '').map((x) => Number(x.p))
-    check(`Reproduciendo a través del paso (${label}): el que entra va a menos de 150 ms del reloj; fotogramas perdidos`, d.n > 5 && d.max !== null && d.max < 150 && Math.min(...progress) < 0.2 && Math.max(...progress) > 0.8 && d.dropped <= 6, `deriva máx. ${d.max} ms en ${d.n} muestras, perdidos ${d.dropped}`)
+    return { ...driftOf(s, speed), pMin: Math.min(...progress), pMax: Math.max(...progress), samples: s }
+  }
+  const playThrough = async (label) => {
+    const d = await passWithRetry(() => onePass())
+    check(`Reproduciendo a través del paso (${label}): el que entra va a menos de 150 ms del reloj; fotogramas perdidos ≤ 5 % (o 3)`, d.n > 5 && d.max !== null && d.max < 150 && d.pMin < 0.2 && d.pMax > 0.8 && droppedOk(d), `deriva máx. ${d.max} ms en ${d.n} muestras, perdidos ${d.dropped}/${d.total}${d.retried ? ' (repetida)' : ''}`)
+    delete d.samples
     return d
   }
   const measures = {}
@@ -358,23 +420,67 @@ try {
   {
     await app.click('[data-testid=fullscreen-enter]')
     await sleep(400)
-    // A pantalla completa, la línea se lleva con Inicio y →.
-    await app.key('Home')
-    for (let i = 0; i < 3; i++) await app.key('ArrowRight')
-    await sleep(300)
-    await startSampler()
-    await app.key(' ')
-    await sleep(500)
-    await app.waitFor('return Number(document.querySelector("[data-testid=player]").dataset.currentMs) > 7000', { timeoutMs: 15_000, what: 'pasar el paso a pantalla completa' })
-    await app.key(' ')
-    await sleep(200)
-    const d = driftOf(await readSampler())
+    const fullPass = async () => {
+      // A pantalla completa, la línea se lleva con Inicio y →.
+      await app.key('Home')
+      for (let i = 0; i < 3; i++) await app.key('ArrowRight')
+      await sleep(300)
+      await startSampler()
+      await app.key(' ')
+      await sleep(500)
+      await app.waitFor('return Number(document.querySelector("[data-testid=player]").dataset.currentMs) > 7000', { timeoutMs: 15_000, what: 'pasar el paso a pantalla completa' })
+      await app.key(' ')
+      await sleep(200)
+      return driftOf(await readSampler())
+    }
+    const d = await passWithRetry(fullPass)
     measures['pantalla completa'] = d
-    check('A pantalla completa, igual: el que entra a menos de 150 ms', d.n > 5 && d.max !== null && d.max < 150 && d.dropped <= 6, `deriva máx. ${d.max} ms en ${d.n} muestras, perdidos ${d.dropped}`)
+    check('A pantalla completa, igual: el que entra a menos de 150 ms; fotogramas perdidos ≤ 5 % (o 3)', d.n > 5 && d.max !== null && d.max < 150 && droppedOk(d), `deriva máx. ${d.max} ms en ${d.n} muestras, perdidos ${d.dropped}/${d.total}${d.retried ? ' (repetida)' : ''}`)
     await app.key('Escape')
     await sleep(300)
   }
   console.log(`      deriva y fotogramas perdidos: ${JSON.stringify(measures)}`)
+
+  // Hacia un trozo a 2×: el que entra va a su velocidad y a menos de 150 ms (en tiempo del montaje). Con el empujar de
+  // 2 s que sigue, el azul (3 s a 2×) queda entero entre dos pasos: al acabar el rojo empieza en seguida el paso al
+  // verde, que también tiene que entrar a tiempo (por eso se carga de antemano).
+  {
+    await S('const b = store.project.value.clips[1].id; store.apply((p) => domain.setSpeed(p, b, 2)); return true')
+    await sleep(400)
+    const t = await timeline()
+    const pass = async () => {
+      const d = await onePass()
+      const first = d.samples.filter((x) => x.p !== '' && x.inc !== '' && x.ms < t.starts[2])
+      const second = d.samples.filter((x) => x.p !== '' && x.inc !== '' && x.ms >= t.starts[2])
+      const one = driftOf(first, 2)
+      const two = driftOf(second, 1)
+      const montage = first.length > 1 ? first[first.length - 1].ms - first[0].ms : 1
+      const advanced = first.length > 1 ? Number(first[first.length - 1].inc) - Number(first[0].inc) : 0
+      return { ...d, ratio: d.ratio, oneMax: one.max, oneN: one.n, twoMax: two.max, twoN: two.n, speed: advanced / montage }
+    }
+    const d = await passWithRetry(pass)
+    measures['hacia un trozo a 2×'] = { max: d.oneMax, n: d.oneN, after: d.twoMax, afterN: d.twoN, dropped: d.dropped, total: d.total }
+    check('Hacia un trozo a 2×: el que entra avanza al doble y va a menos de 150 ms del reloj', d.oneN > 5 && d.oneMax < 150 && Math.abs(d.speed - 2) < 0.25 && droppedOk(d), `deriva máx. ${d.oneMax} ms, avance ${d.speed.toFixed(2)}×, perdidos ${d.dropped}/${d.total}`)
+    check('Y en el paso que empieza justo después (al verde), el que entra también llega a tiempo', d.twoN > 5 && d.twoMax < 150, `deriva máx. ${d.twoMax} ms en ${d.twoN} muestras`)
+    await app.key('z', { ctrl: true })
+    await sleep(300)
+  }
+  // Hacia un trozo con otro vídeo encima (el verde sobre el azul): su vídeo de encima se ve en el paso y va en su sitio.
+  {
+    await S('const b = store.project.value.clips[1].id; const m = store.media.value[args.green]; store.apply((p) => domain.setCover(p, b, m)); return true', { green: files.Verde })
+    await sleep(800)
+    const d = await passWithRetry(() => onePass())
+    const covers = d.samples.filter((x) => x.p !== '' && x.cover && Number(x.p) > 0.1 && Number(x.p) < 0.95)
+    const off = covers.map((x) => Math.abs(x.cover.ms - (x.ms - 5000)))
+    const shown = covers.every((x) => x.cover.shown)
+    measures['hacia un trozo con vídeo encima'] = { max: d.max, coverMax: off.length ? Math.max(...off) : null, n: covers.length }
+    check('Hacia un trozo con otro vídeo encima: se ve en el paso y va a menos de 150 ms de su sitio', covers.length > 5 && shown && Math.max(...off) < 150 && d.max !== null && d.max < 150, `vídeo de encima a ${Math.max(...off)} ms como mucho en ${covers.length} muestras; el que entra, ${d.max} ms`)
+    await seekTo(5500)
+    await sleep(600)
+    await shot('trans-08-paso-con-video-encima.png')
+    await app.key('z', { ctrl: true })
+    await sleep(300)
+  }
 
   // Vista previa parada a mitad del empuje (trozo 2 → 3): las dos capas desplazadas.
   {
@@ -409,17 +515,6 @@ try {
     const n = await S('return store.project.value.clips.length')
     const msg = await toast()
     check('P dentro del paso no parte y lo dice en llano', n === 3 && (msg ?? '').startsWith('Aquí no se puede partir: es el paso de un trozo a otro.'), msg ?? '')
-  }
-  {
-    // Quitar pausas en el azul de modo que su primer rango dura 0,6 s: el paso encoge y se avisa con «Deshacer».
-    await S('const b = store.project.value.clips[1].id; store.apply((p) => domain.applyKeepSegments(p, b, [{ startMs: 0, endMs: 600 }, { startMs: 1200, endMs: 6000 }])); return true')
-    await sleep(250)
-    const msg = await toast()
-    const ov = (await timeline()).overlaps[1]
-    check('Quitar pausas que encoge el paso lo dice', ov === 600 && (msg ?? '').startsWith('El paso al trozo 2 ahora dura 0,6 s (antes 1 s): no cabe más.'), `${ov} · ${msg}`)
-    await app.click('[data-testid=toast-action]')
-    await sleep(250)
-    check('Su «Deshacer» lo deja como estaba', (await timeline()).overlaps[1] === 1000)
   }
 
   // ============================================================ F. A 1100 × 700: el desplegable cabe
@@ -461,6 +556,35 @@ try {
     check('En el fichero: la media a mitad del fundido y el empujar con un color a cada lado', near(mid, want, 10) && near(left, COLORS.Azul, 10) && near(right, COLORS.Verde, 10), `${mid} / ${want.map(Math.round)} · ${left} · ${right}`)
     await shot('trans-07-listo.png')
     await app.click('[data-testid=back-to-editor]')
+    await waitScreen('editor')
+  }
+
+  // ============================================================ H. «Quitar pausas» (el botón de verdad) encoge un paso
+  {
+    // Un cuarto trozo con una pausa de 4 a 7 s, que empieza a los 3,5 s: al quitarla, su primer rango dura menos de 1 s.
+    await queuePick([silence])
+    await app.click('[data-testid=add-more]')
+    await app.waitFor('return window.__easyCut.store.project.value.clips.length === 4', { timeoutMs: 30_000, what: 'el cuarto trozo' })
+    await sleep(600)
+    await S('const c = store.project.value.clips[3].id; store.apply((p) => domain.setTransition(domain.setInOut(p, c, { inMs: 3500 }), c, domain.makeEntry("dissolve", 1000))); return true')
+    check('El paso al trozo 4 es de 1 s', (await timeline()).overlaps[3] === 1000)
+    await app.click('[data-testid=clip-block-4]')
+    await sleep(300)
+    await app.key('a')
+    await waitScreen('clip-done')
+    await app.click('[data-testid=tab-pauses]')
+    await app.click('[data-testid=find-pauses]')
+    await app.waitFor('return document.querySelector("[data-testid=pauses-found]") || document.querySelector("[data-testid=pauses-none]")', { timeoutMs: 30_000, what: 'buscar pausas' })
+    await app.click('[data-testid=remove-pauses]')
+    await sleep(300)
+    const msg = await toast()
+    const ov = (await timeline()).overlaps[3]
+    check('«Quitar pausas» que encoge el paso lo dice con «Deshacer»', ov > 0 && ov < 1000 && /^El paso al trozo 4 ahora dura 0,\d s \(antes 1 s\): no cabe más\./.test(msg ?? ''), `${ov} ms · ${msg}`)
+    await shot('trans-09-pausas-encogen-el-paso.png')
+    await app.click('[data-testid=toast-action]')
+    await sleep(300)
+    check('Su «Deshacer» deja el paso en 1 s', (await timeline()).overlaps[3] === 1000)
+    await app.click('[data-testid=clip-done]')
     await waitScreen('editor')
   }
 } catch (err) {
