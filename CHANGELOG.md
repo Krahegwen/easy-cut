@@ -4,6 +4,8 @@ Cada versión publicada, de la más nueva a la más antigua. La sección de una 
 
 ## Sin publicar
 
+## [0.4.0] - 2026-11-26
+
 - **Collage: varios vídeos a la vez.** Con «Collage» (o la tecla C) eliges cuántos vídeos van (2, 3 o 4) y cómo se reparten (uno al lado del otro, uno grande y dos pequeños, cuatro cuadrantes…), cada reparto con su dibujito. El collage se pone donde está la línea como una sola pieza de las pistas: se mueve, se recorta, se parte y se quita entero, y puede aparecer, desaparecer o viajar como cualquier efecto. En «Huecos» pones el vídeo de cada hueco (con «Elegir vídeo», soltándolo encima o pegándolo), los cambias de sitio arrastrando uno sobre otro (o con las flechas), eliges si llena el hueco o se ve entero y mueves lo que se ve dentro. Suenan todos los huecos; cada uno se puede silenciar y tiene su volumen. Un vídeo más corto que el collage se queda quieto en su última imagen. La raya entre huecos puede ser oscura, blanca o ninguna. En «De mi ordenador», «Hacer un collage» con los vídeos que marques elige el reparto que mejor encaja con su forma (un vídeo vertical, en el hueco alto).
 - **«Tu vídeo» se ve siempre en pistas.** Los trozos van en la fila «Vídeo», cada uno del largo que dura, con sus indicadores (más rápido, sin sonido, sin pausas, vídeo encima, «Solo se oye», lo que lleva pegado) y el aviso si no se encuentra su vídeo. Ya no hay tira de tarjetas ni botón para cambiar entre las dos.
 - «Añadir vídeos o sonidos» y «Grabarme» están al final de la fila «Vídeo». Con el vídeo vacío, una invitación a añadir el primero.
