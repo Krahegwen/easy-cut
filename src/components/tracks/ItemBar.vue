@@ -506,12 +506,12 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
       <template v-if="isCollage && collage">
         <button class="btn small" type="button" data-testid="item-cells" title="Poner y cambiar los vídeos de los huecos" aria-label="Huecos" @click="cellsEdit">
           <AppIcon name="collage" />
-          <span class="txt">Huecos</span>
+          <span class="txt col-txt">Huecos</span>
         </button>
         <div class="pop-wrap">
           <button class="btn small" type="button" data-testid="item-layout" :aria-expanded="open === 'layout'" title="Cómo se reparten los vídeos" aria-label="Distribución" @click="toggle('layout')">
             <LayoutIcon :layout-id="collage.layoutId" :aspect="aspect" :width="40" />
-            <span class="txt">Distribución</span>
+            <span class="txt col-txt">Distribución</span>
           </button>
           <div v-if="open === 'layout'" class="popover card layout-pop" data-testid="layout-popover">
             <h3>Cómo se reparten</h3>
@@ -535,7 +535,7 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
         <div class="pop-wrap">
           <button class="btn small" type="button" data-testid="item-gap" :aria-expanded="open === 'gap'" title="La raya entre los huecos" aria-label="Separación" @click="toggle('gap')">
             <span class="gap-swatch" :class="collage.gap" aria-hidden="true" />
-            <span class="txt">Separación</span>
+            <span class="txt col-txt">Separación</span>
           </button>
           <div v-if="open === 'gap'" class="popover card" data-testid="gap-popover">
             <h3>Entre los huecos</h3>
@@ -903,6 +903,10 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
 /* Cuanto menos ancho, más botones se quedan en icono y tecla (el nombre sale al pasar el ratón). */
 @container (max-width: 1480px) {
   .where {
+    display: none;
+  }
+  /* El collage lleva tres botones más: en icono (con su nombre al pasar el ratón). */
+  .col-txt {
     display: none;
   }
   .fade-txt {

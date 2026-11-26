@@ -199,7 +199,8 @@ export function cellContentLayout(
 
 /** ¿Sobra imagen en horizontal / vertical? (con «Llenar»: se puede mover el encuadre). */
 export function cellCanPan(content: CellContent, cw: number, ch: number): { x: boolean; y: boolean } {
-  return { x: content.width > cw + 1, y: content.height > ch + 1 }
+  // Lo de un redondeo (un vídeo casi con la forma del hueco) no cuenta.
+  return { x: content.width > cw * 1.02 + 1, y: content.height > ch * 1.02 + 1 }
 }
 
 /** Paso de «Mover el encuadre» con los botones (en unidades del desplazamiento, −1..1). */
