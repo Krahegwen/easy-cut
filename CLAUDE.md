@@ -151,7 +151,8 @@ De **una sola tecla**, salvo las cuatro combinaciones de siempre (Ctrl+Z, Ctrl+Y
 | Menú «Más cosas» de un vídeo (Inicio) | Esc cerrar |
 | «Buscarlo» (el fichero no cuadra o hay más en la carpeta) | Intro «Usarlo igualmente» / «Usar los N» · Esc «Cancelar» |
 | Elige tus vídeos | Intro elegir · Ctrl+V pegar vídeos copiados en el Explorador · Esc Inicio |
-| Tu vídeo | Espacio · Esc (parar y al 0 / Inicio) · Inicio / Fin · ← → 1 s · RePág / AvPág trozo anterior / siguiente · A arreglar · Supr quitar (con «Deshacer») · Ctrl+C / Ctrl+V · G guardar · B «Añadir sonidos y efectos» · + / - acercar / alejar (pistas) · Ctrl+Z / Ctrl+Y |
+| Tu vídeo | Espacio · Esc (parar y al 0 / Inicio) · Inicio / Fin · ← → 1 s · RePág / AvPág trozo anterior / siguiente · A arreglar · Supr quitar (con «Deshacer») · Ctrl+C / Ctrl+V · G guardar · B «Añadir sonidos y efectos» · F vista previa a pantalla completa · + / - acercar / alejar (pistas) · Ctrl+Z / Ctrl+Y |
+| Vista previa a pantalla completa | Esc o F salir (sin parar) · Espacio · Inicio / Fin · ← → 1 s · F1 (sale y enseña «Teclas») |
 | Tu vídeo, con un trozo elegido y ningún sonido o efecto elegido | E / T que el trozo empiece / termine en la línea · P partirlo en la línea (solo con la línea dentro del trozo; la barra de abajo dice cuál) |
 | Tu vídeo, con un sonido o efecto elegido (vista de pistas) | Esc dejar de elegirlo · Supr quitarlo · M que empiece en la línea · E / T que empiece / termine en la línea · P partir en la línea · D duplicar · R repetir · ↑ ↓ a la pista de arriba / abajo (del mismo tipo) |
 | Volumen / Transparencia (desplegable) | ← → (↓ ↑) menos / más · Esc cerrar |
@@ -170,6 +171,12 @@ De **una sola tecla**, salvo las cuatro combinaciones de siempre (Ctrl+Z, Ctrl+Y
 | Actualizar | Intro «Actualizar ahora» · Esc «Más tarde»; descargando, Esc «Cancelar»; si falla, Intro / Esc «Entendido» |
 
 Copiar y pegar: Ctrl+C copia el trozo en la app (no toca el portapapeles de Windows); Ctrl+V pega detrás del elegido con todos sus ajustes (`duplicateClip` / `insertClipAfter`, un paso de deshacer). Si el portapapeles de Windows tiene vídeos o sonidos copiados en el Explorador **después** de copiar el trozo, Ctrl+V añade esos al final, como soltarlos. Se sabe por el número de secuencia del portapapeles (`GetClipboardSequenceNumber`), apuntado al copiar el trozo: unos ficheros viejos no ganan (`src/domain/paste.ts`). La lista de ficheros (CF_HDROP) se lee con Win32 en `src-tauri/src/clipboard.rs` (microsegundos, rutas en UTF-16). «Pegar» se activa mirando la secuencia cada 1,5 s y al volver a la ventana.
+
+## Vista previa: pantalla completa y repasar más rápido
+
+- **Pantalla completa** (`PreviewPlayer` con `fullscreenable`, solo «Tu vídeo»): Fullscreen API sobre la raíz del reproductor, no una capa `position: fixed` (el `container-type: size` de la columna la encerraría). No se vuelve a montar nada: el mismo `<video>`, el vídeo de encima y las pistas siguen sonando en su instante, con el mismo encuadre. Botón con F y, dentro, controles siempre visibles (reproducir/pausa, posición, «Repasar más rápido», «Salir» con Esc). Su capa de atajos (`preview-fullscreen`, `LAYER_PRIORITY.fullscreen`, entre desplegable y diálogo) es modal mientras dura; Esc sale antes que parar o volver, y un Esc rezagado justo después no hace nada. Si se abre un diálogo, un error o «Teclas» (también F1), se sale sola para que se vea (`coveredByModal` / `isLayerCovered`). En «Tamaño y sitio» la F es de esa capa.
+- **Repasar más rápido** (`reviewable`, solo «Tu vídeo»): 1×, 1,5× y 2×, en el reproductor y con el aviso «Repasando a 2× · el vídeo guardado no cambia» mientras dura; no es la velocidad del trozo (que sí cambia el resultado). El factor vive solo en el reproductor: ni proyecto, ni historial, ni autoguardado; al guardar o reabrir, 1×. playbackRate = velocidad del trozo × factor (0,0625–16; `mediaRate` en `playback.ts`); lo de encima y las pistas, al factor (`TrackLayers` recibe `rate`); el reloj del montaje sale del `<video>` del trozo y los 150 ms de recolocación siguen midiéndose en tiempo del montaje. El margen de fin de tramo crece con el ritmo (`spanEndToleranceMs`) para no enseñar lo quitado a 8×.
+- Prueba de extremo a extremo: `node scripts/preview-e2e.mjs` (pantalla completa con el botón y con F, mismos elementos montados y mismo encuadre relativo, teclas dentro, Esc y F salen sin parar; repaso a 1,5× y 2× midiendo el reloj, los playbackRate y la sincronía, el aviso, y que al ir a Guardar vuelve a 1×; capturas `preview-*.png`). Necesita los ficheros de `pnpm test:ffmpeg`.
 
 ## Pistas de sonidos y efectos
 
@@ -340,6 +347,7 @@ scripts/
   picture-e2e.mjs    prueba de extremo a extremo de «Imagen» y «Solo el sonido»
   shortcuts-e2e.mjs  prueba de extremo a extremo de los atajos de teclado y de copiar y pegar
   tracks-e2e.mjs     prueba de extremo a extremo de las pistas, la biblioteca y los créditos (capturas tracks-*.png)
+  preview-e2e.mjs    prueba de extremo a extremo de la pantalla completa y de «Repasar más rápido»
   projects-e2e.mjs   prueba de extremo a extremo de los vídeos en marcha, «De mi ordenador» y volver a enlazar
   build-library.mjs  genera la biblioteca (tanda propia y de terceros) en library/dist, el catálogo y CREDITS.md
   library-import.mjs  tanda de terceros (library/third-party.json → M4A nivelados) y el nivelado común
