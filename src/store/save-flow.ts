@@ -12,13 +12,29 @@ import {
   type ProgressUpdate,
   type SaveLogEntry,
   type SaveOutcome,
+  trimProject,
+  type CopyPlan,
+  type MediaInfo,
+  type Project,
   type SaveTarget,
+  type SaveTool,
+  type TrimMode,
+  type TrimRange,
   type VideoEncoder,
 } from '../domain'
 import { CancelledError } from '../native/bridge'
-import type { EditorStore } from './editor'
+import type { EditorStore, Screen } from './editor'
 import type { LibraryStore } from './library'
-import { ExportError, startExport, type ExportJob, type ExportResult } from './exporter'
+import { ExportError, startExport, startTrimCopy, type ExportJob, type ExportResult } from './exporter'
+
+/** Lo que guarda «Solo recortar». */
+export interface TrimSaveRequest {
+  info: MediaInfo
+  range: TrimRange
+  mode: TrimMode
+  /** Lo que copia «Rápido» (desde el fotograma clave). */
+  plan: CopyPlan
+}
 
 const FACTOR_KEY = 'easy-cut:export-factor'
 
@@ -101,15 +117,12 @@ export function createSaveFlow(store: EditorStore, library: LibraryStore | null 
     }
   }
 
+  /** Desde dónde se ha guardado lo último: «Tu vídeo» o «Solo recortar» (adónde vuelven Guardando y ¡Listo!). */
+  const origin = ref<SaveTool>('editor')
+
   async function start(id: SaveTarget) {
     if (running.value) return
-    preset.value = id
-    progress.value = null
-    retrying.value = false
-    result.value = null
-    lastLog.value = null
-    running.value = true
-    store.go('saving')
+    begin(id, 'editor')
     // Lo que espera la persona cuenta desde aquí (también lo que tarde en bajar algo de la biblioteca).
     const startedAt = new Date()
     const startedMs = clock()
@@ -131,27 +144,80 @@ export function createSaveFlow(store: EditorStore, library: LibraryStore | null 
       }
     }
     const media = store.media.value
-    const current = (job = startExport(store.bridge, {
-      project,
-      media,
-      itemPath: library ? library.itemPath : undefined,
-      preset: id,
-      onProgress: (u) => (progress.value = u),
-      onRetry: (failed: VideoEncoder, next: VideoEncoder, stderr: string) => {
-        retrying.value = true
-        progress.value = null
-        console.warn(`[easy-cut] la exportación con ${failed} ha fallado; se reintenta con ${next}`, stderr.slice(-2000))
-      },
-    }))
+    await runJob(
+      id,
+      startExport(store.bridge, {
+        project,
+        media,
+        itemPath: library ? library.itemPath : undefined,
+        preset: id,
+        onProgress: (u) => (progress.value = u),
+        onRetry: (failed: VideoEncoder, next: VideoEncoder, stderr: string) => {
+          retrying.value = true
+          progress.value = null
+          console.warn(`[easy-cut] la exportación con ${failed} ha fallado; se reintenta con ${next}`, stderr.slice(-2000))
+        },
+      }),
+      { startedAt, startedMs, back: 'save', learn: id !== 'sound' ? { project, media } : null },
+    )
+  }
+
+  /**
+   * «Solo recortar»: «Rápido» copia el tramo tal cual; «Exacto» guarda un proyecto de un solo trozo por el camino
+   * normal (calidad alta, con su reintento con libx264). Mismas pantallas Guardando y ¡Listo!; al cancelar o
+   * fallar, se vuelve a «Solo recortar».
+   */
+  async function startTrim(request: TrimSaveRequest) {
+    if (running.value) return
+    begin('high', 'trim')
+    const startedAt = new Date()
+    const startedMs = clock()
+    const { info, range, mode, plan } = request
+    const job =
+      mode === 'copy'
+        ? startTrimCopy(store.bridge, { info, plan, onProgress: (u) => (progress.value = u) })
+        : startExport(store.bridge, {
+            project: trimProject(info, range),
+            media: { [info.path]: info },
+            preset: 'high',
+            tool: 'trim',
+            onProgress: (u) => (progress.value = u),
+            onRetry: (failed: VideoEncoder, next: VideoEncoder, stderr: string) => {
+              retrying.value = true
+              progress.value = null
+              console.warn(`[easy-cut] el recorte con ${failed} ha fallado; se reintenta con ${next}`, stderr.slice(-2000))
+            },
+          })
+    await runJob('high', job, { startedAt, startedMs, back: 'trim', learn: null })
+  }
+
+  function begin(id: SaveTarget, from: SaveTool) {
+    preset.value = id
+    origin.value = from
+    progress.value = null
+    retrying.value = false
+    result.value = null
+    lastLog.value = null
+    running.value = true
+    store.go('saving')
+  }
+
+  async function runJob(
+    id: SaveTarget,
+    current: ExportJob,
+    opts: { startedAt: Date; startedMs: number; back: Screen; learn: { project: Project; media: Record<string, MediaInfo> } | null },
+  ) {
+    job = current
+    const { startedAt, startedMs } = opts
     try {
       const res = await current.result
       result.value = res
       // El registro va aparte: no hace esperar al «¡Listo!».
       recording = record(current.report, 'ok', startedAt, startedMs, null, res.path)
       store.lastExport.value = { path: res.path, folder: res.folder, durationMs: res.expectedDurationMs, target: id }
-      // Lo que ha tardado de verdad afina la estimación de la próxima vez (solo los vídeos).
-      if (id !== 'sound' && res.encoder) {
-        const spec = computeOutputSpec(project, media, id)
+      // Lo que ha tardado de verdad afina la estimación de la próxima vez (solo los vídeos del montaje).
+      if (opts.learn && res.encoder && id !== 'sound') {
+        const spec = computeOutputSpec(opts.learn.project, opts.learn.media, id)
         const factor = normalizedExportFactor(spec, res.expectedDurationMs, res.elapsedMs)
         if (factor > 0) {
           const f = readFactors()
@@ -163,11 +229,10 @@ export function createSaveFlow(store: EditorStore, library: LibraryStore | null 
     } catch (e) {
       const what = id === 'sound' ? 'sonido' : 'vídeo'
       recording = record(current.report, e instanceof CancelledError ? 'cancelled' : 'error', startedAt, startedMs, e, null)
+      store.go(opts.back)
       if (e instanceof CancelledError) {
-        store.go('save')
         store.showToast(`No se ha guardado. No queda ningún ${what} a medias.`)
       } else {
-        store.go('save')
         const message = e instanceof ExportError ? e.message : `No se ha podido guardar el ${what}.`
         store.showError(message, e instanceof ExportError ? e.details : e)
       }
@@ -186,7 +251,7 @@ export function createSaveFlow(store: EditorStore, library: LibraryStore | null 
     return recording
   }
 
-  return { preset, progress, running, result, retrying, hardware, lastLog, detectHardware, measuredFactor, start, cancel, whenRecorded }
+  return { preset, origin, progress, running, result, retrying, hardware, lastLog, detectHardware, measuredFactor, start, startTrim, cancel, whenRecorded }
 }
 
 export type SaveFlow = ReturnType<typeof createSaveFlow>

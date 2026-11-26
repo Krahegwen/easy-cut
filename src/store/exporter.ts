@@ -9,17 +9,22 @@ import {
   buildExportCommand,
   buildOutputFileName,
   buildSoundExportCommand,
+  buildTrimCopyArgs,
+  buildTrimFileName,
+  copyProblem,
   chooseEncoder,
   clipPaths,
   createProgressParser,
   emptyExportReport,
   lastUsefulFfmpegLine,
   SOFTWARE_ENCODER,
+  type CopyPlan,
   type ExportReport,
   type MediaInfo,
   type ProgressUpdate,
   type Project,
   type SaveTarget,
+  type SaveTool,
   type TrackItem,
   type VideoEncoder,
 } from '../domain'
@@ -70,6 +75,8 @@ export interface ExportRequest {
   clock?: () => number
   /** Fichero de cada elemento de las pistas (los de la biblioteca, ya descargados; null = no está). */
   itemPath?: (item: TrackItem) => string | null
+  /** Desde dónde se guarda (para el registro): «Tu vídeo» (por defecto) o «Solo recortar», «Exacto». */
+  tool?: SaveTool
 }
 
 function tail(text: string, lines = 25): string {
@@ -85,7 +92,7 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
   let cancelled = false
   let running: RunningProcess<unknown> | null = null
   let outputPath: string | null = null
-  const report = emptyExportReport(request.preset)
+  const report = emptyExportReport(request.preset, 'encode', request.tool ?? 'editor')
   const clock = request.clock ?? Date.now
 
   /** Apunta un intento de ffmpeg que no terminó (cancelado o error al lanzarlo). */
@@ -243,6 +250,99 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
       if (next) request.onRetry?.(encoder, next, stderr)
     }
     throw new ExportError('No se ha podido guardar el vídeo.', failures.join('\n\n'))
+  })()
+
+  return {
+    result,
+    cancel() {
+      if (cancelled) return
+      cancelled = true
+      running?.cancel()
+    },
+    get outputPath() {
+      return outputPath
+    },
+    report,
+  }
+}
+
+export interface TrimCopyExportRequest {
+  info: MediaInfo
+  plan: CopyPlan
+  onProgress?: (update: ProgressUpdate) => void
+  clock?: () => number
+}
+
+/**
+ * «Solo recortar», «Rápido»: copia el tramo del original tal cual (sin recodificar) a «Mis montajes» con el
+ * nombre «… (recortado).mp4». Sin encoder que elegir ni reintento. Al cancelar o fallar, borra el fichero a
+ * medias. El original no se toca.
+ */
+export function startTrimCopy(bridge: NativeBridge, request: TrimCopyExportRequest): ExportJob {
+  let cancelled = false
+  let running: RunningProcess<unknown> | null = null
+  let outputPath: string | null = null
+  const report = emptyExportReport('high', 'copy', 'trim')
+  const clock = request.clock ?? Date.now
+  const { info, plan } = request
+
+  const removePartial = async () => {
+    if (!outputPath) return
+    try {
+      await bridge.deletePartialOutput(outputPath)
+    } catch (e) {
+      console.warn('[easy-cut] no se ha podido borrar el vídeo a medias', e)
+    }
+  }
+
+  const result = (async (): Promise<ExportResult> => {
+    const problem = copyProblem(info)
+    if (problem) throw new ExportError(problem, `copia no disponible: ${info.videoCodec} / ${info.audioCodec ?? 'sin sonido'}`)
+    if (!(await bridge.exists(info.path).catch(() => false))) {
+      throw new ExportError('No encuentro el vídeo original. Vuelve a ponerlo donde estaba.', info.path)
+    }
+    if (cancelled) throw new CancelledError()
+    const folder = await bridge.getOutputFolder()
+    const name = buildTrimFileName(info.path, await bridge.listFileNames(folder))
+    const out = bridge.joinPath(folder, name)
+    const expectedMs = plan.endMs - plan.startMs
+    report.fileName = name
+    report.durationMs = expectedMs
+    report.width = info.width
+    report.height = info.height
+    report.fps = info.fps
+    if (cancelled) throw new CancelledError()
+
+    const args = buildTrimCopyArgs({ sourcePath: info.path, outputPath: out, plan, info })
+    const startedAt = clock()
+    const parser = createProgressParser(expectedMs, startedAt)
+    outputPath = out
+    const job = bridge.runFfmpeg(args, (line) => {
+      for (const update of parser.push(`${line}\n`, Date.now())) request.onProgress?.(update)
+    })
+    running = job
+    let res: { exitCode: number; stderr: string }
+    try {
+      res = await job.result
+    } catch (e) {
+      running = null
+      report.attempts.push({ encoder: null, exitCode: null, ms: clock() - startedAt, error: null })
+      await removePartial()
+      if (e instanceof CancelledError || cancelled) throw new CancelledError()
+      throw e
+    }
+    running = null
+    if (cancelled) {
+      report.attempts.push({ encoder: null, exitCode: null, ms: clock() - startedAt, error: null })
+      await removePartial()
+      throw new CancelledError()
+    }
+    report.attempts.push({ encoder: null, exitCode: res.exitCode, ms: clock() - startedAt, error: res.exitCode === 0 ? null : lastUsefulFfmpegLine(res.stderr) })
+    if (res.exitCode !== 0) {
+      await removePartial()
+      throw new ExportError('No se ha podido guardar el vídeo recortado. Prueba con «Exacto».', `código ${res.exitCode}\n${tail(res.stderr)}`)
+    }
+    return { path: out, folder, encoder: null, expectedDurationMs: expectedMs, elapsedMs: clock() - startedAt, width: info.width, height: info.height, fps: info.fps }
   })()
 
   return {

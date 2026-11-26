@@ -8,7 +8,7 @@ import { baseName, creditsText, describeSave, formatDuration, projectCredits, sa
 import { copyText } from '../lib/clipboard'
 import { askConfirm } from '../lib/confirm'
 import { useShortcuts } from '../lib/use-shortcuts'
-import { library, saveFlow, store } from '../store'
+import { library, saveFlow, store, trim } from '../store'
 
 const copied = ref(false)
 /** Cómo se ha guardado (tarjeta gráfica o procesador) y cuánto ha tardado; los detalles, para el dueño. */
@@ -17,8 +17,10 @@ const detailsCopied = ref(false)
 async function copyDetails() {
   if (saveLog.value) detailsCopied.value = await copyText(saveLogDetails(saveLog.value))
 }
+/** ¿Viene de «Solo recortar»? Entonces se vuelve allí, y no hay créditos (no lleva nada de la biblioteca). */
+const fromTrim = computed(() => saveFlow.origin.value === 'trim')
 /** Material de la biblioteca con autor que pide que se le nombre (para la descripción del vídeo). */
-const credits = computed(() => projectCredits(store.project.value, library.catalog.value))
+const credits = computed(() => (fromTrim.value ? [] : projectCredits(store.project.value, library.catalog.value)))
 const creditsCopied = ref(false)
 async function copyCredits() {
   creditsCopied.value = await copyText(creditsText(credits.value))
@@ -70,7 +72,9 @@ useShortcuts({
   title: '¡Listo!',
   shortcuts: () => [
     { id: 'open-video', keys: ['Enter'], label: 'Intro', description: sound.value ? '«Escuchar»' : '«Ver el vídeo»', run: open },
-    { id: 'back', keys: ['Escape'], label: 'Esc', description: 'volver a tu vídeo', run: () => store.go('editor') },
+    fromTrim.value
+      ? { id: 'back', keys: ['Escape'], label: 'Esc', description: 'volver a recortar', run: () => store.go('trim') }
+      : { id: 'back', keys: ['Escape'], label: 'Esc', description: 'volver a tu vídeo', run: () => store.go('editor') },
   ],
 })
 </script>
@@ -116,7 +120,22 @@ useShortcuts({
           {{ creditsCopied ? 'Créditos copiados' : 'Copiar los créditos' }}
         </button>
       </div>
-      <div class="secondary">
+      <div v-if="fromTrim" class="secondary">
+        <button class="btn" type="button" data-testid="back-to-trim" @click="store.go('trim')">
+          <AppIcon name="back" />
+          Volver a recortar
+          <KeyHint k="Esc" />
+        </button>
+        <button class="btn" type="button" data-testid="done-trim-convert" @click="trim.convert()">
+          <AppIcon name="film" />
+          Convertir en un vídeo normal
+        </button>
+        <button class="btn" type="button" data-testid="done-trim-another" @click="trim.begin()">
+          <AppIcon name="scissors" />
+          Recortar otro vídeo
+        </button>
+      </div>
+      <div v-else class="secondary">
         <button class="btn" type="button" data-testid="save-another-way" @click="store.go('save')">
           <AppIcon name="save" />
           Guardarlo también de otra forma

@@ -143,6 +143,12 @@ export interface NativeBridge {
    */
   probe(path: string, options?: { still?: boolean }): Promise<MediaInfo>
 
+  /**
+   * Fotogramas clave (ms, ordenados) de la primera pista de vídeo cerca de `aroundMs` (unos 30 s antes y un poco
+   * después; ver domain/trim.ts). Solo lee paquetes con ffprobe: no decodifica. Con `fromStart`, desde el 0.
+   */
+  keyframes(path: string, aroundMs: number, fromStart?: boolean): Promise<number[]>
+
   /** ¿Sigue existiendo el fichero? (para avisar de originales movidos o borrados). */
   exists(path: string): Promise<boolean>
 

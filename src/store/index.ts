@@ -12,6 +12,7 @@ import { createEditorStore } from './editor'
 import { createLibraryStore } from './library'
 import { createSaveFlow } from './save-flow'
 import { createTracksStore } from './tracks'
+import { createTrimStore } from './trim'
 
 /** Rutas que la prueba e2e mete en lugar del diálogo nativo (solo en desarrollo). */
 const devPickQueue: string[][] = []
@@ -33,6 +34,7 @@ export const library = createLibraryStore(appBridge, store.setMedia)
 export const tracks = createTracksStore(store, library)
 export const saveFlow = createSaveFlow(store, library, { appVersion: __APP_VERSION__ })
 export const cacheCleaner = createCacheCleaner(appBridge, store, library)
+export const trim = createTrimStore(store, saveFlow)
 
 /** ¿Se actualiza sola? Solo la app instalada (compilación release); ni `tauri dev` ni el navegador. */
 export const updaterEnabled = isDesktop && !import.meta.env.DEV
@@ -68,6 +70,7 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
     updater,
     library,
     tracks,
+    trim,
     cacheCleaner,
     /** La próxima vez que la interfaz abra «elegir vídeos», devuelve estas rutas sin diálogo. */
     queuePickedVideos(paths: string[]) {

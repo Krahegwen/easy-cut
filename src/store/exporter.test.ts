@@ -104,6 +104,8 @@ describe('lo que se apunta de cada guardado', () => {
     await job.result
     expect(job.report).toEqual({
       target: 'youtube',
+      method: 'encode',
+      tool: 'editor',
       availableEncoders: ['h264_nvenc', 'libx264'],
       requestedEncoder: 'h264_nvenc',
       attempts: [

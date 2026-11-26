@@ -99,6 +99,12 @@ Prueba de extremo a extremo de los ficheros y los proyectos (el autoguardado de 
 node scripts/projects-e2e.mjs
 ```
 
+Prueba de extremo a extremo de «Solo recortar» (Inicio → «Solo recortar un vídeo» → un vídeo de «móvil» con fotograma clave cada 2 s, rotación y ubicación → marcar con → / E / T → «Rápido» (la cifra de «Empezará 1,0 s antes», la zona rayada en la barra, reproducir desde ahí) y «Exacto», los dos con ffprobe (duración, primer paquete clave, sin ubicación, rotación) y su frase en «¡Listo!» → «Convertir en un vídeo normal» → en «Tu vídeo» con el corte y en la lista; un ProRes sin «Rápido»; teclas dibujadas; capturas `trim-*.png` a 1280×800 y 1100×700). Trabaja con una copia en una carpeta temporal y borra lo que guarda. Necesita `test-output/trim/` de `pnpm test:ffmpeg`:
+
+```powershell
+node scripts/trim-e2e.mjs
+```
+
 Prueba de extremo a extremo de la interfaz (arranca y cierra ella misma la app, pulsa los botones reales sobre la fila «Vídeo» —reordenar, recortar por las asas con el texto en vivo, E / T / P en la línea—, el divisor de la vista previa (tamaños fijos, arrastre, mínimos y que se recuerda), que las pistas van a todo el ancho y nada se sale a 1100–2000 px, el vídeo vacío, guarda y comprueba con ffprobe, cancela, reinicia la app y deja capturas en `test-output/screenshots/`; borra lo que guarda en «Mis montajes (pruebas)»). Con la app cerrada y `cargo` en el PATH:
 
 ```powershell
@@ -133,7 +139,7 @@ node scripts/tracks-e2e.mjs
 
 **Las pruebas no roban el foco**: los scripts arrancan la app con `EASY_CUT_TEST=1` (`appTestEnv` de `scripts/cdp.mjs`), que solo en la compilación de desarrollo crea la ventana oculta y la enseña detrás de las demás sin activarla (`src-tauri/src/test_window.rs`; por eso la ventana va con `"create": false` en `tauri.conf.json` y se crea en `lib.rs`). Visible y sin minimizar, a propósito: minimizada, Chromium para `requestAnimationFrame` y los temporizadores. WebView2 lleva además `--disable-renderer-backgrounding --disable-backgrounding-occluded-windows --disable-features=CalculateNativeWinOcclusion` para que tapada no se frene, y CDP activa `Emulation.setFocusEmulationEnabled` (la página se comporta como enfocada). Teclas y ratón van por `Input.dispatch*`, que no necesita el foco. Con `--foreground` se abre delante, como siempre. Ojo: `window.show()` de tao sí activa la ventana; hay que enseñarla con `SetWindowPos(…SWP_SHOWWINDOW | SWP_NOACTIVATE)`.
 
-En desarrollo, `window.__easyCut` expone `bridge`, `domain`, `store`, `tracks`, `library`, `cacheCleaner`, `resetProjects()` (sin vídeos en marcha ni autoguardado de antes, en Inicio), `shortcuts()` (atajos que valen ahora), `liveTracks()` (pistas de cámara o micrófono encendidas) y `queuePickedVideos(rutas)` (sustituye a la siguiente apertura del diálogo de elegir vídeos, también el de «Elegir el vídeo» de encima); la pantalla de diagnóstico se abre con `?diagnostics`. En producción no existe ninguna de las dos cosas.
+En desarrollo, `window.__easyCut` expone `bridge`, `domain`, `store`, `tracks`, `library`, `cacheCleaner`, `trim`, `resetProjects()` (sin vídeos en marcha ni autoguardado de antes, en Inicio), `shortcuts()` (atajos que valen ahora), `liveTracks()` (pistas de cámara o micrófono encendidas) y `queuePickedVideos(rutas)` (sustituye a la siguiente apertura del diálogo de elegir vídeos, también el de «Elegir el vídeo» de encima); la pantalla de diagnóstico se abre con `?diagnostics`. En producción no existe ninguna de las dos cosas.
 
 ## Atajos de teclado
 
@@ -147,7 +153,8 @@ De **una sola tecla**, salvo las cuatro combinaciones de siempre (Ctrl+Z, Ctrl+Y
 
 | Pantalla | Teclas |
 | --- | --- |
-| Inicio | Intro «Hacer un vídeo nuevo» (ya no pregunta: el abierto queda en la lista) · Tab + Intro abre un vídeo de la lista o pulsa sus botones · el nombre: Intro guarda, Esc lo deja como estaba |
+| Inicio | Intro «Hacer un vídeo nuevo» (ya no pregunta: el abierto queda en la lista) · Tab + Intro abre un vídeo de la lista o pulsa sus botones (también «Solo recortar un vídeo») · el nombre: Intro guarda, Esc lo deja como estaba |
+| Solo recortar | Espacio (desde donde empieza lo que se guarda, y para al final de lo marcado) · Esc (parar y a ese principio / Inicio) · Inicio / Fin · ← → 1 s · E «Empieza aquí» · T «Termina aquí» · 1 «Rápido» · 2 «Exacto» · G o Intro «Guardar» |
 | Menú «Más cosas» de un vídeo (Inicio) | Esc cerrar |
 | «Buscarlo» (el fichero no cuadra o hay más en la carpeta) | Intro «Usarlo igualmente» / «Usar los N» · Esc «Cancelar» |
 | Elige tus vídeos | Intro elegir · Ctrl+V pegar vídeos copiados en el Explorador · Esc Inicio |
@@ -161,7 +168,7 @@ De **una sola tecla**, salvo las cuatro combinaciones de siempre (Ctrl+Z, Ctrl+Y
 | Arreglar este trozo | Espacio · Esc (parar y al principio del trozo / volver) · Inicio / Fin del trozo · ← → 1 s · E / T / P (en «Cortar») · 1–6 pestañas · L o Intro «Listo» · Ctrl+Z / Ctrl+Y |
 | Guardar | 1 2 3 las tarjetas · 4 «Solo el sonido» · Esc volver |
 | Guardando | Esc «Cancelar» (pregunta) |
-| ¡Listo! | Intro «Ver el vídeo» / «Escuchar» · Esc volver a tu vídeo |
+| ¡Listo! | Intro «Ver el vídeo» / «Escuchar» · Esc volver a tu vídeo (o a «Solo recortar», si se guardó desde allí) |
 | Teleprompter: texto | solo Esc (escribiendo, primero sale del texto) |
 | Teleprompter: cámara | Intro «Empezar a grabar» · Esc volver al texto |
 | Ensayar / grabar | Espacio pausa / sigue · ↑ ↓ más despacio / más rápido · ← retroceder · Esc dejar de ensayar / grabar (pregunta) · Intro terminar, solo cuando ya ha pasado todo el texto |
@@ -206,10 +213,18 @@ Copiar y pegar: Ctrl+C copia el trozo en la app (no toca el portapapeles de Wind
 - **Dónde se guardan** (`src-tauri/src/projects.rs`): `projects\<id>.json` en la carpeta de datos (la subcarpeta `pruebas` en desarrollo), por identificador (`[A-Za-z0-9_-]{1,64}`, nunca una ruta), con `<id>.prev.json` (copia anterior: al guardar, si la copia tiene más de 10 minutos, el de antes pasa a ser la copia) y `<id>.history.json` (deshacer guardado, `src/domain/history-file.ts`: los 30 pasos más cercanos de deshacer y de rehacer; solo vale si su `present` coincide con el proyecto guardado, si no se descarta). Comandos `list_projects`, `read_project`, `write_project`, `delete_project` (borra los tres ficheros de ese id y nada más), `restore_project_backup` (intercambia copia y proyecto y descarta el historial), `read_project_history`, `write_project_history`. El `.easycut` (`save_project` / `load_project`, con diálogo) es el mismo JSON: «Guardar en un fichero» y «Abrir un vídeo guardado en un fichero».
 - **Store** (`src/store/editor.ts`): `projectId` (null mientras el vídeo nuevo está vacío: uno vacío no se guarda), `projectName`, `projects` (resúmenes de la lista: `summarizeProject`, lo más reciente primero). Cada cambio se guarda solo (600 ms; `flushAutosave` toma una foto en el momento y las escrituras van en cola) con el historial. `startNewProject` deja guardado el abierto y empieza uno vacío; `openProject` (el mismo que está abierto: vuelve tal cual, con su deshacer, y mira otra vez los originales), `renameProject`, `duplicateProject` («X (copia)»), `deleteProject` (con «Deshacer» en el aviso: se guarda en memoria lo borrado), `restoreProjectBackup`, `exportProject`, `importProjectFile`. Nombre por defecto `defaultProjectName`: «Vídeo del 26 de noviembre», con «(2)» si ya hay uno así (`src/domain/projects.ts`).
 - **El autoguardado de antes** (`autosave.json`, un solo vídeo a medias) se pasa a la lista al arrancar (`loadProjects` → `migrateLegacyAutosave`): se escribe como vídeo nuevo, se vuelve a leer para comprobarlo y solo entonces se borra el viejo; si no se puede leer o escribir, se deja como está. `loadProjects` comparte la lectura en marcha (las pruebas esperan a ella antes de limpiar).
-- **Inicio** (`views/HomeView.vue`): con la lista vacía, como siempre; con vídeos, lo de arriba más apretado y debajo «Tus vídeos en marcha»: tarjetas con miniatura (primer trozo con imagen, o el vídeo de encima), nombre, trozos y duración y «cuándo se tocó» (`describeTouched`: «Hace 5 minutos», «Hoy a las 10:30», «Ayer…», «El 3 de noviembre»), y «Cambiar el nombre» (en la tarjeta; Intro guarda, Esc no), «Duplicar», «Borrar» (pregunta destructiva, Intro = «No, volver»), y en «Más cosas» «Guardar en un fichero» y «Volver a como estaba hace un rato» (si hay copia). Debajo, «Abrir un vídeo guardado en un fichero». El teleprompter, desde Inicio, pregunta si la grabación va al vídeo más reciente o a uno nuevo.
+- **Inicio** (`views/HomeView.vue`): «Hacer un vídeo nuevo» y, más discretos, «Grabarme leyendo un texto» y «Solo recortar un vídeo» (ver «Solo recortar»). Con la lista vacía, como siempre; con vídeos, lo de arriba más apretado y debajo «Tus vídeos en marcha»: tarjetas con miniatura (primer trozo con imagen, o el vídeo de encima), nombre, trozos y duración y «cuándo se tocó» (`describeTouched`: «Hace 5 minutos», «Hoy a las 10:30», «Ayer…», «El 3 de noviembre»), y «Cambiar el nombre» (en la tarjeta; Intro guarda, Esc no), «Duplicar», «Borrar» (pregunta destructiva, Intro = «No, volver»), y en «Más cosas» «Guardar en un fichero» y «Volver a como estaba hace un rato» (si hay copia). Debajo, «Abrir un vídeo guardado en un fichero». El teleprompter, desde Inicio, pregunta si la grabación va al vídeo más reciente o a uno nuevo.
 - **«De mi ordenador»** (`LibraryPanel.vue`): «Elegir del ordenador» y la lista de lo ya traído (`poolForDisplay`, lo último primero) con miniatura, tipo y duración (`describeMediaEntry`) y usos (`mediaUsage`, `describeUsage`), y por fichero «Trozo» (al final, `tracks.addPoolClip`), «Encima» (efecto en la línea) y «Sonido» (`tracks.addPoolItem`), según `poolActions`: una imagen solo «Encima»; algo sin sonido, sin «Sonido». Lo que no se encuentra: «Buscarlo».
 - **Volver a enlazar** (`store.relink(ruta)`, botón «Buscarlo» en la barra del trozo, en la del vídeo de encima, en «Arreglar este trozo», en la barra de un sonido o efecto perdido (`ItemBar`) y en «De mi ordenador»): diálogo de un fichero con título «¿Dónde está ahora «x»?» en su carpeta de antes; `relinkProblem` rechaza lo que no vale para algún uso (una imagen como trozo, un sonido como vídeo de encima…); `compareMedia` dice en llano qué no cuadra (tipo, duración con margen `durationToleranceMs`, tamaño de imagen y sonido, estos dos solo si se midió); `siblingCandidates` busca en la carpeta nueva, por nombre, los demás que faltaban de la misma carpeta (se comprueban con `exists` y ffprobe). Si todo cuadra y no hay más, se cambia ya; si no, `RelinkDialog.vue` (marcados de serie los que cuadran). `relinkMedia` lo cambia en todos los sitios (trozos, vídeos de encima, pistas y la entrada de la lista) conservándolo todo; si el nuevo dura menos, se recorta a lo que hay (o se usa entero). Un paso de deshacer.
 - **Limpieza de la caché** (`src-tauri/src/cache_cleanup.rs`, `src/store/cache.ts`): 30 s después de arrancar, como mucho una vez al día (`ultima-limpieza` en la caché). Nunca se borra lo que usa un vídeo de la lista o el abierto (`cacheProtection`: sus ficheros, también los de «De mi ordenador», y `libraryCacheNames` de lo que usa de la biblioteca), ni las vistas previas de la biblioteca ni las grabaciones en curso; si algún vídeo de la lista no se puede leer, no se limpia nada. Lo demás, por tiempo sin usarse (cada uso renueva la fecha del fichero: `touch` en miniaturas, formas de onda y proxies): temporales 2 días, proxies 30, miniaturas y formas de onda 60, biblioteca 90; y si aún pasa de 3 GB, lo más viejo hasta 2 GB. Las miniaturas y formas de onda llevan delante la etiqueta de su original (`source_tag`) para saber de quién son; los proxies se reconocen por su clave exacta.
+
+## Solo recortar
+
+- **Qué es**: un tercer botón de Inicio, «Solo recortar un vídeo» (`views/TrimView.vue`, pantalla `trim`, estado en `store/trim.ts`). Un vídeo, dónde empieza y dónde termina, y guardar; sin pistas ni calidades. No toca el vídeo abierto en «Tu vídeo» hasta «Convertir en un vídeo normal», que empieza uno nuevo con un trozo ya recortado (`trimProject`, `store.startProjectFrom`: se guarda ya en la lista y se abre en «Tu vídeo»; el que estaba abierto se queda guardado; sin deshacer hacia atrás). Solo vídeos con imagen (un sonido se rechaza con un aviso). Vista previa: un `<video>` sencillo con `store.mediaSrc` y el proxy si WebView2 no lo decodifica (`videoWidth === 0` o `error`); barra con lo marcado en azul, tiradores que se arrastran y, con «Rápido», en rayado ámbar lo que añade por delante. Reproducir arranca desde donde empezará lo que se guarda (con «Rápido», el fotograma clave) y para al final de lo marcado.
+- **Dos formas de guardar** (`src/domain/trim.ts`): **«Rápido»** (por defecto) copia sin recodificar (`buildTrimCopyArgs`, `startTrimCopy` en `exporter.ts`); **«Exacto»** guarda `trimProject` por el camino normal con «Calidad alta» (`startExport`, con su reintento con libx264). «Rápido» solo con vídeo H.264 o HEVC y sonido AAC, MP3 o ninguno (`copyProblem`: si no, no se ofrece y se dice por qué, p. ej. «(ProRes)… Con «Exacto» sí se guarda bien»). Las dos van por las pantallas Guardando y ¡Listo! (`saveFlow.startTrim`; `saveFlow.origin` = `'trim'` hace que Esc, «Volver a recortar» y cancelar vuelvan a `trim`, y que no salgan créditos). Salida en «Mis montajes»: «<nombre del original> (recortado).mp4», «… (recortado) 2.mp4»… (`buildTrimFileName`).
+- **El fotograma clave** (`buildKeyframeProbeArgs` + `parseKeyframes`, `bridge.keyframes`): ffprobe solo lee paquetes (`-show_entries packet=pts_time,flags`, sin decodificar) de la primera pista de vídeo en `-read_intervals` desde 30 s antes del principio marcado hasta 0,5 s después (ffprobe busca el principio de la ventana en el clave anterior, así que siempre sale uno); si no diera ninguno, desde el 0. Los instantes se redondean **hacia arriba** al ms, para que `-ss` con ese valor no caiga antes del clave (buscaría el anterior). Se mira 150 ms después del último cambio del principio y se guarda por principio. `planCopy`: si lo marcado empieza en 0, antes del primer clave o a menos de medio fotograma de uno, «Rápido» ya es exacto («Aquí corta justo donde has marcado»); si no, «Empezará 0,8 s antes, en 0:04…» con la cifra real (`describeCopyPlan`). Si ffprobe falla, «Rápido» no se ofrece.
+- **Registro**: cada guardado se apunta como siempre, con `method` (`'encode'` | `'copy'`) y `tool` (`'editor'` | `'trim'`); «¡Listo!» dice «Guardado en 2 segundos sin recodificar» y «Copiar detalles», «Guardado: Solo recortar, rápido (copiado sin recodificar)» o «Solo recortar, exacto (Calidad alta)».
+- Prueba de integración: `tests/integration/trim.itest.ts` (en `test-output/trim/`, que `export.itest.ts` no borra; lo usa también `trim-e2e`).
 
 ## Registro de guardados
 
@@ -278,6 +293,8 @@ src/
                      liso y sitio y tamaño del vídeo en la esquina
     paste.ts         qué pega Ctrl+V: ficheros del Explorador más nuevos que el trozo copiado (por la secuencia
                      del portapapeles) o el trozo
+    trim.ts          «Solo recortar»: fotograma clave (args de ffprobe y parser), qué hace «Rápido» y cuándo se
+                     ofrece, textos, args de la copia sin recodificar, nombre «(recortado)» y proyecto de un trozo
   store/
     editor.ts        estado: proyecto + historial, originales (y vídeos de encima), pantalla, avisos, vídeos en
                      marcha (lista, guardar solo, abrir, nombre, duplicar, borrar, copia anterior, .easycut, pasar
@@ -285,8 +302,11 @@ src/
                      vídeo» de encima, copiar y pegar trozos
     cache.ts         limpieza de la caché un rato después de arrancar (lo que usan los vídeos de la lista)
     exporter.ts      guardar (vídeo o «Solo el sonido»): comprobación de originales, filtro en fichero, reintento con
-                     libx264, borrar a medias
-    save-flow.ts     pantallas Guardar / Guardando / ¡Listo! (antes, trae lo de la biblioteca que falte)
+                     libx264, borrar a medias; startTrimCopy («Solo recortar», «Rápido»: copia sin recodificar)
+    save-flow.ts     pantallas Guardar / Guardando / ¡Listo! (antes, trae lo de la biblioteca que falte); también
+                     los dos guardados de «Solo recortar» (startTrim, origin)
+    trim.ts          «Solo recortar»: el vídeo, lo marcado, «Rápido» / «Exacto», fotograma clave, guardar y
+                     «Convertir en un vídeo normal»
     tracks.ts        pistas en la interfaz: elegido, crear pistas, «solo esta», recortar y partir trozos desde la
                      fila «Vídeo», biblioteca abierta, poner (biblioteca y
                      ordenador), arrastres con preview/commit, silenciar/ocultar, quitar pista, «Probar sobre mi vídeo»
@@ -311,7 +331,8 @@ src/
                      ordenador»), CreditsDialog
   views/             Home (con la lista de vídeos en marcha), Pick, Editor («Tu vídeo»), ClipEditor («Arreglar este trozo», con la pestaña «Imagen»),
                      Save (tres tarjetas y «Solo el sonido»), Saving, Done,
-                     Teleprompter (texto → cámara → grabar → revisar → trozo), Diagnostics (solo desarrollo)
+                     Teleprompter (texto → cámara → grabar → revisar → trozo), Trim («Solo recortar»),
+                     Diagnostics (solo desarrollo)
   native/
     bridge.ts        interfaz NativeBridge (independiente de la plataforma)
     tauri-bridge.ts  implementación sobre Tauri (invoke + canales)
@@ -350,11 +371,13 @@ scripts/
   tracks-e2e.mjs     prueba de extremo a extremo de las pistas, la biblioteca y los créditos (capturas tracks-*.png)
   preview-e2e.mjs    prueba de extremo a extremo de la pantalla completa y de «Repasar más rápido»
   projects-e2e.mjs   prueba de extremo a extremo de los vídeos en marcha, «De mi ordenador» y volver a enlazar
+  trim-e2e.mjs       prueba de extremo a extremo de «Solo recortar» («Rápido», «Exacto» y convertir)
   build-library.mjs  genera la biblioteca (tanda propia y de terceros) en library/dist, el catálogo y CREDITS.md
   library-import.mjs  tanda de terceros (library/third-party.json → M4A nivelados) y el nivelado común
   library-particles.mjs  sprites del Particle Pack de Kenney para los efectos
   check-library.mjs  pnpm library:check: library/dist cuadra con el catálogo (ficheros, tamaños, SHA-256)
-tests/integration/   pruebas con ffmpeg real (pnpm test:ffmpeg): export.itest.ts y tracks.itest.ts (pistas, medidas)
+tests/integration/   pruebas con ffmpeg real (pnpm test:ffmpeg): export.itest.ts, tracks.itest.ts (pistas, medidas) y
+                     trim.itest.ts («Solo recortar»: fotograma clave, sincronía, ubicación, rotación y tiempos)
 ```
 
 ## Notas de Tauri / WebView2 comprobadas
@@ -385,4 +408,5 @@ tests/integration/   pruebas con ffmpeg real (pnpm test:ffmpeg): export.itest.ts
 - `overlay` y `blend` (framesync) dejan pasar la imagen de debajo tal cual antes del primer fotograma del de encima (con `setpts=…+t/TB`) y, con `eof_action=pass`, después del último (comprobado: fotogramas 0–44 sin tocar y desde el 75 otra vez sin tocar con un efecto de 1,5 a 2,5 s).
 - `amix … normalize=0` suma sin bajar ninguna entrada (la voz medida con y sin música: −21,075 dB en los dos casos). `alimiter` necesita `level=0` (si no, normaliza hacia arriba) y `latency=1` (si no, retrasa todo lo que dura el ataque). `adelay=delays=NS:all=1` en muestras: los sonidos medidos en el fichero empiezan a ±1 ms de lo que dice el modelo.
 - `aloop` guarda la vuelta en memoria (vale para un trozo de un sonido); un efecto que repite usa `-stream_loop -1` con el fichero entero (`loop` de vídeo con 1080p ocuparía cientos de MB).
+- **Copiar sin recodificar** («Solo recortar», «Rápido»): `-ss <fotograma clave>` de entrada (exactamente el clave: así el primer paquete de vídeo es clave y el sonido empieza a la vez; con `-ss` en el punto marcado, el fichero llevaría delante lo de antes oculto con una edit list, que no todos los reproductores respetan), `-t`, `-map 0:v:0 -map 0:a:0` (ninguna otra pista: las de datos o metadatos temporizados pueden llevar el GPS), `-c copy`, `-map_metadata -1 -map_chapters -1` (quita `©xyz` y `com.apple.quicktime.location.ISO6709`: comprobado buscando los bytes en el fichero) y `+faststart`; HEVC con `-tag:v hvc1`. La rotación del móvil (display matrix) va con la pista y se conserva (90° → 90°). **Sin `-avoid_negative_ts make_zero`**: con B-frames, el vídeo pasaba a empezar 75 ms después (`start_time` 0,0747) porque se pierde la edit list que compensa su retraso; sin él (o con `auto`), vídeo y sonido empiezan en 0 como en el original. Medido con destellos y pitidos a la vez: el sonido queda a −11 ms de la imagen respecto al original (un paquete de AAC). Al copiar, el final puede llevar 2 fotogramas más (66 ms a 30 fps: los B-frames que van detrás). Tiempos con un 1080p30 de 20 s, 8 s recortados: «Rápido» 73 ms; «Exacto» 1,2 s con NVENC y 2,8 s con libx264.
 - NVENC va con opciones conservadoras para Pascal (GTX 1060): `-preset p5 -rc vbr -cq … -bf 2 -b_ref_mode disabled`, sin lookahead ni temporal AQ. Probado en una RTX, no en la GTX 1060.

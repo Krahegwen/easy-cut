@@ -16,7 +16,10 @@ const remaining = computed(() => describeRemaining(saveFlow.progress.value?.rema
 async function cancel() {
   const ok = await askConfirm({
     title: '¿Dejar de guardar?',
-    message: `${sound.value ? 'El sonido' : 'El vídeo'} no se guardará. Lo que llevas montado no se pierde y puedes volver a guardarlo cuando quieras.`,
+    message:
+      saveFlow.origin.value === 'trim'
+        ? 'El vídeo recortado no se guardará. Lo que has marcado no se pierde y puedes volver a guardarlo cuando quieras.'
+        : `${sound.value ? 'El sonido' : 'El vídeo'} no se guardará. Lo que llevas montado no se pierde y puedes volver a guardarlo cuando quieras.`,
     confirmLabel: 'Sí, dejar de guardar',
     cancelLabel: 'No, seguir guardando',
     danger: true,
