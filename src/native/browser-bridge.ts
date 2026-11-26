@@ -26,6 +26,7 @@ export function createBrowserBridge(): NativeBridge {
   return {
     pickVideos: () => unavailable('Elegir vídeos'),
     probe: () => unavailable('Leer un vídeo'),
+    keyframes: () => unavailable('Leer los fotogramas clave'),
     exists: () => Promise.resolve(false),
     // En el navegador no hay acceso a rutas locales: se devuelve tal cual (sirve para URL http de prueba).
     mediaUrl: (path) => path,

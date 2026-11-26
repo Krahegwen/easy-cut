@@ -47,6 +47,8 @@ export interface FakeBridgeState {
   projectFile: { path: string; json: string } | null
   /** Limpiezas de la caché pedidas. */
   cleanups: { sources: string[]; libraryFiles: string[]; force: boolean }[]
+  /** Fotogramas clave de cada fichero (ms; por defecto, solo el 0). */
+  keyframes: Record<string, number[]>
 }
 
 export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { bridge: NativeBridge; state: FakeBridgeState } {
@@ -77,6 +79,7 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     exported: [],
     projectFile: null,
     cleanups: [],
+    keyframes: {},
     ...initial,
   }
   for (const p of Object.keys(state.media)) state.existing.add(p)
@@ -89,6 +92,10 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
       const m = state.media[path]
       if (!m || !state.existing.has(path)) throw new Error(`No se ha podido leer el vídeo: ${path}`)
       return m
+    },
+    keyframes: async (path) => {
+      if (!state.existing.has(path)) throw new Error(`No se han podido leer los fotogramas clave: ${path}`)
+      return state.keyframes[path] ?? [0]
     },
     exists: async (path) => state.existing.has(path),
     mediaUrl: (path) => `asset://${path}`,

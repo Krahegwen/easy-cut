@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Inicio: hacer un vídeo nuevo (principal), grabarse leyendo un texto y, debajo, los vídeos en marcha (cada
+// Inicio: hacer un vídeo nuevo (principal), grabarse leyendo un texto, solo recortar un vídeo y, debajo, los vídeos en marcha (cada
 // uno se guarda solo en cada cambio): abrir, cambiar el nombre, duplicar y borrar (borrar nunca toca los
 // originales). Con la lista vacía, Inicio es como siempre.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -12,7 +12,7 @@ import { describeTouched, formatDuration } from '../domain'
 import { askConfirm } from '../lib/confirm'
 import { LAYER_PRIORITY } from '../lib/shortcuts'
 import { useShortcuts } from '../lib/use-shortcuts'
-import { store, type ProjectListEntry } from '../store'
+import { store, trim, type ProjectListEntry } from '../store'
 
 const list = computed(() => store.projects.value)
 
@@ -171,10 +171,16 @@ useShortcuts({
           <KeyHint k="Intro" />
         </button>
 
-        <button class="btn large secondary" type="button" data-testid="teleprompter" @click="store.go('teleprompter')">
-          <AppIcon name="mic" />
-          Grabarme leyendo un texto
-        </button>
+        <div class="others">
+          <button class="btn large secondary" type="button" data-testid="teleprompter" @click="store.go('teleprompter')">
+            <AppIcon name="mic" />
+            Grabarme leyendo un texto
+          </button>
+          <button class="btn large secondary" type="button" data-testid="trim-only" @click="trim.begin()">
+            <AppIcon name="scissors" />
+            Solo recortar un vídeo
+          </button>
+        </div>
       </div>
 
       <section v-if="list.length > 0" class="projects" aria-labelledby="projects-title" data-testid="project-list">
@@ -311,8 +317,13 @@ useShortcuts({
   border-radius: 18px;
   gap: 14px;
 }
+.others {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
 .secondary {
-  align-self: center;
   border-color: var(--border);
   background: transparent;
 }
@@ -354,8 +365,12 @@ useShortcuts({
   min-height: 72px;
   font-size: 22px;
 }
+.with-list .others {
+  flex-wrap: nowrap;
+}
 .with-list .secondary {
   align-self: stretch;
+  min-height: 72px;
 }
 .projects h2 {
   font-size: 22px;

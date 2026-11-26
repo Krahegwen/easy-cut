@@ -172,4 +172,25 @@ describe('registro de guardados', () => {
     expect(details).not.toContain('Encoder')
     expect(details).toContain('Duración: 0:30\n')
   })
+  it('«Solo recortar», «Rápido»: copiado sin recodificar, sin encoder', () => {
+    const r: ExportReport = {
+      ...emptyExportReport('high', 'copy', 'trim'),
+      durationMs: 5_000,
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      attempts: [{ encoder: null, exitCode: 0, ms: 900, error: null }],
+      fileName: 'toma 1 (recortado).mp4',
+    }
+    const entry = buildSaveLogEntry({ report: r, result: 'ok', startedAt, elapsedMs: 2_100, appVersion: '0.3.0', bytes: 4_000_000 })
+    expect(entry).toMatchObject({ method: 'copy', tool: 'trim', usedEncoder: null, retried: false })
+    expect(describeSave(entry)).toBe('Guardado en 2 segundos sin recodificar')
+    const details = saveLogDetails(entry)
+    expect(details).toContain('Guardado: Solo recortar, rápido (copiado sin recodificar) · resultado: bien')
+    expect(details).not.toContain('Encoder')
+    // «Exacto»: como siempre, con su encoder.
+    const exact = buildSaveLogEntry({ report: { ...report(), target: 'high', tool: 'trim' }, result: 'ok', startedAt, elapsedMs: 9_000, appVersion: '0.3.0' })
+    expect(saveLogDetails(exact)).toContain('Guardado: Solo recortar, exacto (Calidad alta)')
+    expect(describeSave(exact)).toContain('con ')
+  })
 })

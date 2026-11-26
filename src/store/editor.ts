@@ -68,7 +68,7 @@ import {
 } from '../domain'
 import type { NativeBridge, Thumbnail } from '../native/bridge'
 
-export type Screen = 'home' | 'pick' | 'editor' | 'clip' | 'save' | 'saving' | 'done' | 'teleprompter'
+export type Screen = 'home' | 'pick' | 'editor' | 'clip' | 'save' | 'saving' | 'done' | 'teleprompter' | 'trim'
 
 export interface Toast {
   id: number
@@ -591,6 +591,23 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
   function startNewProject() {
     void flushAutosave()
     resetToEmpty()
+  }
+
+  /**
+   * Empieza un vídeo nuevo ya hecho (p. ej. «Convertir en un vídeo normal» de «Solo recortar»), con los
+   * originales ya medidos, y lo guarda ya en la lista. El que estaba abierto se queda guardado. Sin deshacer
+   * hacia atrás: empieza aquí.
+   */
+  function startProjectFrom(next: Project, infos: readonly MediaInfo[]): Promise<void> {
+    void flushAutosave()
+    resetToEmpty()
+    for (const info of infos) {
+      setMedia(info)
+      setMissing(info.path, false)
+    }
+    history.value = createHistory(syncMediaPool(next, media.value))
+    selectedClipId.value = next.clips[0]?.id ?? null
+    return flushAutosave()
   }
 
   /**
@@ -1231,6 +1248,7 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     exportProject,
     importProjectFile,
     startNewProject,
+    startProjectFrom,
     flushAutosave,
     missingPaths,
     relink,

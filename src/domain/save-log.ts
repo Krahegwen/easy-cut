@@ -10,6 +10,12 @@ import { formatBytes } from './output'
 
 export type SaveOutcome = 'ok' | 'cancelled' | 'error'
 
+/** Cómo se hizo el fichero: recodificando (lo normal) o copiando el vídeo tal cual («Solo recortar», «Rápido»). */
+export type SaveMethod = 'encode' | 'copy'
+
+/** Desde dónde se guardó: «Tu vídeo» o «Solo recortar». */
+export type SaveTool = 'editor' | 'trim'
+
 /** Una pasada de ffmpeg con un encoder. */
 export interface SaveAttempt {
   /** null en «Solo el sonido» (no hay encoder de vídeo). */
@@ -25,6 +31,8 @@ export interface SaveAttempt {
 /** Lo que el exportador va sabiendo de un guardado. Lo que no llegó a saberse se queda en null. */
 export interface ExportReport {
   target: SaveTarget
+  method: SaveMethod
+  tool: SaveTool
   /** Encoders que pasaron la prueba (null en «Solo el sonido» o si no se llegó a probar). */
   availableEncoders: VideoEncoder[] | null
   /** El que se eligió primero. */
@@ -38,8 +46,8 @@ export interface ExportReport {
   fileName: string | null
 }
 
-export function emptyExportReport(target: SaveTarget): ExportReport {
-  return { target, availableEncoders: null, requestedEncoder: null, attempts: [], durationMs: null, width: null, height: null, fps: null, fileName: null }
+export function emptyExportReport(target: SaveTarget, method: SaveMethod = 'encode', tool: SaveTool = 'editor'): ExportReport {
+  return { target, method, tool, availableEncoders: null, requestedEncoder: null, attempts: [], durationMs: null, width: null, height: null, fps: null, fileName: null }
 }
 
 export interface SaveLogEntry {
@@ -49,6 +57,9 @@ export interface SaveLogEntry {
   at: string
   appVersion: string
   target: SaveTarget
+  /** 'copy' = copiado tal cual, sin recodificar («Solo recortar», «Rápido»). */
+  method: SaveMethod
+  tool: SaveTool
   result: SaveOutcome
   requestedEncoder: VideoEncoder | null
   /** El del último intento (el que salió bien, o el que estaba cuando se canceló o falló). */
@@ -164,6 +175,8 @@ export function buildSaveLogEntry(input: SaveLogInput): SaveLogEntry {
     at: localIsoString(input.startedAt),
     appVersion: input.appVersion,
     target: report.target,
+    method: report.method,
+    tool: report.tool,
     result,
     requestedEncoder: report.requestedEncoder,
     // En «Solo el sonido» no hay intentos con encoder de vídeo.
@@ -195,6 +208,7 @@ export function serializeSaveLogEntry(entry: SaveLogEntry): string {
  */
 export function describeSave(entry: SaveLogEntry): string {
   const time = `Guardado en ${formatDurationLong(entry.elapsedMs)}`
+  if (entry.method === 'copy') return `${time} sin recodificar`
   const used = entry.usedEncoder
   if (entry.target === 'sound' || !used) return time
   const withUsed = `${time} con ${ENCODER_PLAIN_NAMES[used]}`
@@ -229,8 +243,10 @@ function clock(ms: number): string {
 
 /** Texto técnico de «Copiar detalles»: para leérselo o pegárselo al dueño. */
 export function saveLogDetails(entry: SaveLogEntry): string {
-  const lines: string[] = [`Easy Cut ${entry.appVersion} · ${entry.at}`, `Guardado: ${TARGET_NAMES[entry.target]} · resultado: ${RESULT_NAMES[entry.result]}`]
-  if (entry.target !== 'sound') {
+  const what =
+    entry.tool === 'trim' ? (entry.method === 'copy' ? 'Solo recortar, rápido (copiado sin recodificar)' : `Solo recortar, exacto (${TARGET_NAMES[entry.target]})`) : TARGET_NAMES[entry.target]
+  const lines: string[] = [`Easy Cut ${entry.appVersion} · ${entry.at}`, `Guardado: ${what} · resultado: ${RESULT_NAMES[entry.result]}`]
+  if (entry.target !== 'sound' && entry.method !== 'copy') {
     lines.push(`Encoder: ${entry.usedEncoder ?? '—'} (pedido: ${entry.requestedEncoder ?? '—'})`)
     lines.push(`Reintento con libx264: ${entry.retried ? `sí, porque: ${entry.retryReason ?? 'sin detalle'}` : 'no'}`)
     lines.push(`Encoders disponibles: ${entry.availableEncoders ? entry.availableEncoders.join(', ') || 'ninguno' : '—'}`)

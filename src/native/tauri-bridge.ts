@@ -14,6 +14,7 @@ import { buildProbeArgs, parseProbeOutput, ProbeError } from '../domain/probe'
 import type { MediaInfo, TimeRange } from '../domain/project'
 import { createProgressParser } from '../domain/progress'
 import { buildSilenceDetectArgs, parseSilenceDetectOutput } from '../domain/silence'
+import { buildKeyframeProbeArgs, parseKeyframes } from '../domain/trim'
 import { recordingExtension, recordingOutputExtension } from '../domain/recording'
 import {
   buildAudioRecordingTranscodeArgs,
@@ -207,6 +208,13 @@ export function createTauriBridge(): NativeBridge {
     },
 
     probe: (path, options) => probe(path, undefined, options?.still ?? false),
+
+    async keyframes(path, aroundMs, fromStart = false) {
+      const output = await runTool('ffprobe', buildKeyframeProbeArgs(path, aroundMs, fromStart), newJobId('keyframes'))
+      throwIfCancelled(output)
+      if (output.exitCode !== 0) throw new ProbeError(`No se han podido leer los fotogramas clave: ${lastLine(output.stderr) || 'error desconocido'}`)
+      return parseKeyframes(output.stdout)
+    },
 
     exists: (path) => invoke<boolean>('path_exists', { path }),
 

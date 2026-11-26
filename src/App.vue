@@ -21,6 +21,7 @@ import PickView from './views/PickView.vue'
 import SaveView from './views/SaveView.vue'
 import SavingView from './views/SavingView.vue'
 import TeleprompterView from './views/TeleprompterView.vue'
+import TrimView from './views/TrimView.vue'
 
 const hovering = ref(false)
 const hoverPoint = ref<DropPoint | null>(null)
@@ -84,6 +85,7 @@ onBeforeUnmount(() => {
   <SavingView v-else-if="store.screen.value === 'saving'" />
   <DoneView v-else-if="store.screen.value === 'done'" />
   <TeleprompterView v-else-if="store.screen.value === 'teleprompter'" />
+  <TrimView v-else-if="store.screen.value === 'trim'" />
 
   <div v-if="hovering && store.screen.value === 'editor'" class="drop-hint" :class="{ tracks: toTracks(hoverPoint) }" data-testid="drop-hint">
     {{ toTracks(hoverPoint) ? 'Suelta aquí los sonidos, vídeos o imágenes para ponerlos en las pistas, donde está la línea' : 'Suelta los vídeos o sonidos para añadirlos al final de tu vídeo (encima de las pistas de sonidos o efectos, van a las pistas)' }}
