@@ -1,6 +1,6 @@
 // Medida: lo que cuesta la pestaña «Efectos» de la biblioteca (las vistas previas de 480×270 de las tarjetas)
-// mientras el vídeo se reproduce en la vista previa. En la app Tauri real por CDP, con la biblioteca cerrada y
-// con la pestaña «Efectos» abierta («Todo»), sin y con Emulation.setCPUThrottlingRate (×4 por defecto, para
+// mientras el vídeo se reproduce en la vista previa. En la app Tauri real por CDP, con la biblioteca cerrada,
+// con la pestaña «Efectos» abierta («Todo») y con el ratón encima de la primera tarjeta, sin y con Emulation.setCPUThrottlingRate (×4 por defecto, para
 // parecerse a un PC modesto; ojo: solo frena el hilo principal del renderer, no la GPU ni la decodificación).
 //
 // Por cada caso, `--runs` veces (3) y en orden alterno: CPU de los procesos de WebView2 (renderer, GPU y
@@ -127,6 +127,10 @@ function sampleGpu(pids, n) {
   })
 }
 
+/** Casos: biblioteca cerrada, pestaña «Efectos» abierta y lo mismo con el ratón sobre la primera tarjeta. */
+const STATES = ['cerrada', 'efectos', 'raton', 'todas']
+const STATE_NAMES = { cerrada: 'cerrada', efectos: 'Efectos abierta', raton: 'Efectos, ratón encima de una', todas: 'Efectos, todas moviéndose' }
+
 const median = (xs) => {
   const s = xs.filter((x) => x !== null && Number.isFinite(x)).sort((a, b) => a - b)
   if (!s.length) return null
@@ -155,6 +159,13 @@ async function setState(state) {
     await app.waitFor('return [...document.querySelectorAll("[data-testid=library-asset] .preview video, [data-testid=library-asset] .preview img")].length >= 4', { timeoutMs: 30_000, what: 'vistas previas' })
   }
   await app.evaluate('document.activeElement?.blur(); return true')
+  // Con el ratón encima de la primera tarjeta con vídeo (si las tarjetas solo se mueven al pasar el ratón).
+  const pos = state === 'raton' ? await app.evaluate('const v = document.querySelector("[data-testid=library-asset] .preview video"); if (!v) return null; const r = v.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }') : { x: 5, y: 5 }
+  if (pos) await app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y, button: 'none' })
+  // Todas moviéndose a la vez (como antes de que se quedaran quietas), a mano, para compararlo en el mismo código;
+  // en los demás casos, las que no tienen el ratón encima, quietas (por si venían de «todas»).
+  if (state === 'todas') await app.evaluate('for (const v of document.querySelectorAll("[data-testid=library-asset] .preview video")) { v.loop = true; v.style.display = ""; void v.play() } for (const c of document.querySelectorAll("[data-testid=library-poster]")) c.style.display = "none"; return true')
+  else await app.evaluate('for (const card of document.querySelectorAll("[data-testid=library-asset][data-moving=\'0\']")) { const v = card.querySelector(".preview video"); const c = card.querySelector(".preview canvas"); if (v) { v.pause(); if (c) { v.style.display = "none"; c.style.display = "" } } } return true')
   await sleep(1500)
 }
 
@@ -181,7 +192,7 @@ async function measureOnce(state, throttle) {
   await app.key('Home')
   await sleep(300)
   await app.key(' ')
-  await app.waitFor('return document.querySelector("[data-testid=player]").dataset.playing === "1"', { timeoutMs: 5000, what: 'reproduciendo' })
+  await app.waitFor('return document.querySelector("[data-testid=player]").dataset.playing === "1"', { timeoutMs: 15_000, what: 'reproduciendo' })
   await sleep(800)
   const { pids } = await processCpu()
   const gpu = sampleGpu(pids, seconds)
@@ -242,7 +253,7 @@ try {
   for (const throttle of throttles) {
     await app.send('Emulation.setCPUThrottlingRate', { rate: throttle })
     for (let r = 0; r < runs; r++) {
-      for (const state of r % 2 ? ['efectos', 'cerrada'] : ['cerrada', 'efectos']) {
+      for (const state of r % 2 ? [...STATES].reverse() : STATES) {
         await setState(state)
         const row = await measureOnce(state, throttle)
         rows.push(row)
@@ -263,7 +274,7 @@ try {
 const keys = ['renderer', 'gpuProcess', 'browser', 'mainThread', 'fps', 'dropped', 'gpu3d', 'gpuDecode', 'cardPlaying']
 const summary = []
 for (const throttle of throttles) {
-  for (const state of ['cerrada', 'efectos']) {
+  for (const state of STATES) {
     const sel = rows.filter((r) => r.throttle === throttle && r.state === state)
     if (!sel.length) continue
     const s = { throttle, state, n: sel.length }
@@ -280,7 +291,7 @@ console.log('| CPU | Biblioteca | Renderer % | GPU (proceso) % | Hilo principal 
 console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
 for (const s of summary) {
   const c = (k, d) => `${f(s[k].median, d)} (${f(s[k].min, d)}–${f(s[k].max, d)})`
-  console.log(`| ×${s.throttle} | ${s.state === 'cerrada' ? 'cerrada' : 'Efectos abierta'} | ${c('renderer')} | ${c('gpuProcess')} | ${c('mainThread')} | ${c('fps')} | ${c('dropped', 0)} | ${c('gpu3d')} | ${c('gpuDecode')} | ${c('cardPlaying', 0)} |`)
+  console.log(`| ×${s.throttle} | ${STATE_NAMES[s.state]} | ${c('renderer')} | ${c('gpuProcess')} | ${c('mainThread')} | ${c('fps')} | ${c('dropped', 0)} | ${c('gpu3d')} | ${c('gpuDecode')} | ${c('cardPlaying', 0)} |`)
 }
 writeFileSync(opts.json, `${JSON.stringify({ label: opts.label, runs, seconds, rows, summary }, null, 1)}\n`)
 console.log(`\nResultado en ${opts.json}`)

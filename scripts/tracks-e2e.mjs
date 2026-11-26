@@ -7,7 +7,9 @@
 // la sincronía; guardar «Para WhatsApp» y comprobarlo con ffprobe; créditos en «¡Listo!»; el buscador
 // («aplauso», «palmas», sin tildes), cada categoría de sonidos con su contador y nombres legibles; un sonido de
 // Freesound y uno de Kenney en un vídeo guardado, midiendo en el fichero dónde suenan; y el rendimiento con un
-// montaje de 5 minutos, 20 trozos, 3 pistas y 30 elementos. Capturas tracks-*.png y lib-*.png (biblioteca por
+// montaje de 5 minutos, 20 trozos, 3 pistas y 30 elementos. Probar pasando el ratón por encima (sonidos,
+// efectos y «De mi ordenador»: retardo, cortar al salir, cruzar deprisa, el botón, el foco, con el vídeo en
+// marcha) y las pegatinas (categoría, «Poner aquí», vista previa y color dentro y fuera en el fichero). Capturas tracks-*.png y lib-*.png (biblioteca por
 // categorías y búsqueda, a 1280×800 y 1100×700) en test-output/screenshots/.
 //
 // PowerShell (con Rust/cargo en el PATH, la app cerrada, los ficheros de `pnpm test:ffmpeg` en test-output y
@@ -228,6 +230,113 @@ async function libraryCategoryShots(size) {
   check(`Cada categoría de sonidos se elige y su contador cuadra (${size})`, cats.length >= 10, counts.join(' · '))
 }
 
+// ------------------------------------------------------------------ probar pasando el ratón por encima
+
+const moveMouse = (x, y) => app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0 })
+/** Lleva el ratón a la cabecera de la biblioteca (fuera de cualquier tarjeta). */
+async function mouseAway() {
+  const c = await app.center('[data-testid=library-panel] .head h2')
+  await moveMouse(c.x, c.y)
+}
+async function hoverCard(id, part = '.info') {
+  const c = await app.center(`[data-testid=library-asset][data-asset-id="${id}"] ${part}`)
+  await moveMouse(c.x, c.y)
+}
+const libAudio = () => app.evaluate('const a = document.querySelector("[data-testid=library-audio]"); return { key: a.dataset.playing, paused: a.paused, t: a.currentTime }')
+
+/** Sonidos: suenan al dejar el ratón encima (tras el retardo), se cortan al salir, no al cruzar deprisa; el botón manda. */
+async function hoverTests() {
+  await mouseAway()
+  await sleep(200)
+  await app.evaluate('const a = document.querySelector("[data-testid=library-audio]"); window.__libPlays = 0; a.addEventListener("play", () => window.__libPlays++); return true')
+  await hoverCard('ding')
+  await sleep(150)
+  const early = await libAudio()
+  const later = await app.waitFor('const a = document.querySelector("[data-testid=library-audio]"); return a.dataset.playing === "a:ding" && !a.paused && a.currentTime > 0 ? a.currentTime : null', { timeoutMs: 3000, what: 'sonar al pasar el ratón' })
+  check('Ratón encima de un sonido: no suena enseguida (retardo) y luego suena sin pulsar', early.key === '' && early.paused && later > 0, `a 150 ms: ${JSON.stringify(early)}; luego ${later} s`)
+  await mouseAway()
+  await sleep(120)
+  const left = await libAudio()
+  check('Al sacar el ratón se corta', left.paused && left.key === '', JSON.stringify(left))
+
+  // Cruzar la lista deprisa: nada suena.
+  await app.evaluate('document.querySelector("[data-testid=library-grid]").scrollTop = 0; window.__libPlays = 0; return true')
+  const ids = await app.evaluate('return [...document.querySelectorAll("[data-testid=library-asset]")].slice(0, 6).map((c) => c.dataset.assetId)')
+  for (const id of ids) {
+    await hoverCard(id)
+    await sleep(90)
+  }
+  await mouseAway()
+  await sleep(900)
+  check('Cruzar la lista con el ratón (90 ms por tarjeta) no hace sonar nada', (await app.evaluate('return window.__libPlays')) === 0 && (await libAudio()).paused, `${ids.length} tarjetas`)
+
+  // Una sola a la vez: de una tarjeta a otra, suena solo la segunda.
+  await hoverCard(ids[0])
+  await app.waitFor(`return document.querySelector("[data-testid=library-audio]").dataset.playing === "a:${ids[0]}"`, { timeoutMs: 3000, what: 'primera tarjeta' })
+  await hoverCard(ids[1])
+  const switched = await libAudio()
+  await app.waitFor(`return document.querySelector("[data-testid=library-audio]").dataset.playing === "a:${ids[1]}"`, { timeoutMs: 3000, what: 'segunda tarjeta' })
+  check('Uno solo a la vez: al pasar a otra tarjeta, la primera se calla y suena la otra', switched.key === '' && switched.paused, JSON.stringify(switched))
+  await mouseAway()
+  await sleep(150)
+
+  // El botón sigue funcionando y manda.
+  await hoverCard('ding')
+  await app.waitFor('return document.querySelector("[data-testid=library-audio]").dataset.playing === "a:ding"', { timeoutMs: 3000, what: 'ding al pasar el ratón' })
+  await app.click('[data-testid=library-listen-ding]')
+  await sleep(800)
+  const stopped = await libAudio()
+  check('Con el ratón encima y sonando, el botón (que dice «Parar») lo para y no vuelve a sonar solo', stopped.paused && stopped.key === '', JSON.stringify(stopped))
+  await app.click('[data-testid=library-listen-ding]')
+  await mouseAway()
+  await sleep(300)
+  const clicked = await libAudio()
+  check('Lo que se pone a sonar con el botón sigue sonando al sacar el ratón', clicked.key === 'a:ding' && !clicked.paused, JSON.stringify(clicked))
+  await app.click('[data-testid=library-listen-ding]')
+  await mouseAway()
+
+  // El foco del teclado no hace sonar nada.
+  await app.evaluate('document.querySelector("[data-testid=library-listen-ding]").focus(); return true')
+  await sleep(900)
+  check('El foco del teclado en una tarjeta de sonido no lo hace sonar', (await libAudio()).paused)
+  await app.evaluate('document.activeElement?.blur(); return true')
+
+  // Con el vídeo reproduciéndose, pasar el ratón no suena (el botón sí).
+  await app.key(' ')
+  await app.waitFor('return document.querySelector("[data-testid=player]").dataset.playing === "1"', { timeoutMs: 5000, what: 'reproducir' })
+  await hoverCard('ding')
+  await sleep(900)
+  const whilePlaying = await libAudio()
+  await mouseAway()
+  await app.key(' ')
+  await app.key('Home')
+  check('Con el vídeo reproduciéndose, pasar el ratón por un sonido no lo hace sonar', whilePlaying.paused && whilePlaying.key === '', JSON.stringify(whilePlaying))
+}
+
+/** Efectos: quietos hasta pasar el ratón (o el foco), se mueve solo ese y se para al salir. */
+async function effectHoverTests() {
+  await mouseAway()
+  await sleep(300)
+  const moving = () => app.evaluate('return [...document.querySelectorAll("[data-testid=library-asset] .preview video")].filter((v) => !v.paused).map((v) => v.closest("[data-asset-id]").dataset.assetId)')
+  const still = await moving()
+  check('Las vistas previas de los efectos están quietas (un fotograma) sin el ratón encima', still.length === 0, still.join(', '))
+  await hoverCard('chispas', '.preview')
+  await sleep(150)
+  const early = await moving()
+  const on = await app.waitFor('const v = document.querySelector("[data-asset-id=chispas] .preview video"); return v && !v.paused && v.currentTime > 0.2 ? v.currentTime : null', { timeoutMs: 3000, what: 'efecto en movimiento' })
+  const only = await moving()
+  check('Ratón encima de un efecto: tras el retardo se mueve ese y solo ese', early.length === 0 && on > 0 && only.length === 1 && only[0] === 'chispas', `a 150 ms: [${early}]; luego [${only}]`)
+  await mouseAway()
+  await sleep(150)
+  check('Al sacar el ratón se para', (await moving()).length === 0)
+  await app.evaluate('document.querySelector("[data-testid=library-try-chispas]").focus(); return true')
+  await sleep(300)
+  const focused = await moving()
+  await app.evaluate('document.activeElement?.blur(); return true')
+  await sleep(150)
+  check('Con el foco del teclado en su tarjeta también se mueve (y se para al irse)', focused.length === 1 && focused[0] === 'chispas' && (await moving()).length === 0, focused.join(', '))
+}
+
 /** Nada cortado ni tapado en la vista de pistas, la barra del elemento y la biblioteca. */
 async function layoutIsClean(where) {
   const res = await app.evaluate(`const bad = [];
@@ -327,8 +436,9 @@ try {
   const listening = await app.waitFor('const a = document.querySelector("[data-testid=library-panel] audio"); return a && !a.paused && a.currentTime > 0 ? a.currentTime : null', { timeoutMs: 10_000, what: 'probar un sonido' })
   check('Al pulsar su tarjeta, el sonido suena (para probarlo antes de poner)', listening > 0, `${listening} s`)
   await app.click('[data-testid=library-listen-ding]')
+  await hoverTests()
   {
-    const applause = ['aplausos-auditorio', 'ovacion-teatro', 'ovacion-teatro-larga', 'aplausos-gimnasio']
+    const applause =['aplausos-auditorio', 'ovacion-teatro', 'ovacion-teatro-larga', 'aplausos-gimnasio']
     const shown = () => app.evaluate('return [...document.querySelectorAll("[data-testid=library-asset]")].map((a) => a.dataset.assetId)')
     const inApplause = (ids) => S('return args.ids.every((id) => library.asset(id)?.category === "aplausos-y-vitores")', { ids })
     for (const word of ['aplauso', 'palmas']) {
@@ -368,7 +478,21 @@ try {
   // --- Biblioteca: efectos (probar sobre mi vídeo y «Poner aquí»)
   await app.click('[data-testid=library-tab-effects]')
   await app.waitFor('return [...document.querySelectorAll("[data-testid=library-asset] video")].filter((v) => v.readyState >= 2).length >= 4', { timeoutMs: 30_000, what: 'vistas previas de los efectos' })
-  check('Los efectos se ven en su tarjeta (vídeo en bucle)', true)
+  check('Los efectos se ven en su tarjeta (vista previa cargada)', true)
+  await effectHoverTests()
+  // --- Pegatinas: su categoría con su contador
+  {
+    await selectCategory('pegatinas')
+    const n = await app.evaluate('return document.querySelectorAll("[data-testid=library-asset]").length')
+    const label = await app.evaluate('const s = document.querySelector("[data-testid=library-category]"); return s.options[s.selectedIndex].textContent.trim()')
+    const fmt = await app.evaluate('return [...document.querySelectorAll("[data-testid=library-asset]")].map((c) => c.querySelector(".preview img, .preview video")?.tagName ?? "-").join("")')
+    check('Categoría «Pegatinas» con su contador', n >= 12 && label === `Pegatinas (${n})`, `«${label}», ${n} tarjetas`)
+    await app.waitFor('return [...document.querySelectorAll("[data-testid=library-asset] .preview img")].every((i) => i.complete && i.naturalWidth > 0)', { timeoutMs: 15_000, what: 'vistas previas de las pegatinas' })
+    await shot('lib-pegatinas-1280.png')
+    await namesAreReadable('«Pegatinas» a 1280×800')
+    check('Pegatinas fijas (imagen) y alguna animada (vídeo)', fmt.includes('IMG') && fmt.includes('VIDEO'), fmt)
+    await selectCategory(null)
+  }
   await app.click('[data-testid=library-try-chispas]')
   const trying = await app.waitFor('const v = document.querySelector("[data-testid=trying-effect]"); return v && v.readyState >= 2 && !v.paused ? getComputedStyle(v).mixBlendMode : null', { timeoutMs: 15_000, what: 'probar sobre mi vídeo' })
   check('«Probar sobre mi vídeo»: se ve en la vista previa, como luz', trying === 'screen', trying)
@@ -395,6 +519,27 @@ try {
   {
     const m = (await items()).find((i) => i.name === 'Música de prueba')
     check('«De mi ordenador»: el sonido entra en la línea y, como pisaría al «ding», en otra pista', !!m && Math.abs(m.start - 12_000) < 50 && m.trackName === 'Sonidos 2', JSON.stringify({ start: m?.start, track: m?.trackName }))
+  }
+  // --- «De mi ordenador»: probar con el ratón encima y con su botón
+  {
+    // El único sonido traído es la música (los trozos son vídeos; lo de la biblioteca no sale aquí).
+    const sel = '[data-testid=pool-item][data-kind=sound]'
+    const info = await app.center(`${sel} .pool-info`)
+    await moveMouse(info.x, info.y)
+    await sleep(150)
+    const early = await libAudio()
+    await app.waitFor(`return document.querySelector("[data-testid=library-audio]").dataset.playing === ${JSON.stringify(`p:${music}`)} && !document.querySelector("[data-testid=library-audio]").paused`, { timeoutMs: 3000, what: 'sonido del ordenador al pasar el ratón' })
+    check('«De mi ordenador»: con el ratón encima de un sonido ya traído, suena tras el retardo', early.paused && early.key === '')
+    await mouseAway()
+    await sleep(150)
+    check('Y se corta al salir', (await libAudio()).paused)
+    await app.click(`${sel} [data-testid=pool-listen]`)
+    await sleep(300)
+    const btn = await libAudio()
+    check('Su botón de escuchar también (y se ve sin pasar el ratón)', btn.key === `p:${music}` && !btn.paused && (await app.evaluate('return getComputedStyle(document.querySelector(args.s + " .pool-play")).display !== "none"', { s: sel })), JSON.stringify(btn))
+    await app.click(`${sel} [data-testid=pool-listen]`)
+    check('Y lo para', (await libAudio()).paused)
+    await shot('lib-de-mi-ordenador-1280.png')
   }
   // Esc cierra primero el aviso abierto («Puesto en…») y después la biblioteca.
   await closeLibraryWithEsc()
@@ -755,6 +900,14 @@ try {
     await app.click('[data-testid=library-tab-effects]')
     await sleep(1200)
     await shot('tracks-13-biblioteca-efectos-1100.png')
+    await selectCategory('pegatinas')
+    await shot('lib-pegatinas-1100.png')
+    await namesAreReadable('«Pegatinas» a 1100×700')
+    await layoutIsClean('pegatinas a 1100×700')
+    await selectCategory(null)
+    await app.click('[data-testid=library-tab-computer]')
+    await shot('lib-de-mi-ordenador-1100.png')
+    await layoutIsClean('«De mi ordenador» a 1100×700')
     await closeLibraryWithEsc()
     const fxTrack = (await items()).find((i) => i.id === fxId).track
     await app.click(`[data-testid=track-header][data-track-id="${fxTrack}"] [data-testid=track-toggle]`)
@@ -837,6 +990,59 @@ try {
     check('En el fichero, la campanita (Freesound) empieza a sonar a los 2 s y la voz (Kenney) a los 6 s (±40 ms)', onsets.length === 2 && Math.abs(onsets[0] - placed['campanita-recepcion']) <= 40 && Math.abs(onsets[1] - placed['voz-mujer-3']) <= 40, `suena desde ${onsets.join(' y ')} ms; silencios desde ${starts.join(', ')} ms`)
     const credits = await app.text('[data-testid=done-credits]')
     check('Lo CC0 no pide créditos en «¡Listo!»', !credits, credits ?? '')
+    await app.click('[data-testid=back-to-editor]')
+    await waitScreen('editor')
+  }
+
+  // --- Una pegatina: «Poner aquí» la deja pequeña, fuera del centro y con transparencia; y así sale en el fichero
+  {
+    await S(`const d = domain; let p = d.createProject('16:9'); p = d.addClip(p, d.createClip(store.media.value[args.h], 'st-c1'));
+      store.commit(p); return true`, { h: media.horizontal })
+    await sleep(600)
+    await seekTo(1000)
+    await app.click('[data-testid=add-sounds-effects]')
+    await waitScreen('library-panel')
+    await app.click('[data-testid=library-tab-effects]')
+    await selectCategory('pegatinas')
+    await app.click('[data-testid=library-put-pegatina-estrella]')
+    await app.waitFor('return window.__easyCut.store.project.value.tracks.flatMap((t) => t.items).some((i) => i.source.assetId === "pegatina-estrella")', { timeoutMs: 20_000, what: 'pegatina puesta' })
+    await noErrorDialog('poner la pegatina')
+    await closeLibraryWithEsc()
+    const st = (await items()).find((i) => i.item.source.assetId === 'pegatina-estrella')
+    check('La pegatina entra pequeña, fuera del centro, en mezcla normal, 3 s', st.item.look.mix === 'normal' && st.item.look.box.scale === 0.25 && st.item.look.box.x === 0.8 && st.end - st.start === 3000, JSON.stringify({ look: st.item.look, ms: st.end - st.start }))
+    await seekTo(2000)
+    const r = await app.waitFor(`const e = document.querySelector('[data-testid=track-effect][data-item-id="${st.id}"]'); const f = document.querySelector('[data-testid=preview-frame]').getBoundingClientRect();
+      if (!e || !e.complete || getComputedStyle(e).visibility !== 'visible') return null; const b = e.getBoundingClientRect();
+      return { w: b.width / f.width, h: b.height / f.height, cx: (b.left + b.width / 2 - f.left) / f.width, cy: (b.top + b.height / 2 - f.top) / f.height, blend: getComputedStyle(e).mixBlendMode, tag: e.tagName }`, { timeoutMs: 15_000, what: 'pegatina en la vista previa' })
+    check('En la vista previa se ve pequeña (¼ del alto) y arriba a la derecha', r.tag === 'IMG' && Math.abs(r.h - 0.25) < 0.02 && Math.abs(r.cx - 0.8) < 0.02 && Math.abs(r.cy - 0.28) < 0.02 && r.blend === 'normal', JSON.stringify(r))
+    await shot('tracks-22-pegatina.png')
+    await app.click('[data-testid=save-video]')
+    await waitScreen('save-view')
+    await app.click('[data-testid=preset-whatsapp]')
+    await app.waitFor('return !!document.querySelector("[data-testid=done-view]")', { timeoutMs: 180_000, what: 'vídeo con pegatina guardado' })
+    await noErrorDialog('guardar con pegatina')
+    const out = await S('return store.lastExport.value.path')
+    const v = ffprobe(out).streams.find((s) => s.codec_type === 'video')
+    // Color de un punto (fracción del ancho y del alto) en un instante del fichero, y de un vídeo sin pegatina.
+    const pixel = (path, sec, fx, fy) => {
+      const x = Math.round(fx * v.width)
+      const y = Math.round(fy * v.height)
+      const buf = execFileSync('ffmpeg', ['-v', 'error', '-ss', String(sec), '-i', path, '-frames:v', '1', '-vf', `crop=1:1:${x}:${y},format=rgb24`, '-f', 'rawvideo', '-'])
+      return [...buf.subarray(0, 3)]
+    }
+    const inside = pixel(out, 2.5, 0.8, 0.28)
+    const before = pixel(out, 0.4, 0.8, 0.28)
+    const after = pixel(out, 4.6, 0.8, 0.28)
+    const src = pixel(media.horizontal, 2.5, 0.8, 0.28)
+    const outsideOut = pixel(out, 2.5, 0.3, 0.7)
+    const outsideSrc = pixel(media.horizontal, 2.5, 0.3, 0.7)
+    // Junto al borde del recuadro pero fuera de la estrella (esquina del cuadrado): ahí manda el vídeo (alfa).
+    const cornerOut = pixel(out, 2.5, 0.8 - 0.25 * 0.5625 * 0.46, 0.28 - 0.25 * 0.46)
+    const cornerSrc = pixel(media.horizontal, 2.5, 0.8 - 0.25 * 0.5625 * 0.46, 0.28 - 0.25 * 0.46)
+    const near = (a, b, tol = 24) => a.every((c, i) => Math.abs(c - b[i]) <= tol)
+    const yellow = (c) => c[0] > 200 && c[1] > 150 && c[2] < 150
+    check('En el fichero: dentro de la estrella, amarillo; antes y después de su tramo, el vídeo', yellow(inside) && !yellow(before) && !yellow(after), `dentro ${inside} · antes ${before} · después ${after} (original ${src})`)
+    check('Y fuera de la pegatina, el vídeo tal cual (también en la esquina transparente de su recuadro)', near(outsideOut, outsideSrc) && near(cornerOut, cornerSrc), `fuera ${outsideOut} / ${outsideSrc} · esquina ${cornerOut} / ${cornerSrc}`)
     await app.click('[data-testid=back-to-editor]')
     await waitScreen('editor')
   }

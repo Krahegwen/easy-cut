@@ -9,7 +9,6 @@ import {
   countByCategory,
   describeMediaEntry,
   describeUsage,
-  formatClock,
   formatDuration,
   libraryFetchMessage,
   mediaUsage,
@@ -32,6 +31,7 @@ import AppIcon from '../AppIcon.vue'
 import type { IconName } from '../icons'
 import KeyHint from '../KeyHint.vue'
 import CreditsDialog from './CreditsDialog.vue'
+import LibraryWhere from './LibraryWhere.vue'
 
 /**
  * Con el vídeo reproduciéndose en la vista previa, pasar el ratón no hace sonar nada (se mezclaría con el vídeo
@@ -159,9 +159,10 @@ async function togglePool(m: MediaEntry) {
 
 // ------------------------------------------------------------------ vistas previas de los efectos
 
-// Quietas en un fotograma (medido: todas moviéndose a la vez, el renderer gastaba la mitad más y la página
-// pintaba a la mitad de fotogramas, ver scripts/library-perf.mjs); se mueve la que tiene el ratón encima
-// (tras el retardo) o el foco del teclado.
+// Quietas en un fotograma, pintado en un <canvas>; se mueve (con su <video>) la que tiene el ratón encima (tras
+// el retardo) o el foco del teclado. Medido con scripts/library-perf.mjs: todas moviéndose, el renderer gastaba
+// la mitad más y la página pintaba a la mitad de fotogramas; y un <video> en pausa a la vista seguía costando en
+// cada fotograma (con 14 tarjetas, el hilo principal del 16 % al 47 % mientras se reproduce el vídeo).
 const POSTER_AT = 0.45
 const previews = ref<Record<string, string>>({})
 const previewEls = new Map<string, HTMLVideoElement>()
@@ -183,6 +184,24 @@ watch(
 function registerPreview(id: string, el: unknown) {
   if (el instanceof HTMLVideoElement) previewEls.set(id, el)
   else previewEls.delete(id)
+}
+const posterEls = new Map<string, HTMLCanvasElement>()
+function registerPoster(id: string, el: unknown) {
+  if (el instanceof HTMLCanvasElement) posterEls.set(id, el)
+  else posterEls.delete(id)
+}
+/** Copia al canvas el fotograma de la vista previa (solo si está quieta: se ve el canvas, no el vídeo). */
+function drawPoster(id: string, v: HTMLVideoElement) {
+  const c = posterEls.get(id)
+  if (!c || isMoving(id) || !v.videoWidth) return
+  if (c.width !== v.videoWidth || c.height !== v.videoHeight) {
+    c.width = v.videoWidth
+    c.height = v.videoHeight
+  }
+  const ctx = c.getContext('2d')
+  if (!ctx) return
+  ctx.clearRect(0, 0, c.width, c.height)
+  ctx.drawImage(v, 0, 0)
 }
 function toPoster(v: HTMLVideoElement) {
   if (Number.isFinite(v.duration) && v.duration > 0) v.currentTime = v.duration * POSTER_AT
@@ -411,17 +430,22 @@ function poolThumb(m: MediaEntry): string | null {
           </button>
           <div v-else class="preview">
             <img v-if="a.still && previews[a.id]" :src="previews[a.id]" alt="" draggable="false" />
-            <video
-              v-else-if="previews[a.id]"
-              :ref="(el) => registerPreview(a.id, el)"
-              :src="previews[a.id]"
-              muted
-              loop
-              playsinline
-              preload="auto"
-              disablepictureinpicture
-              @loadedmetadata="isMoving(a.id) ? syncPreview(a.id) : toPoster($event.target as HTMLVideoElement)"
-            />
+            <template v-else-if="previews[a.id]">
+              <!-- Quieta, un fotograma pintado en un canvas: un <video> en pausa a la vista seguía costando cada fotograma. -->
+              <canvas v-show="!isMoving(a.id)" :ref="(el) => registerPoster(a.id, el)" class="poster" data-testid="library-poster" />
+              <video
+                v-show="isMoving(a.id)"
+                :ref="(el) => registerPreview(a.id, el)"
+                :src="previews[a.id]"
+                muted
+                loop
+                playsinline
+                preload="auto"
+                disablepictureinpicture
+                @loadedmetadata="isMoving(a.id) ? syncPreview(a.id) : toPoster($event.target as HTMLVideoElement)"
+                @seeked="drawPoster(a.id, $event.target as HTMLVideoElement)"
+              />
+            </template>
             <span v-else class="spinner" />
           </div>
           <div class="info">
@@ -543,7 +567,7 @@ function poolThumb(m: MediaEntry): string | null {
 
     <footer class="foot">
       <span v-if="tracks.adding.value" class="adding"><span class="spinner" /> Trayendo «{{ tracks.adding.value }}»…</span>
-      <span v-else class="where muted" data-testid="library-where">«Poner aquí» lo pone donde está la línea: {{ formatClock(tracks.playheadMs.value) }}</span>
+      <LibraryWhere v-else />
       <button class="link" type="button" data-testid="library-credits" @click="creditsOpen = true">Créditos de la biblioteca</button>
     </footer>
     <audio ref="audio" :data-playing="playingKey ?? ''" data-testid="library-audio" @ended="playingKey = null" />
@@ -736,6 +760,7 @@ function poolThumb(m: MediaEntry): string | null {
   background-size: 16px 16px;
 }
 .preview video,
+.preview canvas,
 .preview img {
   width: 100%;
   height: 100%;
