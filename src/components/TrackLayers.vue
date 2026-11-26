@@ -91,6 +91,13 @@ const effects = computed(() => {
   return list.sort((a, b) => order.indexOf(b.track.id) - order.indexOf(a.track.id))
 })
 
+/** Lo que no tiene sonido: si va más de esto por delante del reloj del montaje, se para a esperarlo (ms). */
+const AHEAD_PAUSE_MS = 40
+/** …y vuelve a sonar cuando ya solo va esto o menos por delante (ms). */
+const WAIT_DONE_MS = 8
+/** Más por delante que esto no es el retraso del sonido (un salto, una vuelta que repite): se busca su sitio. */
+const WAIT_AHEAD_MAX_MS = 400
+
 const elements = new Map<string, HTMLMediaElement>()
 const sync = ref<Record<string, { expected: number; actual: number | null; active: boolean }>>({})
 
@@ -158,10 +165,23 @@ function syncOne(r: ResolvedItem, exact: boolean) {
     return
   }
   if (props.playing) {
+    // Un fichero sin sonido corre con el reloj de pared y arranca al momento; el reloj del montaje (el <video>
+    // del trozo, con su sonido) va por lo que ya se oye, así que arranca más tarde y se queda atrás lo que tarda
+    // el sonido en salir. Medido: el efecto iba siempre por delante unos 60 ms × el ritmo (64 ms a 1×, 115 a
+    // 1,5×, 135 a 2×), por debajo de los 150 ms de recolocar. Por eso lo que no tiene sonido espera a que el
+    // reloj se mueva para arrancar y, si aun así se adelanta, se para un momento (sin buscar) hasta que el reloj
+    // lo alcanza.
+    const silentClock = !r.item.hasAudio
+    const ahead = el.currentTime * 1000 - expected
     if (el.paused) {
-      el.currentTime = expected / 1000
+      if (silentClock && (clockWaiting() || (ahead > WAIT_DONE_MS && ahead <= WAIT_AHEAD_MAX_MS))) return
+      // En pausa ya se dejó en su sitio: buscar otra vez tarda y el reloj del montaje no espera, así que
+      // empezaría desplazado lo que tarde la búsqueda × el ritmo, sin llegar a recolocarse.
+      if (!el.seeking && Math.abs(ahead) > 45) el.currentTime = expected / 1000
       void el.play().catch(() => {})
-    } else if (!el.seeking && Math.abs(el.currentTime * 1000 - expected) > COVER_DRIFT_TOLERANCE_MS) {
+    } else if (silentClock && !el.seeking && ahead > AHEAD_PAUSE_MS && ahead <= WAIT_AHEAD_MAX_MS) {
+      el.pause()
+    } else if (!el.seeking && Math.abs(ahead) > COVER_DRIFT_TOLERANCE_MS) {
       el.currentTime = expected / 1000
     }
   } else {
@@ -178,10 +198,23 @@ function syncAll(exact = false) {
   syncTrying(exact)
 }
 
-watch(() => props.currentMs, () => syncAll(false))
+/** Dónde estaba el reloj del montaje al darle a reproducir, hasta que se mueve (null: ya se mueve, o parado). */
+let playStartMs: number | null = null
+const clockWaiting = () => props.playing && playStartMs !== null && props.currentMs === playStartMs
+
+watch(
+  () => props.currentMs,
+  (ms) => {
+    if (playStartMs !== null && ms !== playStartMs) playStartMs = null
+    syncAll(false)
+  },
+)
 watch(
   () => props.playing,
-  () => syncAll(true),
+  (playing) => {
+    playStartMs = playing ? props.currentMs : null
+    syncAll(true)
+  },
 )
 // Cambiar el ritmo de repaso: todo lo montado, al nuevo ritmo y en su sitio.
 watch(
