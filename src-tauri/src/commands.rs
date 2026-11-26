@@ -40,6 +40,12 @@ const OUTPUT_FOLDER_NAME: &str = if cfg!(debug_assertions) { "Mis montajes (prue
 const DEV_DATA_SUBFOLDER: &str = "pruebas";
 const RECORDINGS_FOLDER_NAME: &str = "Grabaciones";
 const AUTOSAVE_FILE: &str = "autosave.json";
+/// Registro de guardados (JSON Lines, una entrada por guardado; ver domain/save-log.ts).
+const SAVE_LOG_FILE: &str = "save-log.jsonl";
+/// Entradas que se quedan en el registro: las más nuevas.
+const SAVE_LOG_MAX_ENTRIES: usize = 200;
+/// Una entrada ocupa menos de 1 KB; más de esto no es una entrada del registro.
+const SAVE_LOG_MAX_LINE_BYTES: usize = 16 * 1024;
 const PROJECT_EXTENSION: &str = "easycut";
 
 struct Recording {
@@ -574,6 +580,57 @@ pub fn clipboard_files() -> Result<crate::clipboard::ClipboardFiles, String> {
     crate::clipboard::files()
 }
 
+// ---------------------------------------------------------------- registro de guardados
+
+/// Que no se pisen dos escrituras del registro.
+static SAVE_LOG_LOCK: Mutex<()> = Mutex::new(());
+
+/// Comprueba que la entrada es un objeto JSON y la deja en una sola línea.
+fn save_log_line(entry: &str) -> Result<String, String> {
+    if entry.len() > SAVE_LOG_MAX_LINE_BYTES {
+        return Err("La entrada del registro es demasiado grande".into());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(entry).map_err(|e| format!("La entrada del registro no es JSON: {e}"))?;
+    if !value.is_object() {
+        return Err("La entrada del registro tiene que ser un objeto JSON".into());
+    }
+    serde_json::to_string(&value).map_err(|e| e.to_string())
+}
+
+/// El registro con la línea nueva al final y solo las `max` últimas (las líneas vacías no cuentan).
+fn append_trimmed(existing: &str, line: &str, max: usize) -> String {
+    let mut lines: Vec<&str> = existing.lines().map(str::trim_end).filter(|l| !l.is_empty()).collect();
+    lines.push(line);
+    let skip = lines.len().saturating_sub(max);
+    let mut out = lines[skip..].join("\n");
+    out.push('\n');
+    out
+}
+
+/// Añade una entrada al registro de guardados (en la carpeta de datos; la de pruebas en desarrollo).
+#[tauri::command]
+pub fn append_save_log(app: AppHandle, line: String) -> Result<(), String> {
+    let line = save_log_line(&line)?;
+    let path = data_dir(&app)?.join(SAVE_LOG_FILE);
+    let _guard = SAVE_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Si no existe o no se puede leer (p. ej. bytes que no son UTF-8), se empieza de nuevo: antes eso que
+    // dejar de apuntar.
+    let existing = fs::read_to_string(&path).unwrap_or_default();
+    write_atomic(&path, append_trimmed(&existing, &line, SAVE_LOG_MAX_ENTRIES).as_bytes())
+        .map_err(io_err("No se ha podido escribir el registro de guardados"))
+}
+
+/// Peso de un fichero guardado, solo dentro de la carpeta de los montajes (None si no está ahí o no existe).
+#[tauri::command]
+pub fn output_file_size(app: AppHandle, path: String) -> Result<Option<u64>, String> {
+    let p = PathBuf::from(&path);
+    if !is_inside(&p, &output_folder(&app)?) {
+        return Ok(None);
+    }
+    Ok(fs::metadata(&p).ok().filter(|m| m.is_file()).map(|m| m.len()))
+}
+
 // ---------------------------------------------------------------- proyecto
 
 #[tauri::command]
@@ -796,8 +853,36 @@ pub fn recording_cleanup(app: AppHandle, state: State<'_, AppState>, token: Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{recording_extension, recording_output_extension, recording_stem, waveform_args, AUDIO_EXTENSIONS, OUTPUT_FOLDER_NAME};
+    use super::{
+        append_trimmed, recording_extension, recording_output_extension, recording_stem, save_log_line, waveform_args,
+        AUDIO_EXTENSIONS, OUTPUT_FOLDER_NAME, SAVE_LOG_MAX_ENTRIES,
+    };
     use std::path::Path;
+
+    #[test]
+    fn save_log_keeps_only_the_newest_entries() {
+        assert_eq!(append_trimmed("", "{\"a\":1}", 3), "{\"a\":1}\n");
+        assert_eq!(append_trimmed("1\n2\n", "3", 3), "1\n2\n3\n");
+        assert_eq!(append_trimmed("1\n2\n3\n", "4", 3), "2\n3\n4\n");
+        // Líneas vacías y finales de línea de Windows no cuentan como entradas.
+        assert_eq!(append_trimmed("1\r\n\n\n2\r\n", "3", 2), "2\n3\n");
+        let many: String = (0..250).map(|i| format!("{i}\n")).collect();
+        let out = append_trimmed(&many, "nueva", SAVE_LOG_MAX_ENTRIES);
+        assert_eq!(out.lines().count(), SAVE_LOG_MAX_ENTRIES);
+        assert_eq!(out.lines().next(), Some("51"));
+        assert_eq!(out.lines().last(), Some("nueva"));
+    }
+
+    #[test]
+    fn save_log_line_is_one_json_object() {
+        let line = save_log_line("{\n  \"v\": 1,\n  \"at\": \"x\"\n}").unwrap();
+        assert!(!line.contains('\n'));
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value, serde_json::json!({ "v": 1, "at": "x" }));
+        assert!(save_log_line("[1,2]").is_err());
+        assert!(save_log_line("no es json").is_err());
+        assert!(save_log_line(&format!("{{\"a\":\"{}\"}}", "x".repeat(20_000))).is_err());
+    }
 
     #[test]
     fn dev_build_uses_its_own_output_folder() {

@@ -175,6 +175,18 @@ export interface NativeBridge {
    */
   deletePartialOutput(path: string): Promise<void>
 
+  /**
+   * Peso en bytes de un fichero guardado (para el registro de guardados). Solo dentro de la carpeta de
+   * getOutputFolder(); null si no está, no existe o es de otra carpeta.
+   */
+  outputFileSize(path: string): Promise<number | null>
+
+  /**
+   * Añade una entrada (una línea JSON, ver domain/save-log.ts) al registro de guardados, en la carpeta de
+   * datos de la app. Se quedan las últimas entradas (el tope lo pone la shell).
+   */
+  appendSaveLog(line: string): Promise<void>
+
   /** Abre el fichero con la aplicación predeterminada. */
   openFile(path: string): Promise<void>
   /** Abre el Explorador con el fichero seleccionado (o la carpeta, si se da una carpeta). */

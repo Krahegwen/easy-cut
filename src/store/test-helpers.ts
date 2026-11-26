@@ -21,6 +21,12 @@ export interface FakeBridgeState {
   /** Biblioteca: ficheros ya descargados (nombre → ruta) y descargas pedidas. */
   library: Record<string, string>
   libraryFetches: string[]
+  /** Líneas añadidas al registro de guardados. */
+  saveLog: string[]
+  /** Si es true, escribir el registro falla. */
+  saveLogFails: boolean
+  /** Peso de los ficheros guardados (por defecto, 1 MB si existe). */
+  fileSizes: Record<string, number>
 }
 
 export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { bridge: NativeBridge; state: FakeBridgeState } {
@@ -38,6 +44,9 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     clipboard: { sequence: 1, paths: [] },
     library: {},
     libraryFetches: [],
+    saveLog: [],
+    saveLogFails: false,
+    fileSizes: {},
     ...initial,
   }
   for (const p of Object.keys(state.media)) state.existing.add(p)
@@ -87,6 +96,11 @@ export function createFakeBridge(initial: Partial<FakeBridgeState> = {}): { brid
     deletePartialOutput: async (path) => {
       state.deleted.push(path)
       state.files.delete(path)
+    },
+    outputFileSize: async (path) => (state.files.has(path) ? state.fileSizes[path] ?? 1_000_000 : null),
+    appendSaveLog: async (line) => {
+      if (state.saveLogFails) throw new Error('disco lleno')
+      state.saveLog.push(line)
     },
     openFile: async () => {},
     revealInFolder: async () => {},

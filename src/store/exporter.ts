@@ -1,15 +1,21 @@
 // Guardar el vídeo: comprueba los originales, elige encoder, escribe el filtro en un fichero,
 // lanza ffmpeg con progreso y, si falla con un encoder hardware, lo reintenta solo con libx264.
-// Al cancelar o fallar, borra el fichero a medias.
+// Al cancelar o fallar, borra el fichero a medias. Va apuntando en `report` lo que pasa (encoders probados, cada
+// intento y por qué falló) para el registro de guardados (domain/save-log.ts).
 
 import {
+  availableEncoderList,
+  baseName,
   buildExportCommand,
   buildOutputFileName,
   buildSoundExportCommand,
   chooseEncoder,
   clipPaths,
   createProgressParser,
+  emptyExportReport,
+  lastUsefulFfmpegLine,
   SOFTWARE_ENCODER,
+  type ExportReport,
   type MediaInfo,
   type ProgressUpdate,
   type Project,
@@ -47,6 +53,8 @@ export interface ExportJob {
   result: Promise<ExportResult>
   cancel(): void
   readonly outputPath: string | null
+  /** Lo que se sabe de este guardado hasta ahora (también si se cancela o falla). */
+  readonly report: ExportReport
 }
 
 export interface ExportRequest {
@@ -58,6 +66,8 @@ export interface ExportRequest {
   /** Se avisa al pasar a otro encoder tras un fallo (para el registro). */
   onRetry?: (failed: VideoEncoder, next: VideoEncoder, stderr: string) => void
   now?: () => Date
+  /** Reloj en ms para medir lo que tarda cada intento (por defecto Date.now; para los tests). */
+  clock?: () => number
   /** Fichero de cada elemento de las pistas (los de la biblioteca, ya descargados; null = no está). */
   itemPath?: (item: TrackItem) => string | null
 }
@@ -75,6 +85,13 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
   let cancelled = false
   let running: RunningProcess<unknown> | null = null
   let outputPath: string | null = null
+  const report = emptyExportReport(request.preset)
+  const clock = request.clock ?? Date.now
+
+  /** Apunta un intento de ffmpeg que no terminó (cancelado o error al lanzarlo). */
+  const unfinished = (encoder: VideoEncoder | null, startedAt: number) => {
+    report.attempts.push({ encoder, exitCode: null, ms: clock() - startedAt, error: null })
+  }
 
   const throwIfCancelled = () => {
     if (cancelled) throw new CancelledError()
@@ -125,7 +142,9 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
       const filterScriptPath = await bridge.writeTempTextFile('filtro-sonido.txt', draft.filterComplex)
       throwIfCancelled()
       const cmd = buildSoundExportCommand(project, media, out, { filterScriptPath, itemPath })
-      const startedAt = Date.now()
+      report.durationMs = cmd.expectedDurationMs
+      report.fileName = baseName(out)
+      const startedAt = clock()
       const parser = createProgressParser(cmd.expectedDurationMs, startedAt)
       outputPath = out
       const job = bridge.runFfmpeg(cmd.args, (line) => {
@@ -137,31 +156,41 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
         res = await job.result
       } catch (e) {
         running = null
+        unfinished(null, startedAt)
         await removePartial()
         if (e instanceof CancelledError || cancelled) throw new CancelledError()
         throw e
       }
       running = null
       if (cancelled) {
+        unfinished(null, startedAt)
         await removePartial()
         throw new CancelledError()
       }
+      report.attempts.push({ encoder: null, exitCode: res.exitCode, ms: clock() - startedAt, error: res.exitCode === 0 ? null : lastUsefulFfmpegLine(res.stderr) })
       if (res.exitCode !== 0) {
         await removePartial()
         throw new ExportError('No se ha podido guardar el sonido.', `código ${res.exitCode}\n${tail(res.stderr)}`)
       }
-      return { path: out, folder, encoder: null, expectedDurationMs: cmd.expectedDurationMs, elapsedMs: Date.now() - startedAt, width: 0, height: 0, fps: 0 }
+      return { path: out, folder, encoder: null, expectedDurationMs: cmd.expectedDurationMs, elapsedMs: clock() - startedAt, width: 0, height: 0, fps: 0 }
     }
 
     const encoders = await bridge.probeEncoders()
     const chain = exportEncoderChain(chooseEncoder(encoders))
+    report.availableEncoders = availableEncoderList(encoders)
+    report.requestedEncoder = chain[0]!
     const folder = await bridge.getOutputFolder()
     const name = buildOutputFileName(request.now?.() ?? new Date(), preset, await bridge.listFileNames(folder))
     const out = bridge.joinPath(folder, name)
+    report.fileName = name
     throwIfCancelled()
 
     // El filtro va en un fichero: con muchos trozos pasaría del límite de la línea de comandos.
     const draft = buildExportCommand(project, media, preset, chain[0]!, out, { itemPath })
+    report.durationMs = draft.expectedDurationMs
+    report.width = draft.spec.width
+    report.height = draft.spec.height
+    report.fps = draft.spec.fps
     const filterScriptPath = await bridge.writeTempTextFile('filtro-exportacion.txt', draft.filterComplex)
     throwIfCancelled()
 
@@ -169,7 +198,7 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
     for (let i = 0; i < chain.length; i++) {
       const encoder = chain[i]!
       const cmd = buildExportCommand(project, media, preset, encoder, out, { filterScriptPath, itemPath })
-      const startedAt = Date.now()
+      const startedAt = clock()
       const parser = createProgressParser(cmd.expectedDurationMs, startedAt)
       outputPath = out
       const job = bridge.runFfmpeg(cmd.args, (line) => {
@@ -184,22 +213,25 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
         stderr = res.stderr
       } catch (e) {
         running = null
+        unfinished(encoder, startedAt)
         await removePartial()
         if (e instanceof CancelledError || cancelled) throw new CancelledError()
         throw e
       }
       running = null
       if (cancelled) {
+        unfinished(encoder, startedAt)
         await removePartial()
         throw new CancelledError()
       }
+      report.attempts.push({ encoder, exitCode, ms: clock() - startedAt, error: exitCode === 0 ? null : lastUsefulFfmpegLine(stderr) })
       if (exitCode === 0) {
         return {
           path: out,
           folder,
           encoder,
           expectedDurationMs: cmd.expectedDurationMs,
-          elapsedMs: Date.now() - startedAt,
+          elapsedMs: clock() - startedAt,
           width: cmd.spec.width,
           height: cmd.spec.height,
           fps: cmd.spec.fps,
@@ -223,5 +255,6 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
     get outputPath() {
       return outputPath
     },
+    report,
   }
 }
