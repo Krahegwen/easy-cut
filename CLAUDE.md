@@ -184,6 +184,16 @@ Copiar y pegar: Ctrl+C copia el trozo en la app (no toca el portapapeles de Wind
 - **Errores de descarga**: `library_fetch` empieza el mensaje con `offline:`, `missing:` (4xx, sobre todo 404) o `mismatch:` (tamaño o SHA-256); `libraryFetchMessage` / `librarySaveMessage` dan un mensaje llano distinto para cada uno.
 - **Créditos** (`projectCredits`, `libraryCredits`, `libraryThanks`, `creditsText`): «¡Listo!» los enseña con «Copiar los créditos» si el vídeo usa algo que pida atribución (lo CC0 no); «Créditos de la biblioteca» (en el pie de la biblioteca) enseña eso y, aparte, los agradecimientos de todo lo de terceros.
 
+## Registro de guardados
+
+- Cada guardado (también los cancelados, los fallidos y «Solo el sonido») deja una línea JSON en `save-log.jsonl`, en la carpeta de datos de la app (la subcarpeta `pruebas` en desarrollo, como el autoguardado); se quedan las últimas 200 (`append_save_log` en `commands.rs`, escritura atómica). Escribirlo nunca hace fallar un guardado: si falla, solo un log.
+- La entrada (`src/domain/save-log.ts`, la va rellenando `ExportJob.report` en `exporter.ts`): fecha local, versión, para qué es, encoder pedido y usado, si hubo reintento con libx264 y la última línea útil de ffmpeg, encoders que pasaron la prueba, duración, tamaño y fps, tiempo total y de ffmpeg, veces tiempo real, peso (`output_file_size`, solo en «Mis montajes») y resultado. Sin rutas: solo el nombre del fichero de salida, y en los errores de ffmpeg cada ruta se queda en su último nombre.
+- «¡Listo!» lo enseña en llano («Guardado en 48 segundos con la tarjeta gráfica» / «… con el procesador, porque con la tarjeta gráfica no ha funcionado») con «Copiar detalles» (el texto técnico de ese guardado), para que quien use el PC se lo pueda leer o pegar al dueño.
+
+## Teleprompter, palabra a palabra
+
+El texto se pinta por donde debería ir la lectura (ya leído en gris, la palabra de ahora en ámbar y subrayada, por leer en blanco). Qué palabra toca lo decide `wordCursorAt` (dominio, búsqueda binaria sobre `flattenTokens`); `PrompterRun` solo cambia las clases `w-read` / `w-current` de los trozos que dice `cursorDirtyRange` (uno o dos por palabra), sin rehacer el DOM, y solo color y subrayado (el peso movería las palabras de línea). Sigue solo la pausa, el ritmo y ←, porque sale del avance. Para las pruebas, `data-current-word` (-1 en una pausa de párrafo o al acabar) y `data-words-read` en `[data-testid=prompter-text]`.
+
 ## Actualizaciones y releases
 
 - **Actualizador**: plugins oficiales `tauri-plugin-updater` y `tauri-plugin-process` (Rust y JS; permisos mínimos en `capabilities/default.json`). `tauri.conf.json` → `plugins.updater`: endpoint `https://github.com/Krahegwen/easy-cut/releases/latest/download/latest.json`, la clave **pública** (`pubkey`) e instalación `passive` (barra de progreso sin preguntas; el instalador NSIS es por usuario, `installMode: currentUser`, sin administrador). `bundle.createUpdaterArtifacts: true` hace que la compilación firme el instalador (`.sig`).
@@ -215,6 +225,8 @@ src/
     output.ts        presets whatsapp/youtube/high, tamaño (solo cuenta la imagen que se ve; sin ninguna, 1280×720 a
                      30 fps), fps, bitrate y peso; peso y tiempo de «Solo el sonido»
     encoders.ts      parámetros por encoder (nvenc/qsv/amf/libx264), prueba y fallback
+    save-log.ts      registro de guardados: entrada (encoder pedido y usado, reintento y por qué, tiempos, peso,
+                     resultado), frase de «¡Listo!» y texto de «Copiar detalles»; sin rutas del usuario
     ffmpeg-args.ts   filter_complex y args de exportación (imagen de cada trozo según picture; mezcla de los sonidos y
                      efectos por tramos) y de «Solo el sonido»
     progress.ts      parser de -progress y tiempo restante

@@ -11,6 +11,8 @@ Cada versión publicada, de la más nueva a la más antigua. La sección de una 
 - **Pistas nuevas a mano** («Pista de sonido», «Pista de efectos»), y ya **sin límite** de pistas. Para pasar un sonido o un efecto de una pista a otra, se arrastra hasta ella. Con muchas pistas, se desplazan hacia abajo y la fila «Vídeo» se queda a la vista.
 - **«Escuchar solo esta»** en cada pista de sonido y en la fila «Vídeo»: calla las demás de un toque; otra vez, vuelve a sonar todo.
 - Al soltar ficheros en «Tu vídeo»: encima de las pistas de sonidos o efectos (o con la biblioteca abierta) van a las pistas, donde está la línea; en el resto, se añaden al final del vídeo como trozos.
+- **Teleprompter:** el texto se pinta por donde deberías ir leyendo, palabra a palabra, al ritmo elegido: lo ya leído se apaga, la palabra de ahora sale en ámbar y subrayada, y lo que falta sigue en blanco. Respeta la pausa, «Más despacio / Más rápido» y «Retroceder un poco», al ensayar y al grabar.
+- «¡Listo!» dice cuánto ha tardado el guardado y si se ha hecho con la tarjeta gráfica o con el procesador, con «Copiar detalles» para pasárselo a quien te ayuda. La app apunta cada guardado (con qué se hizo, cuánto tardó y cómo acabó) en un registro de las últimas 200 veces, sin rutas de tus ficheros.
 - Arreglado: con la ventana muy grande, los botones de la cabecera de una pista se salían de su fila.
 
 ## [0.3.0] - 2026-11-25
