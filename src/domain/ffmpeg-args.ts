@@ -22,6 +22,7 @@ import {
   type Viewable,
 } from './project'
 import { audibleOrVisible, projectTiming, resolveTracks, type ProjectTiming } from './tracks'
+import { clipVideoJoinFades, dipFades, edgeFades, isDip, ZOOM_MAX_SCALE, type ResolvedJoin } from './transitions'
 
 export const AUDIO_SAMPLE_RATE = 48_000
 /** Microfundido en los bordes de cada rango conservado, para evitar clics. */
@@ -57,8 +58,14 @@ export function exportedClipDurationMs(clip: Clip, fps: number): number {
   return (clipFrameCount(clip, fps) * 1000) / fps
 }
 
+/** Tiempos de la fila de trozos en el fichero: fotogramas enteros por trozo y solapes en fotogramas. */
+export function exportTiming(project: Project, fps: number): ProjectTiming {
+  return projectTiming(project, project.clips.map((c) => exportedClipDurationMs(c, fps)), fps / 1000)
+}
+
+/** Lo que durará el vídeo guardado: (Σ fotogramas − Σ solapes) / F. */
 export function exportedProjectDurationMs(project: Project, fps: number): number {
-  return project.clips.reduce((sum, c) => sum + exportedClipDurationMs(c, fps), 0)
+  return exportTiming(project, fps).totalMs
 }
 
 /** atempo encadenado con factores dentro de [0.5, 2] (compatible con cualquier ffmpeg). */
@@ -245,12 +252,12 @@ function ownSegmentChains(clip: Clip, i: number, input: number, prefix = `v${i}`
  * esquina de antes) y, si el trozo aparece o desaparece, desde/hacia negro como él. Deja [cv{i}] (W × H del
  * recorte en `size`).
  */
-function clipVideoChains(clip: Clip, i: number, input: number, media: MediaInfo, spec: OutputSpec, frames: number): { chains: string[]; size: { width: number; height: number } } {
+function clipVideoChains(clip: Clip, i: number, input: number, media: MediaInfo, spec: OutputSpec, frames: number, fades: Fades = clip): { chains: string[]; size: { width: number; height: number } } {
   const { width: dw, height: dh } = clipDisplaySize(clip, media)
   const ratio = spec.width / spec.height
   const cw = Math.min(dw, dw / dh > ratio ? even(dh * ratio) : even(dw))
   const ch = Math.min(dh, dw / dh > ratio ? even(dh) : even(dw / ratio))
-  const fade = fadeToBlackFilter(clip, (frames * 1000) / spec.fps)
+  const fade = fadeToBlackFilter(fades, (frames * 1000) / spec.fps)
   const parts = [...ownTiming(clip, spec.fps, frames), ...lookFilters(media, clip.quarterTurns), `crop=${cw}:${ch}`, 'setsar=1', 'format=yuv420p', ...(fade ? [fade] : [])]
   return { chains: [...ownSegmentChains(clip, i, input, `cv${i}`), `[cv${i}seg]${parts.join(',')}[cv${i}]`], size: { width: cw, height: ch } }
 }
@@ -342,7 +349,7 @@ export function fadeToBlackFilter(f: Fades, lengthMs: number): string | null {
 }
 
 /** Cadenas de audio de un trozo, con el número exacto de muestras: deja [a{i}]. `silent` = fila principal silenciada. */
-function audioChains(clip: Clip, media: MediaInfo, i: number, input: number, samples: number, silent = false): string[] {
+function audioChains(clip: Clip, media: MediaInfo, i: number, input: number, samples: number, silent = false, fades: Fades = clip): string[] {
   if (silent || !clipKeepsAudio(clip, media)) {
     return [`anullsrc=channel_layout=stereo:sample_rate=${AUDIO_SAMPLE_RATE},atrim=end_sample=${samples},${AUDIO_FORMAT}[a${i}]`]
   }
@@ -371,8 +378,8 @@ function audioChains(clip: Clip, media: MediaInfo, i: number, input: number, sam
     // Mismo número exacto de muestras que de fotogramas: audio y vídeo duran lo mismo.
     `apad=whole_len=${samples}`,
     `atrim=end_sample=${samples}`,
-    // Cómo aparece y desaparece el trozo (también su sonido), en muestras y con su curva.
-    ...afadeFilters(clip, samples),
+    // Cómo aparece y desaparece el trozo (también su sonido), en muestras y con su curva; con transiciones, lo suyo.
+    ...afadeFilters(fades, samples),
     AUDIO_FORMAT,
   ]
   chains.push(`[${aSeg}]${after.join(',')}[a${i}]`)
@@ -453,7 +460,10 @@ export function planTrackItems(
       if (!clip || !clip.sourceHasVideo || clip.picture.kind !== 'cover') continue
       const media = lookup(mediaByPath, clip.sourcePath)
       if (!media.hasVideo) continue
-      planned.push({ item: r.item, kind: r.track.kind, path: clip.sourcePath, media, clipIndex, startMs: r.startMs, lengthMs: r.shownEndMs - r.startMs })
+      // En un paso, el de este trozo se desvanece (o aparece) lo que dura el paso por su lado.
+      const jf = clipVideoJoinFades(timing.joins[clipIndex] ?? null, timing.joins[clipIndex + 1] ?? null)
+      const item = jf.fadeInMs > 0 || jf.fadeOutMs > 0 ? { ...r.item, ...jf } : r.item
+      planned.push({ item, kind: r.track.kind, path: clip.sourcePath, media, clipIndex, startMs: r.startMs, lengthMs: r.shownEndMs - r.startMs })
       continue
     }
     const path = itemPath(r.item)
@@ -853,6 +863,144 @@ function effectLayerChains(planned: readonly PlannedItem[], project: Project, in
   return chains
 }
 
+// ---------------------------------------------------------------------------
+// Transiciones entre trozos
+
+/** Una junta en las unidades del fichero (fotogramas o muestras): la de entrada de cada trozo. */
+interface UnitJoin {
+  join: ResolvedJoin
+  /** Solape (unidades; 0 sin solape). */
+  overlap: number
+}
+
+/** Las juntas de la línea de tiempo (ms) en unidades enteras (`perMs`: F/1000 o 48). */
+function unitJoins(timing: ProjectTiming, perMs: number): (UnitJoin | null)[] {
+  return timing.joins.map((j) => (j ? { join: j, overlap: j.overlap ? Math.round(j.overlapUnits * perMs) : 0 } : null))
+}
+
+/** Color de a negro / a blanco para `fade`. */
+function dipColor(join: ResolvedJoin): string {
+  return join.kind === 'dip-white' ? 'white' : 'black'
+}
+
+/** Transición de xfade de cada tipo (zoom y a negro / a blanco se hacen a mano). */
+const XFADE: Partial<Record<ResolvedJoin['kind'], string>> = { dissolve: 'fade', cover: 'coverleft', push: 'slideleft', zoom: 'fade' }
+
+/**
+ * A negro / a blanco sin solape en la imagen de un trozo: al color al final (la mitad del paso que le toca) y desde
+ * el color al principio, con `fade` (lineal, el mismo avance que la vista previa).
+ */
+function dipVideoFilters(entry: ResolvedJoin | null, exit: ResolvedJoin | null, lengthMs: number): string[] {
+  const out: string[] = []
+  if (entry && !entry.overlap && entry.head > 0) out.push(`fade=t=in:st=0:d=${num(entry.head / 1000)}:color=${dipColor(entry)}`)
+  if (exit && !exit.overlap && exit.tail > 0) out.push(`fade=t=out:st=${num((lengthMs - exit.tail) / 1000)}:d=${num(exit.tail / 1000)}:color=${dipColor(exit)}`)
+  return out
+}
+
+/**
+ * Monta la imagen de los trozos [v{i}] (con `frames[i]` fotogramas) con sus transiciones: cada trozo con solape se
+ * parte por fotogramas en cabeza / cuerpo / cola, la cola del anterior se cruza con la cabeza del siguiente (xfade, o
+ * a mano en zoom y a negro / a blanco) y todo se une con concat. Deja [out] con Σf − Σo fotogramas.
+ */
+function videoJoinChains(frames: readonly number[], joins: readonly (UnitJoin | null)[], spec: OutputSpec, out: string): string[] {
+  const n = frames.length
+  const F = spec.fps
+  if (joins.every((j) => !j || j.overlap === 0)) return [`${frames.map((_, i) => `[v${i}]`).join('')}concat=n=${n}:v=1:a=0[${out}]`]
+  const chains: string[] = []
+  const pieces: string[] = []
+  const cut = (a: number, b: number) => `trim=start_frame=${a}:end_frame=${b},setpts=PTS-STARTPTS,settb=1/${F}`
+  for (let i = 0; i < n; i++) {
+    const f = frames[i]!
+    const oIn = joins[i]?.overlap ?? 0
+    const oOut = joins[i + 1]?.overlap ?? 0
+    if (oIn === 0 && oOut === 0) {
+      pieces.push(`v${i}`)
+      continue
+    }
+    const parts: { label: string; a: number; b: number }[] = []
+    if (oIn > 0) parts.push({ label: `vh${i}`, a: 0, b: oIn })
+    if (f - oOut > oIn) parts.push({ label: `vb${i}`, a: oIn, b: f - oOut })
+    if (oOut > 0) parts.push({ label: `vt${i}`, a: f - oOut, b: f })
+    if (parts.length === 1) chains.push(`[v${i}]${cut(parts[0]!.a, parts[0]!.b)}[${parts[0]!.label}]`)
+    else {
+      chains.push(`[v${i}]split=${parts.length}${parts.map((p) => `[${p.label}s]`).join('')}`)
+      for (const p of parts) chains.push(`[${p.label}s]${cut(p.a, p.b)}[${p.label}]`)
+    }
+    if (oIn > 0) {
+      const j = joins[i]!.join
+      const D = num(oIn / F)
+      if (isDip(j.kind)) {
+        // A mano y simétrico: la primera mitad, el anterior hacia el color; la segunda, el siguiente desde él.
+        const half = Math.floor(oIn / 2)
+        const Dh = num(oIn / 2 / F)
+        chains.push(
+          `[vt${i - 1}]trim=end_frame=${half},fade=t=out:st=0:d=${Dh}:color=${dipColor(j)}[vxa${i}]`,
+          `[vh${i}]trim=start_frame=${half},setpts=PTS-STARTPTS,fade=t=in:st=0:d=${Dh}:color=${dipColor(j)}[vxb${i}]`,
+          `[vxa${i}][vxb${i}]concat=n=2:v=1:a=0[vx${i}]`,
+        )
+      } else if (j.kind === 'zoom') {
+        // El que sale se acerca (hasta ZOOM_MAX_SCALE, recortado al centro) mientras se funde en el siguiente.
+        const k = num(ZOOM_MAX_SCALE - 1)
+        const sz = (side: number) => `2*trunc(${side}*(1+${k}*min(1,t/${D}))/2)`
+        // El recorte al centro con x e y en función de t (crop no ve el tamaño que cambia en cada fotograma: con iw
+        // se quedaba en el de arriba a la izquierda).
+        const off = (side: number) => `(${sz(side)}-${side})/2`
+        chains.push(
+          `[vt${i - 1}]scale=w='${sz(spec.width)}':h='${sz(spec.height)}':eval=frame:flags=bicubic,crop=${spec.width}:${spec.height}:x='${off(spec.width)}':y='${off(spec.height)}',setsar=1,format=yuv420p[vtz${i}]`,
+          `[vtz${i}][vh${i}]xfade=transition=fade:duration=${D}:offset=0[vx${i}]`,
+        )
+      } else {
+        chains.push(`[vt${i - 1}][vh${i}]xfade=transition=${XFADE[j.kind]}:duration=${D}:offset=0[vx${i}]`)
+      }
+      pieces.push(`vx${i}`)
+    }
+    if (f - oOut > oIn) pieces.push(`vb${i}`)
+  }
+  chains.push(`${pieces.map((l) => `[${l}]`).join('')}concat=n=${pieces.length}:v=1:a=0,${VIDEO_TAIL.join(',')}[${out}]`)
+  return chains
+}
+
+/**
+ * Lo mismo con el sonido [a{i}] (`samples[i]` muestras): en cada solape, el del anterior baja y el del siguiente sube
+ * a la vez (afade en muestras) y se suman (amix normalize=0), recortado a las muestras exactas del paso.
+ */
+function audioJoinChains(samples: readonly number[], joins: readonly (UnitJoin | null)[], out: string): string[] {
+  const n = samples.length
+  if (joins.every((j) => !j || j.overlap === 0)) return [`${samples.map((_, i) => `[a${i}]`).join('')}concat=n=${n}:v=0:a=1[${out}]`]
+  const chains: string[] = []
+  const pieces: string[] = []
+  const cut = (a: number, b: number) => `atrim=start_sample=${a}:end_sample=${b},asetpts=PTS-STARTPTS`
+  for (let i = 0; i < n; i++) {
+    const s = samples[i]!
+    const oIn = joins[i]?.overlap ?? 0
+    const oOut = joins[i + 1]?.overlap ?? 0
+    if (oIn === 0 && oOut === 0) {
+      pieces.push(`a${i}`)
+      continue
+    }
+    const parts: { label: string; a: number; b: number }[] = []
+    if (oIn > 0) parts.push({ label: `ah${i}`, a: 0, b: oIn })
+    if (s - oOut > oIn) parts.push({ label: `ab${i}`, a: oIn, b: s - oOut })
+    if (oOut > 0) parts.push({ label: `at${i}`, a: s - oOut, b: s })
+    if (parts.length === 1) chains.push(`[a${i}]${cut(parts[0]!.a, parts[0]!.b)}[${parts[0]!.label}]`)
+    else {
+      chains.push(`[a${i}]asplit=${parts.length}${parts.map((p) => `[${p.label}s]`).join('')}`)
+      for (const p of parts) chains.push(`[${p.label}s]${cut(p.a, p.b)}[${p.label}]`)
+    }
+    if (oIn > 0) {
+      chains.push(
+        `[at${i - 1}]afade=t=out:ss=0:ns=${oIn}[axa${i}]`,
+        `[ah${i}]afade=t=in:ss=0:ns=${oIn}[axb${i}]`,
+        `[axa${i}][axb${i}]amix=inputs=2:normalize=0:duration=longest:dropout_transition=0,atrim=end_sample=${oIn},${AUDIO_FORMAT}[ax${i}]`,
+      )
+      pieces.push(`ax${i}`)
+    }
+    if (s - oOut > oIn) pieces.push(`ab${i}`)
+  }
+  chains.push(`${pieces.map((l) => `[${l}]`).join('')}concat=n=${pieces.length}:v=0:a=1[${out}]`)
+  return chains
+}
+
 /** Construye la orden de exportación completa. */
 export function buildExportCommand(
   project: Project,
@@ -867,14 +1015,15 @@ export function buildExportCommand(
   const F = spec.fps
   const inputs = createInputs()
   const chains: string[] = []
-  const concatInputs: string[] = []
-  // Los elementos de las pistas, con los tiempos que tendrá cada trozo en el fichero (fotogramas enteros).
-  const timing = projectTiming(project, project.clips.map((c) => exportedClipDurationMs(c, F)))
+  // Los tiempos que tendrá cada trozo en el fichero (fotogramas enteros; las transiciones, en fotogramas).
+  const timing = exportTiming(project, F)
   const planned = planTrackItems(project, mediaByPath, timing, options.itemPath ?? defaultItemPath)
   const withTracks = planned.length > 0
-  let totalFrames = 0
-  let totalSamples = 0
   const clipVideos = new Set(planned.flatMap((pl) => (pl.clipIndex !== undefined ? [pl.clipIndex] : [])))
+  const frameJoins = unitJoins(timing, F / 1000)
+  const sampleJoins = unitJoins(timing, AUDIO_SAMPLE_RATE / 1000)
+  const framesOf: number[] = []
+  const samplesOf: number[] = []
 
   project.clips.forEach((clip, i) => {
     const media = lookup(mediaByPath, clip.sourcePath)
@@ -882,6 +1031,10 @@ export function buildExportCommand(
     const mainInput = inputs.add(clip.sourcePath, io.startMs, io.endMs - io.startMs)
     const frames = clipFrameCount(clip, F)
     const samples = Math.round((frames * AUDIO_SAMPLE_RATE) / F)
+    const entry = timing.joins[i] ?? null
+    const exit = timing.joins[i + 1] ?? null
+    // En un borde con transición manda la transición (el aparecer o desaparecer del trozo de ese lado no cuenta).
+    const fades = edgeFades(clip, entry, exit)
 
     let coverInput: number | null = null
     let coverMedia: MediaInfo | null = null
@@ -892,29 +1045,38 @@ export function buildExportCommand(
     }
 
     const picture = pictureChains(clip, i, mainInput, coverInput, media, coverMedia, spec, frames)
-    const fade = fadeToBlackFilter(clip, (frames * 1000) / F)
-    if (fade) {
-      // La imagen del trozo aparece desde negro y desaparece hacia negro (los efectos de encima, no).
+    const lengthMs = (frames * 1000) / F
+    const fade = fadeToBlackFilter(fades, lengthMs)
+    const dips = dipVideoFilters(entry, exit, lengthMs)
+    if (fade || dips.length) {
+      // La imagen del trozo aparece desde negro y desaparece hacia negro (los efectos de encima, no); a negro / a
+      // blanco sin solape, igual hacia y desde su color.
       const last = picture.length - 1
       const tag = `[v${i}]`
       if (!picture[last]!.endsWith(tag)) throw new Error('La imagen del trozo no acaba donde debe.')
       picture[last] = `${picture[last]!.slice(0, -tag.length)}[v${i}nofade]`
-      picture.push(`[v${i}nofade]${fade},${BT709_SETPARAMS}[v${i}]`)
+      picture.push(`[v${i}nofade]${[...(fade ? [fade] : []), ...dips, BT709_SETPARAMS].join(',')}[v${i}]`)
     }
     chains.push(...picture)
     // Su propio vídeo encima, en una pista. Solo con otro vídeo de imagen (setPicture), así que su vídeo no se usa
     // también como imagen del trozo: la entrada se lee una vez.
-    if (clipVideos.has(i)) chains.push(...clipVideoChains(clip, i, mainInput, media, spec, frames).chains)
-    chains.push(...audioChains(clip, media, i, mainInput, samples, project.mainMuted))
-    concatInputs.push(`[v${i}][a${i}]`)
-    totalFrames += frames
-    totalSamples += samples
+    if (clipVideos.has(i)) chains.push(...clipVideoChains(clip, i, mainInput, media, spec, frames, fades).chains)
+    chains.push(...audioChains(clip, media, i, mainInput, samples, project.mainMuted, dipFades(clip, entry, exit)))
+    framesOf.push(frames)
+    samplesOf.push(samples)
   })
+  const totalFrames = framesOf.reduce((a, b) => a + b, 0) - frameJoins.reduce((a, j) => a + (j?.overlap ?? 0), 0)
+  const totalSamples = samplesOf.reduce((a, b) => a + b, 0) - sampleJoins.reduce((a, j) => a + (j?.overlap ?? 0), 0)
 
-  if (!withTracks) {
-    chains.push(`${concatInputs.join('')}concat=n=${project.clips.length}:v=1:a=1[vout][aout]`)
+  const [vLabel, aLabel] = withTracks ? ['vmain', 'amain'] : ['vout', 'aout']
+  if (frameJoins.every((j) => !j || j.overlap === 0)) {
+    // Sin solapes, el concat de siempre (imagen y sonido de cada trozo a la vez).
+    chains.push(`${project.clips.map((_, i) => `[v${i}][a${i}]`).join('')}concat=n=${project.clips.length}:v=1:a=1[${vLabel}][${aLabel}]`)
   } else {
-    chains.push(`${concatInputs.join('')}concat=n=${project.clips.length}:v=1:a=1[vmain][amain]`)
+    chains.push(...videoJoinChains(framesOf, frameJoins, spec, vLabel))
+    chains.push(...audioJoinChains(samplesOf, sampleJoins, aLabel))
+  }
+  if (withTracks) {
     chains.push(...effectLayerChains(planned, project, inputs, spec, totalFrames, 'vout'))
     chains.push(...mixChains(planned, inputs, totalSamples, 'aout'))
   }
@@ -950,7 +1112,7 @@ export function buildExportCommand(
     outputPath,
   ]
 
-  return { args, filterComplex, spec, expectedDurationMs: exportedProjectDurationMs(project, F) }
+  return { args, filterComplex, spec, expectedDurationMs: (totalFrames * 1000) / F }
 }
 
 /** Argumentos de ffmpeg para exportar (el filtro va en línea). */
@@ -993,22 +1155,25 @@ export function buildSoundExportCommand(
   if (project.clips.length === 0) throw new Error('El proyecto no tiene trozos que exportar.')
   const inputs = createInputs()
   const chains: string[] = []
-  let totalSamples = 0
+  // Las transiciones, en muestras exactas: cada trozo dura sus muestras y los solapes se cruzan.
+  const timing = projectTiming(project, project.clips.map((c) => (soundSampleCount(c) * 1000) / AUDIO_SAMPLE_RATE), AUDIO_SAMPLE_RATE / 1000)
+  const sampleJoins = unitJoins(timing, AUDIO_SAMPLE_RATE / 1000)
+  const samplesOf: number[] = []
   project.clips.forEach((clip, i) => {
     const media = lookup(mediaByPath, clip.sourcePath)
     const io = clipInOut(clip)
     const input = inputs.add(clip.sourcePath, io.startMs, io.endMs - io.startMs, ['-vn'])
     const samples = soundSampleCount(clip)
-    totalSamples += samples
-    chains.push(...audioChains(clip, media, i, input, samples, project.mainMuted))
+    samplesOf.push(samples)
+    chains.push(...audioChains(clip, media, i, input, samples, project.mainMuted, dipFades(clip, timing.joins[i] ?? null, timing.joins[i + 1] ?? null)))
   })
+  const totalSamples = samplesOf.reduce((x, y) => x + y, 0) - sampleJoins.reduce((x, j) => x + (j?.overlap ?? 0), 0)
   // Las pistas de sonido (y el sonido de los efectos) también van en «Solo el sonido».
-  const timing = projectTiming(project, project.clips.map((c) => (soundSampleCount(c) * 1000) / AUDIO_SAMPLE_RATE))
   const sounding = planTrackItems(project, mediaByPath, timing, options.itemPath ?? defaultItemPath).filter(itemSounds)
   if (sounding.length === 0) {
-    chains.push(`${project.clips.map((_, i) => `[a${i}]`).join('')}concat=n=${project.clips.length}:v=0:a=1[aout]`)
+    chains.push(...audioJoinChains(samplesOf, sampleJoins, 'aout'))
   } else {
-    chains.push(`${project.clips.map((_, i) => `[a${i}]`).join('')}concat=n=${project.clips.length}:v=0:a=1[amain]`)
+    chains.push(...audioJoinChains(samplesOf, sampleJoins, 'amain'))
     chains.push(...mixChains(sounding, inputs, totalSamples, 'aout'))
   }
   const filterComplex = chains.join(';\n')

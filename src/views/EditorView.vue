@@ -17,6 +17,7 @@ import TracksView from '../components/tracks/TracksView.vue'
 import type { PlayerTime } from '../components/player-types'
 import { clipDurationMs, clipStartTimes, formatDuration, isTrackMediaPath, neighbourMark, removeCover, resolveTracks, setAspect, setClipFade, type AspectRatio, type Easing } from '../domain'
 import FadePicker from '../components/FadePicker.vue'
+import TransitionPicker from '../components/TransitionPicker.vue'
 import { LAYER_PRIORITY } from '../lib/shortcuts'
 import KeyHint from '../components/KeyHint.vue'
 import KeysButton from '../components/KeysButton.vue'
@@ -27,6 +28,7 @@ import { useShortcuts } from '../lib/use-shortcuts'
 import { library, store, tracks } from '../store'
 
 const player = ref<InstanceType<typeof PreviewPlayer> | null>(null)
+const transitionPicker = ref<InstanceType<typeof TransitionPicker> | null>(null)
 const tracksView = ref<InstanceType<typeof TracksView> | null>(null)
 const item = computed(() => tracks.selectedItem.value)
 
@@ -165,6 +167,34 @@ useShortcuts({
   priority: LAYER_PRIORITY.popover,
   active: () => clipFadesOpen.value,
   shortcuts: () => [{ id: 'clip-fades-close', keys: ['Escape'], label: 'Esc', description: 'cerrar', run: () => (clipFadesOpen.value = false) }],
+})
+
+// ------------------------------------------------------------------ cómo se pasa de un trozo a otro
+
+/** El trozo cuya entrada se está eligiendo (el desplegable de la junta), y dónde se pone el desplegable. */
+const transitionFor = ref<string | null>(null)
+const transitionPos = ref({ left: 16, bottom: 80, width: 620, maxHeight: 600 })
+function openTransition(clipId: string) {
+  player.value?.pause()
+  clipFadesOpen.value = false
+  const btn = document.querySelector(`[data-testid^="join-btn-"][data-clip-id="${clipId}"]`)
+  const r = btn?.getBoundingClientRect()
+  const width = Math.min(620, window.innerWidth - 32)
+  const center = r ? r.left + r.width / 2 : window.innerWidth / 2
+  const bottom = r ? Math.max(16, window.innerHeight - r.top + 8) : 80
+  transitionPos.value = { left: Math.min(Math.max(16, center - width / 2), window.innerWidth - width - 16), bottom, width, maxHeight: Math.max(240, window.innerHeight - bottom - 16) }
+  transitionFor.value = clipId
+}
+function closeTransition() {
+  transitionFor.value = null
+}
+function tryTransition(fromMs: number, toMs: number) {
+  player.value?.playRange(fromMs, toMs)
+}
+/** El trozo que entra desde el elegido (U). */
+const nextClip = computed(() => {
+  const clips = store.project.value.clips
+  return index.value >= 0 && index.value + 1 < clips.length ? clips[index.value + 1]! : null
 })
 
 // ------------------------------------------------------------------ el vídeo del trozo, a una esquina
@@ -331,6 +361,7 @@ useShortcuts({
             { id: 'clip-trim-end', keys: ['t'], label: 'T', description: 'que el trozo elegido termine en la línea', run: clipEndHere, enabled: lineInClip.value },
             { id: 'clip-split', keys: ['p'], label: 'P', description: 'partir el trozo elegido en la línea', run: clipSplitHere, enabled: lineInClip.value },
             { id: 'clip-corner', keys: ['q'], label: 'Q', description: 'llevar el vídeo del trozo a una esquina en la línea (o volver a pantalla completa)', run: cornerHere, enabled: canCorner.value },
+            { id: 'clip-transition', keys: ['u'], label: 'U', description: 'cómo se pasa del trozo elegido al siguiente', run: () => nextClip.value && openTransition(nextClip.value.id), enabled: !!nextClip.value },
           ]
         : []
     return [
@@ -621,13 +652,45 @@ onBeforeUnmount(() => {
             </button>
           </template>
         </div>
-        <TracksView ref="tracksView" :playhead-ms="tracks.playheadMs.value" :playing="playing" @seek="seek" @add="addMore" @record="record" />
+        <TracksView
+          ref="tracksView"
+          :playhead-ms="tracks.playheadMs.value"
+          :playing="playing"
+          :transition-open-for="transitionFor"
+          @seek="seek"
+          @add="addMore"
+          @record="record"
+          @transition="openTransition"
+        />
       </footer>
     </div>
+    <!-- «Cómo se pasa al trozo N»: encima de su junta; pulsar fuera lo cierra sin cambiar nada (como Esc). -->
+    <template v-if="transitionFor">
+      <div class="transition-backdrop" data-testid="transition-backdrop" @pointerdown="transitionPicker?.close()" />
+      <TransitionPicker
+        ref="transitionPicker"
+        :key="transitionFor"
+        class="transition-pop"
+        :clip-id="transitionFor"
+        :style="{ left: `${transitionPos.left}px`, bottom: `${transitionPos.bottom}px`, width: `${transitionPos.width}px`, maxHeight: `${transitionPos.maxHeight}px` }"
+        @close="closeTransition"
+        @try="tryTransition"
+      />
+    </template>
   </main>
 </template>
 
 <style scoped>
+.transition-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+.transition-pop {
+  position: fixed;
+  z-index: 41;
+  overflow: auto;
+}
 .pop-wrap {
   position: relative;
   flex: none;

@@ -41,6 +41,7 @@ import {
   setSpeed,
   sourceToOutput,
   splitClip,
+  inSharedJoin,
   applyKeepSegments,
   type Clip,
   type CoverPicture,
@@ -231,6 +232,10 @@ function splitHere() {
   const at = sourceToOutput(c, playheadMs.value)
   if (at === null) {
     store.showToast('Pon la imagen dentro de la parte que se queda para partir ahí.')
+    return
+  }
+  if (inSharedJoin(store.project.value, c.id, at)) {
+    store.showToast('Aquí no se puede partir: es el paso de un trozo a otro.')
     return
   }
   const before = store.project.value

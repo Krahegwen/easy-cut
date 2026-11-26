@@ -134,7 +134,7 @@ describe('migración de los proyectos de antes a la versión 4', () => {
 
   it('versión 1: la lista sale de los trozos (vídeos), sin medir', () => {
     const p = parseProject(JSON.stringify({ app: 'easy-cut', version: 1, project: { aspect: '16:9', clips: [clipV1] } }))
-    expect(p.version).toBe(5)
+    expect(p.version).toBe(6)
     expect(p.media).toEqual([{ path: V, kind: 'video', durationMs: 20_000, hasVideo: true, hasAudio: true, width: 0, height: 0, fps: 0, sizeBytes: null, hasAlpha: false, probed: false }])
   })
 
@@ -174,7 +174,7 @@ describe('migración de los proyectos de antes a la versión 4', () => {
   })
 
   it('una versión más nueva que la de la app no se lee', () => {
-    expect(() => parseProject(JSON.stringify({ app: 'easy-cut', version: 6, project: { clips: [] } }))).toThrow(/más nueva/)
+    expect(() => parseProject(JSON.stringify({ app: 'easy-cut', version: 7, project: { clips: [] } }))).toThrow(/más nueva/)
   })
 })
 

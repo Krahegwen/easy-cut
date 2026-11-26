@@ -24,6 +24,12 @@
 // que vuelve solo a 1× al guardar o al reabrir) y multiplica el playbackRate de todo lo que suena: el trozo
 // (por su velocidad), el vídeo de encima y las pistas. El reloj del montaje sale del <video> del trozo, así
 // que avanza a ese ritmo sin más; la lógica está en `src/domain/playback.ts`.
+//
+// Transiciones entre trozos: cada trozo montado va en su capa (su vídeo, su vídeo de encima, su fondo liso y su
+// fondo desenfocado), y en el paso de uno a otro cada capa lleva la opacidad, el desplazamiento y el tamaño que dice
+// `joinAt` (dominio), con el que entra encima; a negro / a blanco, con una capa de color. Con solape, el reloj del
+// montaje sigue siendo el <video> del que sale y el que entra (ya montado como «siguiente») se pone a sonar a la
+// vez, recolocado si se separa más de 150 ms; al acabar el que sale se sigue con el que entra donde va, sin buscarlo.
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
@@ -35,7 +41,13 @@ import {
   findClipVideoItem,
   FULL_FRAME_SCALE,
   clipStartTimes,
+  clipTimeline,
+  clipVideoJoinFades,
   computeFramingLayout,
+  edgeFades,
+  incomingSourceMs,
+  joinAt,
+  overlapExitOf,
   clipOutputMs,
   coverNeedsResync,
   fadeGainAt,
@@ -109,7 +121,6 @@ const freeSourceMs = ref<number | null>(null)
 const sourceMs = ref(0)
 
 const stage = ref<HTMLDivElement | null>(null)
-const canvas = ref<HTMLCanvasElement | null>(null)
 const stageSize = ref({ width: 0, height: 0 })
 const frame = computed(() => fitAspect(props.project.aspect, stageSize.value.width, stageSize.value.height))
 
@@ -125,11 +136,90 @@ const mountedClips = computed(() => {
   const list = [clips[a]!]
   const next = a + 1 < clips.length ? a + 1 : props.loop && clips.length > 1 ? 0 : -1
   if (next >= 0 && next !== a) list.push(clips[next]!)
+  // Si el siguiente empieza su propio paso enseguida (un trozo corto montado entre dos transiciones), el de después
+  // también, cargado de antemano: si no, al acabar el activo entraría tarde (medido: hasta medio segundo).
+  if (next === a + 1 && next + 1 < clips.length) {
+    const starts = clipStartTimes(props.project)
+    if (starts[next + 1]! - starts[next]! < 1500) list.push(clips[next + 1]!)
+  }
   return list
 })
 const mountedCovers = computed(() => mountedClips.value.filter((c) => c.picture.kind === 'cover'))
 
 const markers = computed(() => clipStartTimes(props.project).slice(1))
+
+// ------------------------------------------------------------------ transiciones
+
+/** Juntas resueltas de cada trozo (en ms; la de entrada de cada uno). */
+const timeline = computed(() => clipTimeline(props.project))
+/** La junta cuyo paso contiene el instante de ahora, con cómo se ve cada capa. */
+const joinNow = computed(() => joinAt(plan.value, currentMs.value))
+/** La junta con solape por la que sale el trozo activo (el siguiente suena a la vez durante el paso). */
+const exitJoin = computed(() => overlapExitOf(plan.value, activeClipIndex.value))
+
+/** Papel del trozo en el paso de ahora: el que sale, el que entra o ninguno (solo si los dos están montados). */
+function roleOf(clip: Clip): 'out' | 'in' | null {
+  const j = joinNow.value
+  if (!j) return null
+  const i = props.project.clips.indexOf(clip)
+  const outClip = props.project.clips[j.join.clipIndex - 1]
+  const inClip = props.project.clips[j.join.clipIndex]
+  if (!outClip || !inClip) return null
+  // Con solape, las dos capas a la vez; si el que sale ya no está montado (acaba de terminar), sin estilo.
+  const mounted = mountedClips.value
+  if (j.join.join.overlap && !(mounted.includes(outClip) && mounted.includes(inClip))) return null
+  if (i === j.join.clipIndex - 1) return 'out'
+  if (i === j.join.clipIndex) return 'in'
+  return null
+}
+
+/** ¿Se ve la imagen de este trozo ahora? El activo y, en un paso con solape, el que entra. */
+function clipVisible(clip: Clip): boolean {
+  const role = roleOf(clip)
+  if (role) return joinNow.value!.style[role].visible
+  return clip.id === activeClip.value?.id
+}
+
+/** Estilo de la capa de un trozo: opacidad, desplazamiento y tamaño del paso, y el que entra encima. */
+function layerStyle(clip: Clip) {
+  const role = roleOf(clip)
+  const visible = clipVisible(clip)
+  if (!role) return { zIndex: clip.id === activeClip.value?.id ? '1' : '0', visibility: visible ? undefined : ('hidden' as const) }
+  const l = joinNow.value!.style[role]
+  const parts: string[] = []
+  if (l.shiftX) parts.push(`translateX(${l.shiftX * frame.value.width}px)`)
+  if (l.scale !== 1) parts.push(`scale(${l.scale})`)
+  return {
+    zIndex: role === 'in' ? '2' : '1',
+    opacity: l.opacity < 1 ? String(l.opacity) : undefined,
+    transform: parts.length ? parts.join(' ') : undefined,
+    visibility: l.visible ? undefined : ('hidden' as const),
+  }
+}
+
+/** Capa de color de a negro / a blanco (encima de los trozos, debajo de las pistas). */
+const joinColor = computed(() => {
+  const j = joinNow.value
+  if (!j?.style.color || j.style.colorOpacity <= 0.001) return null
+  return { background: j.style.color === 'white' ? '#fff' : '#000', opacity: String(j.style.colorOpacity) }
+})
+
+/** Volumen del <video> de un trozo: su aparecer / desaparecer (sin el borde con transición) por el del paso. */
+function clipVolume(clip: Clip): number {
+  const role = roleOf(clip)
+  const base = clip.id === activeClip.value?.id ? clipFade.value : 1
+  return Math.min(1, Math.max(0, role ? base * joinNow.value!.style[role].volume : base))
+}
+
+/** «El vídeo de este trozo» en un paso: el del que sale se desvanece y el del que entra aparece. */
+function clipVideoOpacity(clip: Clip): number {
+  const i = props.project.clips.indexOf(clip)
+  if (i < 0) return 1
+  const tl = timeline.value
+  const fades = clipVideoJoinFades(tl.joins[i] ?? null, tl.joins[i + 1] ?? null)
+  if (fades.fadeInMs <= 0 && fades.fadeOutMs <= 0) return 1
+  return fadeGainAt(fades, clipOutputAt(props.project, i, currentMs.value), tl.lengths[i]!)
+}
 
 const elements = new Map<string, HTMLVideoElement>()
 const coverElements = new Map<string, HTMLVideoElement>()
@@ -209,7 +299,7 @@ function videoStyle(clip: Clip) {
     const H = frame.value.height
     const look = cv.item.look!
     const index = props.project.clips.indexOf(clip)
-    const local = clip.id === activeClip.value?.id ? clipOutputAt(props.project, index, currentMs.value) : 0
+    const local = clip.id === activeClip.value?.id || roleOf(clip) ? clipOutputAt(props.project, index, currentMs.value) : 0
     const box = boxAt(look, local)
     const odd = clip.quarterTurns % 2 === 1
     const w = odd ? H : W
@@ -226,6 +316,7 @@ function videoStyle(clip: Clip) {
       borderRadius: `${radius}px`,
       zIndex: String(10 + effectLayer(cv.track.id)),
       filter: clipFade.value < 0.999 && clip.id === activeClip.value?.id ? `brightness(${clipFade.value})` : undefined,
+      opacity: String(clipVideoOpacity(clip)),
     }
   }
   if (!coverOf(clip)) {
@@ -236,7 +327,14 @@ function videoStyle(clip: Clip) {
 }
 
 function videoVisible(clip: Clip): boolean {
-  return clip.id === activeClip.value?.id && showsOwn(clip)
+  if (clipVideoOf(clip)) return showsOwn(clip) && (clip.id === activeClip.value?.id || !!roleOf(clip))
+  return clipVisible(clip) && showsOwn(clip)
+}
+
+/** Lo que se ve de un trozo como imagen: su vídeo, el de encima o el fondo liso. */
+function kindOf(clip: Clip): 'own' | 'none' | 'cover' {
+  if (clip.picture.kind === 'cover') return 'cover'
+  return showsOwn(clip) && !clipVideoOf(clip) ? 'own' : 'none'
 }
 
 function coverStyle(clip: Clip) {
@@ -265,8 +363,9 @@ function configure(el: HTMLVideoElement, clip: Clip, active: boolean) {
   el.defaultPlaybackRate = rate
   if (el.playbackRate !== rate) el.playbackRate = rate
   el.preservesPitch = true
-  el.muted = !active || isMutedClip(clip)
-  el.volume = active ? clipFade.value : 1
+  const incoming = !active && roleOf(clip) === 'in'
+  el.muted = !(active || incoming) || isMutedClip(clip)
+  el.volume = clipVolume(clip)
 }
 
 // ------------------------------------------------------------------ aparecer y desaparecer del trozo
@@ -279,12 +378,22 @@ function configure(el: HTMLVideoElement, clip: Clip, active: boolean) {
 const clipFade = computed(() => {
   const clip = activeClip.value
   if (!clip || (clip.fadeInMs <= 0 && clip.fadeOutMs <= 0)) return 1
-  return fadeGainAt(clip, clipOutputAt(props.project, activeClipIndex.value, currentMs.value), clipOutputMs(clip))
+  // En un borde con transición manda la transición.
+  const i = activeClipIndex.value
+  const fades = edgeFades(clip, timeline.value.joins[i] ?? null, timeline.value.joins[i + 1] ?? null)
+  return fadeGainAt(fades, clipOutputAt(props.project, i, currentMs.value), clipOutputMs(clip))
 })
-watch(clipFade, (g) => {
-  const clip = activeClip.value
-  const el = clip ? elements.get(clip.id) : undefined
-  if (el && Math.abs(el.volume - g) > 0.001) el.volume = Math.min(1, Math.max(0, g))
+// El volumen de cada <video> montado sigue al aparecer del trozo y al paso.
+watch([clipFade, joinNow], () => {
+  for (const clip of mountedClips.value) {
+    const el = elements.get(clip.id)
+    if (!el) continue
+    const v = clipVolume(clip)
+    if (Math.abs(el.volume - v) > 0.001) el.volume = v
+    const shouldHear = clip.id === activeClip.value?.id || roleOf(clip) === 'in'
+    const muted = !shouldHear || isMutedClip(clip)
+    if (el.muted !== muted) el.muted = muted
+  }
 })
 
 /** Lleva un <video> al instante que le toca, si se ha desviado. */
@@ -312,7 +421,11 @@ function prepareElements() {
   for (const clip of mountedClips.value) {
     const isActive = active?.id === clip.id
     const el = elements.get(clip.id)
-    if (!isActive) {
+    if (!isActive && isIncomingNow(clip)) {
+      // El que entra, ya en el paso: lo lleva syncIncoming.
+      if (el) configure(el, clip, false)
+      continue
+    } else if (!isActive) {
       const first = plan.value.spans[firstSpanOfClip(plan.value, props.project.clips.indexOf(clip))]
       if (first) desired.set(clip.id, first.sourceStartMs)
       if (el && !el.paused) el.pause()
@@ -331,6 +444,79 @@ function prepareElements() {
     checkDecodable(clip)
   }
   syncCover(playing.value, true)
+  syncIncoming(playing.value, true)
+}
+
+// ------------------------------------------------------------------ el que entra (paso con solape)
+
+/** Posición real y esperada del que entra (para las pruebas: data-incoming-ms / data-incoming-expected-ms). */
+const incomingActualMs = ref<number | null>(null)
+const incomingExpectedMs = ref<number | null>(null)
+
+/**
+ * Lo que se adelanta el arranque del que entra (ms del montaje, a 1×): un <video> parado tarda en empezar a avanzar
+ * después de play(), y sin esto entraba siempre por detrás. Antes del paso no se ve ni se oye.
+ */
+const INCOMING_PREROLL_MS = 80
+
+/** Desde cuándo (ms del vídeo) el que entra ya suena (reproduciendo, un poco antes del paso). */
+function incomingFromMs(startMs: number): number {
+  return playing.value ? startMs - INCOMING_PREROLL_MS * normalizeReviewRate(reviewRate.value) : startMs
+}
+
+/** ¿Es este trozo el que entra en un paso con solape que ya ha empezado (o está a punto, reproduciendo)? */
+function isIncomingNow(clip: Clip): boolean {
+  const ex = exitJoin.value
+  return !!ex && props.project.clips[ex.clipIndex]?.id === clip.id && currentMs.value >= incomingFromMs(ex.startMs)
+}
+
+/**
+ * Lleva el <video> del que entra (y su vídeo de encima) a donde le toca en el paso y lo pone a sonar o en pausa.
+ * Reproduciendo, solo se recoloca si se separa más de 150 ms (en tiempo del montaje); en pausa, exacto.
+ */
+function syncIncoming(play: boolean, exact = false) {
+  const ex = exitJoin.value
+  const clip = ex ? props.project.clips[ex.clipIndex] : undefined
+  const el = clip ? elements.get(clip.id) : undefined
+  if (!ex || !clip || !el || currentMs.value < incomingFromMs(ex.startMs)) {
+    incomingActualMs.value = null
+    incomingExpectedMs.value = null
+    return
+  }
+  if (currentMs.value < ex.startMs) {
+    // Justo antes del paso: arranca desde su principio (sin verse ni oírse) para llegar a tiempo.
+    configure(el, clip, false)
+    if (play && el.paused && el.readyState >= 2) void el.play().catch(() => {})
+    return
+  }
+  const expected = incomingSourceMs(plan.value, ex.clipIndex, currentMs.value)
+  incomingExpectedMs.value = Math.round(expected)
+  desired.set(clip.id, expected)
+  // Sonido y volumen del paso (la velocidad la lleva esto de abajo, que la ajusta para no separarse).
+  el.preservesPitch = true
+  el.muted = roleOf(clip) !== 'in' || isMutedClip(clip)
+  el.volume = clipVolume(clip)
+  syncCoverOf(clip, ex.clipIndex, play, exact)
+  if (el.readyState < 1) return
+  incomingActualMs.value = Math.round(el.currentTime * 1000)
+  if (play) {
+    if (el.paused && el.readyState >= 2) void el.play().catch(() => {})
+  } else if (!el.paused) {
+    el.pause()
+  }
+  if (el.seeking) return
+  // Lo que va por delante (+) o por detrás (−), en tiempo del montaje.
+  const ahead = (el.currentTime * 1000 - expected) / Math.max(0.01, clip.speed)
+  const base = mediaRate(clip.speed, reviewRate.value)
+  if (exact ? Math.abs(ahead) > 45 : coverNeedsResync(ahead, 0)) {
+    el.currentTime = expected / 1000
+    if (el.playbackRate !== base) el.playbackRate = base
+    return
+  }
+  // Por debajo de los 150 ms no se busca (buscar se para un momento y lo deja más atrás): se alcanza acelerando o
+  // frenando un 8 % (el tono no cambia) hasta quedar a menos de 25 ms.
+  const want = !play || Math.abs(ahead) < 25 ? base : mediaRate(clip.speed * (ahead < 0 ? 1.08 : 0.92), reviewRate.value)
+  if (Math.abs(el.playbackRate - want) > 1e-6) el.playbackRate = want
 }
 
 // ------------------------------------------------------------------ vídeo de encima
@@ -345,18 +531,24 @@ const coverExpectedMs = ref<number | null>(null)
  */
 function syncCover(play: boolean, exact = false) {
   const clip = activeClip.value
-  const cover = coverOf(clip)
-  const el = clip ? coverElements.get(clip.id) : undefined
-  if (!clip || !cover || !el) {
+  if (!clip || !coverOf(clip) || !coverElements.get(clip.id)) {
     coverActualMs.value = null
     coverExpectedMs.value = null
     return
   }
-  const outMs = clipOutputAt(props.project, activeClipIndex.value, currentMs.value)
+  syncCoverOf(clip, activeClipIndex.value, play, exact, true)
+}
+
+/** Lo mismo para cualquier trozo montado (el activo o el que entra en un paso). `report`: para las pruebas. */
+function syncCoverOf(clip: Clip, clipIndex: number, play: boolean, exact = false, report = false) {
+  const cover = coverOf(clip)
+  const el = coverElements.get(clip.id)
+  if (!cover || !el) return
+  const outMs = clipOutputAt(props.project, clipIndex, currentMs.value)
   const expected = coverTimeAt(cover, outMs)
-  coverExpectedMs.value = Math.round(expected)
+  if (report) coverExpectedMs.value = Math.round(expected)
   if (el.readyState < 1) return
-  coverActualMs.value = Math.round(el.currentTime * 1000)
+  if (report) coverActualMs.value = Math.round(el.currentTime * 1000)
   const endMs = Number.isFinite(el.duration) && el.duration > 0 ? Math.min(el.duration * 1000, cover.sourceDurationMs) : cover.sourceDurationMs
   if (expected >= endMs - 40) {
     // Se ha acabado: quieto en su última imagen.
@@ -428,7 +620,13 @@ function tick() {
       currentMs.value = playbackTimeAt(plan.value, spanIndex.value, src)
       if (el.paused) void el.play().catch(() => {})
       syncCover(true)
+      syncIncoming(true)
       emitTime()
+      if (stopAtMs !== null && currentMs.value >= stopAtMs) {
+        stopAtMs = null
+        pause()
+        return
+      }
     }
     paintBackground()
   }
@@ -457,9 +655,17 @@ function goToSpan(index: number, keepPlaying: boolean) {
   const span = plan.value.spans[index]
   if (!span) return
   const previousClipId = activeSpan.value?.clipId
+  const incoming = elements.get(span.clipId)
+  const wasIncoming = keepPlaying && incomingActualMs.value !== null && exitJoin.value?.clipIndex === span.clipIndex && !!incoming && !incoming.paused
   spanIndex.value = index
   sourceMs.value = span.sourceStartMs
   currentMs.value = span.projectStartMs
+  if (wasIncoming && incoming) {
+    // Ya estaba sonando en el paso: sigue donde va, sin buscarlo otra vez.
+    const src = Math.min(Math.max(incoming.currentTime * 1000, span.sourceStartMs), span.sourceEndMs)
+    sourceMs.value = src
+    currentMs.value = playbackTimeAt(plan.value, index, src)
+  }
   if (previousClipId && previousClipId !== span.clipId) pauseClip(previousClipId)
   void activate(keepPlaying)
 }
@@ -519,12 +725,26 @@ function pause() {
   for (const el of elements.values()) if (!el.paused) el.pause()
   for (const el of coverElements.values()) if (!el.paused) el.pause()
   syncCover(false, true)
+  syncIncoming(false, true)
   emitTime()
 }
 
 function toggle() {
+  stopAtMs = null
   if (playing.value) pause()
   else play()
+}
+
+/** Dónde se para solo (null = hasta el final): «Probar» una transición. */
+let stopAtMs: number | null = null
+
+/** Reproduce de `fromMs` a `toMs` y se para ahí («Probar» una transición). */
+function playRange(fromMs: number, toMs: number) {
+  const d = plan.value.durationMs
+  const from = Math.min(Math.max(0, fromMs), d)
+  seek(from)
+  stopAtMs = Math.min(Math.max(from, toMs), d)
+  if (!playing.value) play()
 }
 
 function locateAt(projectMs: number) {
@@ -592,6 +812,15 @@ watch(plan, () => {
 })
 
 watch(mountedClips, () => void nextTick(prepareElements))
+// Al entrar en un paso o salir de él, el otro trozo se pone a sonar (o se para) y su fondo se pinta.
+watch(
+  () => (joinNow.value ? `${joinNow.value.join.clipIndex}` : ''),
+  () =>
+    void nextTick(() => {
+      syncIncoming(playing.value, !playing.value)
+      paintBackground()
+    }),
+)
 // Silenciar la fila principal se oye al momento.
 watch(
   () => props.project.mainMuted,
@@ -644,11 +873,21 @@ const preparingPreview = computed(() => {
 // ------------------------------------------------------------------ fondo desenfocado
 
 const BG_WIDTH = 48
+const canvases = new Map<string, HTMLCanvasElement>()
+function registerCanvas(clipId: string, el: unknown) {
+  if (el instanceof HTMLCanvasElement) canvases.set(clipId, el)
+  else canvases.delete(clipId)
+}
+
+/** Pinta el fondo desenfocado del activo y, en un paso, del otro trozo que se ve. */
 function paintBackground() {
-  const layout = activeLayout.value
-  const clip = activeClip.value
-  const c = canvas.value
-  if (!layout?.showsBackground || !clip || !c) return
+  for (const clip of mountedClips.value) if (clip.id === activeClip.value?.id || roleOf(clip)) paintBackgroundOf(clip)
+}
+
+function paintBackgroundOf(clip: Clip) {
+  const layout = layoutFor(clip)
+  const c = canvases.get(clip.id)
+  if (!layout?.showsBackground || !c) return
   const cover = coverOf(clip)
   const el = cover ? coverElements.get(clip.id) : elements.get(clip.id)
   const turns = cover ? cover.quarterTurns : clip.quarterTurns
@@ -844,6 +1083,7 @@ onBeforeUnmount(() => {
   exitFullscreen()
   observer?.disconnect()
   cancelAnimationFrame(raf)
+  stopAtMs = null
   for (const el of [...elements.values(), ...coverElements.values()]) {
     el.pause()
     el.removeAttribute('src')
@@ -858,6 +1098,7 @@ defineExpose({
   pause,
   toggle,
   seek,
+  playRange,
   showSource,
   playing,
   currentMs,
@@ -890,6 +1131,10 @@ defineExpose({
     :data-cover-expected-ms="coverExpectedMs ?? ''"
     :data-main-muted="tracks && project.mainMuted ? '1' : '0'"
     :data-clip-fade="clipFade.toFixed(3)"
+    :data-join-progress="joinNow ? joinNow.style.progress.toFixed(3) : ''"
+    :data-join-kind="joinNow ? joinNow.join.join.kind : ''"
+    :data-incoming-ms="incomingActualMs ?? ''"
+    :data-incoming-expected-ms="incomingExpectedMs ?? ''"
   >
     <div ref="stage" class="stage">
       <div
@@ -902,59 +1147,92 @@ defineExpose({
         @pointerup="panUp"
         @pointercancel="panUp"
       >
-        <canvas
-          v-show="activeLayout?.showsBackground"
-          ref="canvas"
-          class="background"
-          :width="BG_WIDTH"
-          :height="canvasHeight"
-          aria-hidden="true"
-        />
-        <video
-          v-for="clip in mountedCovers"
-          :key="`cover-${clip.id}`"
-          :ref="(el) => registerCover(clip.id, el)"
-          class="video cover"
-          :class="{ hidden: clip.id !== activeClip?.id }"
-          :src="store.mediaSrc(coverOf(clip)?.sourcePath ?? '')"
-          :style="coverStyle(clip)"
-          data-testid="cover-video"
-          muted
-          preload="auto"
-          playsinline
-          disablepictureinpicture
-          disableremoteplayback
-          @loadedmetadata="onCoverMetadata(clip, $event)"
-          @error="onCoverError(clip)"
-          @seeked="onSeeked(clip)"
-        />
+        <!-- Cada trozo montado, en su capa: en un paso, cada una con su opacidad, desplazamiento y tamaño. -->
         <div
-          v-if="activeKind === 'none'"
-          class="plain"
-          :style="{ background: PLAIN_BACKGROUND_CSS }"
-          data-testid="preview-sound-only"
-        >
-          <span class="plain-icon" :class="{ playing }"><AppIcon name="wave" :size="56" /></span>
-          <span class="plain-text">Solo se oye</span>
-        </div>
-        <video
           v-for="clip in mountedClips"
-          :key="clip.id"
-          :ref="(el) => register(clip.id, el)"
-          class="video"
-          :class="{ hidden: !videoVisible(clip), inset: !!clipVideoOf(clip) }"
-          :data-clip-video="clipVideoOf(clip)?.item.id ?? ''"
-          :src="store.mediaSrc(clip.sourcePath)"
-          :style="videoStyle(clip)"
-          preload="auto"
-          playsinline
-          disablepictureinpicture
-          disableremoteplayback
-          @loadedmetadata="onLoadedMetadata(clip, $event)"
-          @error="onError(clip)"
-          @seeked="onSeeked(clip)"
-        />
+          :key="`layer-${clip.id}`"
+          class="clip-layer"
+          :style="layerStyle(clip)"
+          :data-layer-clip="clip.id"
+          :data-layer-role="roleOf(clip) ?? ''"
+          data-testid="clip-layer"
+        >
+          <canvas
+            v-show="layoutFor(clip)?.showsBackground && clipVisible(clip)"
+            :ref="(el) => registerCanvas(clip.id, el)"
+            class="background"
+            :width="BG_WIDTH"
+            :height="canvasHeight"
+            aria-hidden="true"
+          />
+          <video
+            v-if="clip.picture.kind === 'cover'"
+            :key="`cover-${clip.id}`"
+            :ref="(el) => registerCover(clip.id, el)"
+            class="video cover"
+            :class="{ hidden: !clipVisible(clip) }"
+            :src="store.mediaSrc(coverOf(clip)?.sourcePath ?? '')"
+            :style="coverStyle(clip)"
+            data-testid="cover-video"
+            muted
+            preload="auto"
+            playsinline
+            disablepictureinpicture
+            disableremoteplayback
+            @loadedmetadata="onCoverMetadata(clip, $event)"
+            @error="onCoverError(clip)"
+            @seeked="onSeeked(clip)"
+          />
+          <div
+            v-if="kindOf(clip) === 'none' && clipVisible(clip)"
+            class="plain"
+            :style="{ background: PLAIN_BACKGROUND_CSS }"
+            data-testid="preview-sound-only"
+          >
+            <span class="plain-icon" :class="{ playing }"><AppIcon name="wave" :size="56" /></span>
+            <span class="plain-text">Solo se oye</span>
+          </div>
+          <video
+            v-if="!clipVideoOf(clip)"
+            :key="clip.id"
+            :ref="(el) => register(clip.id, el)"
+            class="video"
+            :class="{ hidden: !videoVisible(clip) }"
+            data-clip-video=""
+            :data-clip-id="clip.id"
+            :src="store.mediaSrc(clip.sourcePath)"
+            :style="videoStyle(clip)"
+            preload="auto"
+            playsinline
+            disablepictureinpicture
+            disableremoteplayback
+            @loadedmetadata="onLoadedMetadata(clip, $event)"
+            @error="onError(clip)"
+            @seeked="onSeeked(clip)"
+          />
+        </div>
+        <!-- «El vídeo de este trozo»: su propio <video>, encima, entre las capas de las pistas (z-index). -->
+        <template v-for="clip in mountedClips" :key="`inset-${clip.id}`">
+          <video
+            v-if="clipVideoOf(clip)"
+            :ref="(el) => register(clip.id, el)"
+            class="video inset"
+            :class="{ hidden: !videoVisible(clip) }"
+            :data-clip-video="clipVideoOf(clip)?.item.id ?? ''"
+            :data-clip-id="clip.id"
+            :src="store.mediaSrc(clip.sourcePath)"
+            :style="videoStyle(clip)"
+            preload="auto"
+            playsinline
+            disablepictureinpicture
+            disableremoteplayback
+            @loadedmetadata="onLoadedMetadata(clip, $event)"
+            @error="onError(clip)"
+            @seeked="onSeeked(clip)"
+          />
+        </template>
         <div v-if="clipFade < 0.999" class="clip-fade" :style="{ opacity: String(1 - clipFade) }" data-testid="clip-fade" aria-hidden="true" />
+        <div v-if="joinColor" class="join-color" :style="joinColor" data-testid="join-color" aria-hidden="true" />
         <TrackLayers
           v-if="tracks && frame.width > 0"
           :project="project"
@@ -1097,8 +1375,23 @@ defineExpose({
 }
 .clip-fade {
   position: absolute;
+  z-index: 3;
   inset: 0;
   background: #000;
+  pointer-events: none;
+}
+/* Cada trozo montado, en su capa (debajo del negro de aparecer, del color del paso y de las pistas). */
+.clip-layer {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  transform-origin: 50% 50%;
+  pointer-events: none;
+}
+.join-color {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
   pointer-events: none;
 }
 .video.inset {

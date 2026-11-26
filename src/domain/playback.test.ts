@@ -53,7 +53,7 @@ describe('plan de reproducción', () => {
 
   it('proyecto vacío', () => {
     const plan = buildPlaybackPlan(createProject())
-    expect(plan).toEqual({ spans: [], durationMs: 0 })
+    expect(plan).toEqual({ spans: [], durationMs: 0, joins: [] })
     expect(locatePlayback(plan, 100)).toBeNull()
   })
 

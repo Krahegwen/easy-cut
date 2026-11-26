@@ -1,13 +1,14 @@
 // Duraciones del trozo y del vídeo, y cómo decirlas en castellano llano.
 
-import { clipOutputMs, type Clip, type Project } from './project'
+import { clipOutputMs, clipTimeline, type Clip, type Project } from './project'
 
 export function clipDurationMs(clip: Clip): number {
   return clipOutputMs(clip)
 }
 
+/** Lo que dura el vídeo: la suma de los trozos menos los solapes de las transiciones. */
 export function projectDurationMs(project: Project): number {
-  return project.clips.reduce((sum, c) => sum + clipOutputMs(c), 0)
+  return clipTimeline(project).totalMs
 }
 
 export interface TargetStatus {

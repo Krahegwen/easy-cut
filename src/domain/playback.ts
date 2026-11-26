@@ -2,7 +2,8 @@
 // (un tramo = un rango conservado de un trozo). La vista previa no renderiza: salta de tramo en tramo
 // sobre los originales. Aquí está el mapa tiempo del vídeo ↔ trozo / rango / tiempo del original.
 
-import { clipOutputMs, clipStartTimes, type Clip, type CoverPicture, type Project, type Speed } from './project'
+import { clipOutputMs, clipStartTimes, clipTimeline, type Clip, type CoverPicture, type Project, type Speed } from './project'
+import { joinStyleAt, type JoinStyle, type ResolvedJoin } from './transitions'
 
 export interface PlaybackSpan {
   clipIndex: number
@@ -18,9 +19,20 @@ export interface PlaybackSpan {
   projectEndMs: number
 }
 
+/** Una junta con transición: el trozo que entra, dónde empieza y el paso ya limitado. */
+export interface PlaybackJoin {
+  /** Índice del trozo que entra (el que sale es el anterior). */
+  clipIndex: number
+  /** Dónde empieza el trozo que entra (ms del vídeo). */
+  startMs: number
+  join: ResolvedJoin
+}
+
 export interface PlaybackPlan {
   spans: PlaybackSpan[]
   durationMs: number
+  /** Juntas con transición, en orden. */
+  joins: PlaybackJoin[]
 }
 
 export interface PlaybackPosition {
@@ -55,11 +67,45 @@ function clipSpans(clip: Clip, clipIndex: number, clipStartMs: number): Playback
   return spans
 }
 
+/**
+ * Con transiciones con solape, los tramos de dos trozos seguidos se pisan: el que entra empieza antes de que acabe el
+ * anterior. Mientras dura el paso, manda el reloj del que sale (locatePlayback da su tramo) y el que entra suena a la
+ * vez (incomingSourceMs dice por dónde debe ir).
+ */
 export function buildPlaybackPlan(project: Project): PlaybackPlan {
-  const starts = clipStartTimes(project)
+  const timeline = clipTimeline(project)
+  const starts = timeline.starts
   const spans = project.clips.flatMap((clip, i) => clipSpans(clip, i, starts[i]!))
-  const last = spans[spans.length - 1]
-  return { spans, durationMs: last ? last.projectEndMs : 0 }
+  const joins: PlaybackJoin[] = []
+  timeline.joins.forEach((join, i) => {
+    if (join) joins.push({ clipIndex: i, startMs: starts[i]!, join })
+  })
+  return { spans, durationMs: Math.max(0, Math.round(timeline.totalMs)), joins }
+}
+
+/** La junta cuyo paso contiene este instante, con cómo se ve (null si no hay). */
+export function joinAt(plan: PlaybackPlan, projectMs: number): { join: PlaybackJoin; style: JoinStyle } | null {
+  for (const j of plan.joins) {
+    const style = joinStyleAt(j.join, j.startMs, projectMs)
+    if (style) return { join: j, style }
+  }
+  return null
+}
+
+/** La junta con solape por la que sale el trozo `clipIndex` (hacia el siguiente), si la hay. */
+export function overlapExitOf(plan: PlaybackPlan, clipIndex: number): PlaybackJoin | null {
+  return plan.joins.find((j) => j.clipIndex === clipIndex + 1 && j.join.overlap) ?? null
+}
+
+/**
+ * Por dónde debe ir el original del trozo que entra en el instante `projectMs` del paso: su primer tramo (el solape
+ * nunca pasa de él), desde su principio a su velocidad. Antes de empezar, su primer fotograma.
+ */
+export function incomingSourceMs(plan: PlaybackPlan, clipIndex: number, projectMs: number): number {
+  const span = plan.spans[firstSpanOfClip(plan, clipIndex)]
+  if (!span) return 0
+  const within = Math.max(0, projectMs - span.projectStartMs) * span.speed
+  return Math.min(span.sourceEndMs, span.sourceStartMs + within)
 }
 
 /**

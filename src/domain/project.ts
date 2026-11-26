@@ -2,6 +2,7 @@
 // Todos los tiempos son milisegundos enteros. Nada de DOM ni de Node aquí.
 
 import { isEasing, isMotionEasing, type Easing, type MotionEasing } from './motion'
+import { parseEntry, resolveJoins, joinToMs, sameEntry as sameClipEntry, type ClipEntry, type ResolvedJoin } from './transitions'
 
 export interface TimeRange {
   startMs: number
@@ -122,6 +123,11 @@ export interface Clip {
   fadeOutMs: number
   fadeInEasing: Easing
   fadeOutEasing: Easing
+  /**
+   * Cómo entra desde el trozo anterior (null = corte seco, lo de siempre). Ver transitions.ts: se guarda lo pedido
+   * y se limita al resolver. En el primer trozo no cuenta (pero se guarda: al moverlo, vuelve).
+   */
+  entry: ClipEntry | null
 }
 
 // ---------------------------------------------------------------------------
@@ -276,12 +282,12 @@ export interface MediaEntry {
 }
 
 /**
- * Versión 5: aparecer y desaparecer con curva (en trozos, sonidos y efectos). La 4 (con `media`, la lista de
- * sus ficheros), la 3 (con `mainMuted` y `tracks`), la 2 (trozos con `picture` y `sourceHasVideo`) y la 1 se
- * migran al leerlas: lo que tenía «entrada/salida suave» pasa a la curva «Al mismo ritmo» con la misma
- * duración (se ve y se oye igual).
+ * Versión 6: transiciones entre trozos (`Clip.entry`). La 5 (aparecer y desaparecer con curva, en trozos, sonidos y
+ * efectos), la 4 (con `media`, la lista de sus ficheros), la 3 (con `mainMuted` y `tracks`), la 2 (trozos con
+ * `picture` y `sourceHasVideo`) y la 1 se migran al leerlas: sin transiciones (corte seco), y lo que tenía
+ * «entrada/salida suave» pasa a la curva «Al mismo ritmo» con la misma duración (se ve y se oye igual).
  */
-export const PROJECT_VERSION = 5 as const
+export const PROJECT_VERSION = 6 as const
 
 export interface Project {
   version: typeof PROJECT_VERSION
@@ -339,6 +345,7 @@ export function createClip(media: MediaInfo, id: string = defaultIdFactory()): C
     fadeOutMs: 0,
     fadeInEasing: 'linear',
     fadeOutEasing: 'linear',
+    entry: null,
   }
 }
 
@@ -412,32 +419,93 @@ export function sourceToOutput(clip: Clip, sourceMs: number): number | null {
   return null
 }
 
-/** Inicio de cada trozo en la línea de tiempo del vídeo completo. */
-export function clipStartTimes(project: Project): number[] {
-  const starts: number[] = []
-  let acc = 0
-  for (const clip of project.clips) {
-    starts.push(acc)
-    acc += clipOutputMs(clip)
-  }
-  return starts
+/** Lo que dura el primer rango conservado del trozo en la salida (ms). */
+export function firstRangeOutputMs(clip: Clip): number {
+  const first = clip.segments[0]
+  if (!first) return 0
+  return clip.segments.length === 1 ? clipOutputMs(clip) : Math.round((first.endMs - first.startMs) / clip.speed)
 }
 
-/** Tiempo del vídeo completo → qué trozo y en qué punto de su salida. */
+/**
+ * La fila de trozos en el tiempo: inicio y duración de cada uno, sus juntas (transiciones ya limitadas a lo que
+ * cabe; `joins[i]` es la de entrada del trozo i, null = corte seco) y la duración total. Con solape, cada trozo
+ * empieza lo que dura el solape antes de que acabe el anterior, y el total lo descuenta.
+ * Sin `lengths`, los de la vista previa (clipOutputMs). Al guardar se pasan los de los fotogramas (o muestras) enteros
+ * de cada trozo con `unitsPerMs` (F/1000, 48): los solapes se resuelven en esas unidades, así caen exactos.
+ */
+export interface ClipTimeline {
+  starts: number[]
+  lengths: number[]
+  /** Solape de entrada de cada trozo (ms; 0 sin solape). */
+  overlaps: number[]
+  /** Juntas resueltas, en ms. */
+  joins: (ResolvedJoin | null)[]
+  totalMs: number
+}
+
+export function clipTimeline(
+  project: Project,
+  lengths: readonly number[] = project.clips.map(clipOutputMs),
+  unitsPerMs = 1,
+): ClipTimeline {
+  const clips = project.clips
+  const raw = resolveJoins(
+    clips.map((c, i) => {
+      const len = lengths[i] ?? 0
+      // El primer rango, en las mismas unidades (sin pasar de lo que dura el trozo).
+      const first = c.segments.length > 1 ? Math.min(len, firstRangeOutputMs(c)) : len
+      return { entry: c.entry ?? null, length: len * unitsPerMs, firstRange: first * unitsPerMs }
+    }),
+    unitsPerMs,
+  )
+  const joins = raw.map((j) => (j ? joinToMs(j, unitsPerMs) : null))
+  const overlaps = joins.map((j) => (j ? j.overlapUnits : 0))
+  const starts: number[] = []
+  let acc = 0
+  lengths.forEach((len, i) => {
+    acc -= overlaps[i]!
+    starts.push(acc)
+    acc += len
+  })
+  return { starts, lengths: [...lengths], overlaps, joins, totalMs: acc }
+}
+
+/** Inicio de cada trozo en la línea de tiempo del vídeo completo (con los solapes de las transiciones). */
+export function clipStartTimes(project: Project): number[] {
+  return clipTimeline(project).starts
+}
+
+/**
+ * Tiempo del vídeo completo → qué trozo y en qué punto de su salida. En un paso con solape, el que entra (como
+ * los anclajes).
+ */
 export function locateInProject(
   project: Project,
   projectMs: number,
 ): { clipIndex: number; clipOutputMs: number } | null {
-  let acc = 0
-  for (let i = 0; i < project.clips.length; i++) {
-    const d = clipOutputMs(project.clips[i]!)
-    const isLast = i === project.clips.length - 1
-    if (projectMs < acc + d || (isLast && projectMs <= acc + d)) {
-      return { clipIndex: i, clipOutputMs: Math.max(0, projectMs - acc) }
+  const { starts, lengths, totalMs } = clipTimeline(project)
+  if (project.clips.length === 0 || projectMs < 0 || projectMs > totalMs) return null
+  for (let i = project.clips.length - 1; i >= 0; i--) {
+    if (projectMs >= starts[i]!) {
+      // En la frontera exacta del final, el último; si no, el que empieza ahí.
+      return { clipIndex: i, clipOutputMs: Math.min(lengths[i]!, Math.max(0, projectMs - starts[i]!)) }
     }
-    acc += d
   }
   return null
+}
+
+/**
+ * ¿Cae este instante de la salida del trozo dentro de un paso con solape (el tramo que comparte con el anterior o con
+ * el siguiente)? Ahí no se puede partir.
+ */
+export function inSharedJoin(project: Project, clipId: string, atOutputMs: number): boolean {
+  const i = project.clips.findIndex((c) => c.id === clipId)
+  if (i < 0) return false
+  const tl = clipTimeline(project)
+  const len = tl.lengths[i]!
+  const entry = tl.overlaps[i]!
+  const exit = tl.overlaps[i + 1] ?? 0
+  return (entry > 0 && atOutputMs < entry) || (exit > 0 && atOutputMs > len - exit)
 }
 
 /**
@@ -562,6 +630,8 @@ export function duplicateClip(clip: Clip, newId: string = defaultIdFactory()): C
     segments: clip.segments.map((s) => ({ ...s })),
     framing: { ...clip.framing },
     picture: shiftPicture(clip.picture, 0),
+    // La copia entra con corte seco.
+    entry: null,
   }
 }
 
@@ -727,6 +797,8 @@ export function splitClip(
   const clip = project.clips[index]!
   const total = clipOutputMs(clip)
   if (atOutputMs < MIN_PIECE_MS || atOutputMs > total - MIN_PIECE_MS) return project
+  // En el paso de un trozo a otro (con solape) no se parte: no hace nada (la interfaz lo explica).
+  if (inSharedJoin(project, clipId, atOutputMs)) return project
 
   const { sourceMs, segmentIndex } = outputToSource(clip, atOutputMs)
   const seg = clip.segments[segmentIndex]!
@@ -742,6 +814,8 @@ export function splitClip(
   // El vídeo de encima corre en tiempo de salida: la segunda parte sigue donde iba.
   const second: Clip = {
     ...clip,
+    // La segunda parte entra desde la primera con corte seco; la primera se queda con la entrada del trozo.
+    entry: null,
     fadeInMs: 0,
     id: newId,
     segments: right,
@@ -813,6 +887,38 @@ export function setClipFade(project: Project, clipId: string, which: 'in' | 'out
     if (which === 'in') return clip.fadeInMs === ms && clip.fadeInEasing === easing ? clip : { ...clip, fadeInMs: ms, fadeInEasing: easing }
     return clip.fadeOutMs === ms && clip.fadeOutEasing === easing ? clip : { ...clip, fadeOutMs: ms, fadeOutEasing: easing }
   })
+}
+
+/**
+ * Cómo entra el trozo desde el anterior (null = corte seco). Se guarda lo pedido (se limita al resolver). Se
+ * normaliza: sin solape solo valen a negro / a blanco.
+ */
+export function setTransition(project: Project, clipId: string, entry: ClipEntry | null): Project {
+  const next = entry === null ? null : parseEntry(entry)
+  return updateClip(project, clipId, (clip) => (sameClipEntry(clip.entry, next) ? clip : { ...clip, entry: next }))
+}
+
+/**
+ * Si un cambio (recortar, quitar pausas, quitar un trozo…) ha encogido el paso de algún trozo sin tocar su entrada,
+ * la frase que lo dice («El paso al trozo 3 ahora dura 0,4 s (antes 1 s): no cabe más.»). null si ninguno encoge.
+ */
+export function shrunkJoinNotice(before: Project, after: Project): string | null {
+  const a = clipTimeline(before)
+  const b = clipTimeline(after)
+  for (let i = 1; i < after.clips.length; i++) {
+    const clip = after.clips[i]!
+    const j = before.clips.findIndex((c) => c.id === clip.id)
+    if (j < 1 || !clip.entry || !sameClipEntry(before.clips[j]!.entry, clip.entry)) continue
+    // Que entre desde el mismo trozo (si no, es otra junta).
+    if (before.clips[j - 1]!.id !== after.clips[i - 1]!.id) continue
+    const was = a.joins[j]?.duration ?? 0
+    const now = b.joins[i]?.duration ?? 0
+    if (was <= 0 || now >= was - 1) continue
+    const s = (ms: number) => `${String(Math.round(ms / 100) / 10).replace('.', ',')} s`
+    if (now <= 0) return `El paso al trozo ${i + 1} ya no cabe: ahora es un corte seco (antes duraba ${s(was)}).`
+    return `El paso al trozo ${i + 1} ahora dura ${s(now)} (antes ${s(was)}): no cabe más.`
+  }
+  return null
 }
 
 /** Gira el trozo 90° (1 = horario, -1 = antihorario). */
@@ -1614,6 +1720,8 @@ function parseClip(raw: unknown, index: number, version: number): { clip: Clip; 
     fadeOutMs: version >= 5 ? Math.max(0, Math.round(finiteOr(raw.fadeOutMs, 0))) : 0,
     fadeInEasing: isEasing(raw.fadeInEasing) ? raw.fadeInEasing : 'linear',
     fadeOutEasing: isEasing(raw.fadeOutEasing) ? raw.fadeOutEasing : 'linear',
+    // Antes de la 6 no había transiciones; lo que no se entienda es un corte seco.
+    entry: version >= 6 ? parseEntry(raw.entry) : null,
   }
   // La esquina solo existía con otro vídeo encima (y nunca pasó de la versión 4).
   return { clip, inset: version < 5 && picture.kind === 'cover' ? parsed.inset : null }

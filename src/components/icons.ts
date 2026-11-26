@@ -47,6 +47,7 @@ export type IconName =
   | 'home'
   | 'upload'
   | 'drag'
+  | 'transition'
   | 'camera'
   | 'record'
   | 'stop'
