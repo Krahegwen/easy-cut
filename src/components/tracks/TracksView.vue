@@ -776,7 +776,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
               @pointerdown.stop
               @click="emit('transition', jv.clip.id)"
             >
-              <AppIcon name="transition" :size="16" />
+              <AppIcon name="transition" :size="14" />
               <KeyHint v-if="nextOfSelected === jv.clip.id && !tracks.selectedItemId.value" k="U" />
             </button>
           </template>
@@ -1448,23 +1448,29 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
   background: #fff;
 }
 .join-btn {
+  /* Pequeño y arriba del todo: debajo quedan las asas de los dos trozos para recortarlos. */
   position: absolute;
-  top: 2px;
+  top: 0;
   z-index: 4;
   transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  height: 26px;
-  min-width: 26px;
-  padding: 0 4px;
+  height: 20px;
+  min-width: 22px;
+  padding: 0 3px;
+  font-size: 11px;
   border: 1.5px solid var(--border-strong);
-  border-radius: 13px;
+  border-radius: 10px;
   background: var(--surface);
   color: var(--text-muted);
-  font-size: 12px;
   cursor: pointer;
   box-shadow: var(--shadow-sm, 0 1px 2px rgb(0 0 0 / 0.2));
+}
+.join-btn :deep(.key-hint) {
+  font-size: 10px;
+  height: 15px;
+  min-width: 15px;
 }
 .join-btn:hover,
 .join-btn.picked {
