@@ -5,6 +5,11 @@
 import { computed, shallowRef, ref, watch, type Ref } from 'vue'
 import {
   addClip,
+  copyLook,
+  findClipVideoItem,
+  putClipVideo,
+  updateEffectLook,
+  type EffectLook,
   baseName,
   canPaste,
   choosePasteSource,
@@ -1054,30 +1059,41 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
    * (un paso de deshacer). Devuelve false si se cancela o no vale (con el aviso ya enseñado).
    */
   async function pickCover(clipId: string): Promise<boolean> {
+    const info = await chooseCoverVideo()
+    if (!info) return false
+    apply((p) => setCover(p, clipId, info))
+    return true
+  }
+
+  /**
+   * El diálogo de «Elegir el vídeo» (un vídeo, leído y apuntado), sin ponerlo en ningún sitio: lo usa también
+   * «Llevar a una esquina aquí» para elegir lo que se verá detrás, en el mismo paso de deshacer. null si se
+   * cancela o no vale (con el aviso ya enseñado).
+   */
+  async function chooseCoverVideo(): Promise<MediaInfo | null> {
     let paths: string[]
     try {
       paths = await bridge.pickVideos({ multiple: false })
     } catch (e) {
       showError('No se ha podido abrir la ventana para elegir el vídeo.', e)
-      return false
+      return null
     }
     const path = paths[0]
-    if (!path) return false
+    if (!path) return null
     let info: MediaInfo
     try {
       info = await bridge.probe(path)
     } catch (e) {
       showError('No he podido leer ese vídeo.', e)
-      return false
+      return null
     }
     if (!info.hasVideo) {
-      showToast('Ese fichero no tiene imagen: elige un vídeo para ponerlo encima.')
-      return false
+      showToast('Ese fichero no tiene imagen: elige un vídeo.')
+      return null
     }
     setMedia(info)
     setMissing(path, false)
-    apply((p) => setCover(p, clipId, info))
-    return true
+    return info
   }
 
   /** Cambia de pantalla. Los avisos de la anterior (p. ej. «Deshacer») ya no vienen a cuento. */
@@ -1096,7 +1112,11 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
   // ------------------------------------------------------------------ copiar y pegar trozos
 
   /** Trozo copiado en la app y la secuencia del portapapeles del sistema al copiarlo (ver domain/paste.ts). */
-  const copiedClip = shallowRef<{ clip: Clip; sequence: number | null } | null>(null)
+  /**
+   * El trozo copiado, con «el vídeo de este trozo» si lo lleva (su tamaño, sitio y marcas): es parte de cómo se
+   * ve el trozo, así que se pega con él (lo pegado a un trozo, sonidos y efectos, no).
+   */
+  const copiedClip = shallowRef<{ clip: Clip; sequence: number | null; ownVideo?: { look: EffectLook; trackId: string } | null } | null>(null)
   /** Lo último que se sabe del portapapeles del sistema (para activar «Pegar»). */
   const systemClipboard = shallowRef<SystemClipboardFiles | null>(null)
   const pasteAvailable = computed(() => canPaste(copiedClip.value, systemClipboard.value, isMediaPath))
@@ -1128,7 +1148,12 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
   async function copyClip(clipId: string): Promise<boolean> {
     const clip = findClip(history.value.present, clipId)
     if (!clip) return false
-    const mark = { clip: duplicateClip(clip, clip.id), sequence: systemClipboard.value?.sequence ?? null }
+    const own = findClipVideoItem(history.value.present, clipId)
+    const mark = {
+      clip: duplicateClip(clip, clip.id),
+      sequence: systemClipboard.value?.sequence ?? null,
+      ownVideo: own?.item.look ? { look: copyLook(own.item.look), trackId: own.track.id } : null,
+    }
     copiedClip.value = mark
     showToast('Trozo copiado', undefined, 3000)
     try {
@@ -1149,7 +1174,14 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     if (!c) return null
     const fresh = duplicateClip(c.clip)
     const after = selectedClipId.value
-    apply((p) => insertClipAfter(p, after, fresh))
+    const own = c.ownVideo
+    apply((p) => {
+      const next = insertClipAfter(p, after, fresh)
+      if (!own) return next
+      const itemId = `item-${defaultIdFactory()}`
+      const trackId = next.tracks.some((t) => t.id === own.trackId) ? own.trackId : `track-${defaultIdFactory()}`
+      return updateEffectLook(putClipVideo(next, fresh.id, own.look.box, { itemId, trackId, trackName: 'Tu vídeo encima' }), itemId, () => copyLook(own.look))
+    })
     selectedClipId.value = fresh.id
     const n = history.value.present.clips.findIndex((x) => x.id === fresh.id) + 1
     showToast(`Trozo pegado: es el trozo ${n}.`, { label: 'Deshacer', run: undo })
@@ -1266,6 +1298,7 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     thumbnails,
     waveform,
     pickCover,
+    chooseCoverVideo,
     go,
     addRecording,
     dismissRecordingOffer,

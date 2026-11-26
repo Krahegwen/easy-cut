@@ -87,6 +87,15 @@ export function itemStartMs(project: Project, item: TrackItem, timing: ProjectTi
 }
 
 function resolveOne(project: Project, track: Track, trackIndex: number, item: TrackItem, timing: ProjectTiming): ResolvedItem {
+  if (item.source.type === 'clip') {
+    // «El vídeo de este trozo»: justo lo que dura su trozo, desde su principio.
+    const clipId = item.source.clipId
+    const i = project.clips.findIndex((c) => c.id === clipId)
+    if (i < 0) return { item, track, trackIndex, startMs: 0, endMs: 0, shownEndMs: 0 }
+    const start = timing.starts[i]!
+    const end = start + timing.lengths[i]!
+    return { item, track, trackIndex, startMs: start, endMs: end, shownEndMs: Math.min(end, timing.totalMs) }
+  }
   const startMs = itemStartMs(project, item, timing)
   const endMs = startMs + itemLengthMs(item, startMs, timing.totalMs)
   return { item, track, trackIndex, startMs, endMs, shownEndMs: Math.min(endMs, timing.totalMs) }
@@ -448,7 +457,16 @@ export function updateItem(project: Project, itemId: string, fn: (item: TrackIte
  */
 export function moveItem(project: Project, itemId: string, startMs: number, toTrackId?: string, timing = projectTiming(project)): Project | null {
   const found = findItem(project, itemId)
+  // «El vídeo de este trozo» va siempre con su trozo: solo puede cambiar de pista.
   if (!found) return null
+  if (found.item.source.type === 'clip') {
+    const target = project.tracks.find((t) => t.id === toTrackId)
+    if (!target || target.kind !== 'effect' || target.id === found.track.id) return null
+    const r = resolveOne(project, found.track, found.trackIndex, found.item, timing)
+    if (!fitsAt(project, target.id, r.startMs, r.endMs - r.startMs, itemId, timing)) return null
+    const without = removeItem(project, itemId)
+    return updateTrack(without, target.id, (t) => ({ ...t, items: [...t.items, found.item] }))
+  }
   const target = toTrackId ? project.tracks.find((t) => t.id === toTrackId) : found.track
   if (!target || target.kind !== found.track.kind) return null
   const maxStart = Math.max(0, timing.totalMs - MIN_ITEM_MS)
@@ -482,7 +500,7 @@ function mod(a: number, n: number): number {
  */
 export function trimItemStart(project: Project, itemId: string, newStartMs: number, timing = projectTiming(project)): Project {
   const n = neighbours(project, itemId, timing)
-  if (!n) return project
+  if (!n || n.self.item.source.type === 'clip') return project
   const { item, startMs: s, endMs: e } = n.self
   let start = Math.round(Math.min(Math.max(newStartMs, n.prevEnd, 0), e - MIN_ITEM_MS))
   let next: TrackItem
@@ -511,7 +529,7 @@ export function trimItemStart(project: Project, itemId: string, newStartMs: numb
  */
 export function trimItemEnd(project: Project, itemId: string, newEndMs: number, timing = projectTiming(project)): Project {
   const n = neighbours(project, itemId, timing)
-  if (!n) return project
+  if (!n || n.self.item.source.type === 'clip') return project
   const { item, startMs: s } = n.self
   const end = Math.round(Math.max(Math.min(newEndMs, n.nextStart), s + MIN_ITEM_MS))
   let next: TrackItem
@@ -530,7 +548,8 @@ export function trimItemEnd(project: Project, itemId: string, newEndMs: number, 
 /** Parte un elemento en `atMs` (tiempo del vídeo). La segunda parte sigue por donde iba. */
 export function splitItem(project: Project, itemId: string, atMs: number, newId: string, timing = projectTiming(project)): Project {
   const found = findItem(project, itemId)
-  if (!found) return project
+  // «El vídeo de este trozo» se parte partiendo el trozo.
+  if (!found || found.item.source.type === 'clip') return project
   const r = resolveOne(project, found.track, found.trackIndex, found.item, timing)
   const at = Math.round(atMs)
   if (at < r.startMs + MIN_ITEM_MS || at > r.shownEndMs - MIN_ITEM_MS) return project
@@ -563,7 +582,7 @@ export type DuplicateResult = { ok: true; project: Project; trackId: string; sta
  */
 export function duplicateItem(project: Project, itemId: string, newId: string, newTrack: { id: string; name?: string }, timing = projectTiming(project)): DuplicateResult {
   const found = findItem(project, itemId)
-  if (!found) return { ok: false }
+  if (!found || found.item.source.type === 'clip') return { ok: false }
   const r = resolveOne(project, found.track, found.trackIndex, found.item, timing)
   const length = r.shownEndMs - r.startMs
   const copy: TrackItem = {
@@ -619,7 +638,7 @@ export function setItemRepeat(project: Project, itemId: string, repeat: boolean,
   const n = neighbours(project, itemId, timing)
   if (!n) return project
   const { item, startMs: s } = n.self
-  if (item.still || item.repeat === repeat) return project
+  if (item.still || item.repeat === repeat || item.source.type === 'clip') return project
   let next: TrackItem
   if (repeat) {
     // Un efecto repite su fichero entero (así no hay que guardar la vuelta en memoria al guardar el vídeo).
@@ -728,7 +747,7 @@ export function attachedCounts(project: Project): Map<string, { sounds: number; 
   const map = new Map<string, { sounds: number; effects: number }>()
   for (const t of project.tracks) {
     for (const i of t.items) {
-      if (!i.anchor.clipId) continue
+      if (!i.anchor.clipId || i.source.type === 'clip') continue
       const c = map.get(i.anchor.clipId) ?? { sounds: 0, effects: 0 }
       if (t.kind === 'sound') c.sounds++
       else c.effects++

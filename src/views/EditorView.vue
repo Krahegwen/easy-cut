@@ -167,6 +167,18 @@ useShortcuts({
   shortcuts: () => [{ id: 'clip-fades-close', keys: ['Escape'], label: 'Esc', description: 'cerrar', run: () => (clipFadesOpen.value = false) }],
 })
 
+// ------------------------------------------------------------------ el vídeo del trozo, a una esquina
+
+/** Solo con imagen propia y la línea en el trozo. */
+const canCorner = computed(() => !!clip.value && clip.value.sourceHasVideo && !clipMissing.value && !!clipTimes.value && tracks.playheadMs.value >= clipTimes.value.start && tracks.playheadMs.value <= clipTimes.value.end)
+const cornerLabel = computed(() => (clip.value && tracks.cornerMove(clip.value.id) === 'to-full' ? 'Volver a pantalla completa aquí' : 'Llevar a una esquina aquí'))
+function cornerHere() {
+  const c = clip.value
+  if (!c) return
+  player.value?.pause()
+  void tracks.cornerHere(c.id)
+}
+
 // ------------------------------------------------------------------ marcas de tamaño y sitio
 
 function goMark(itemId: string, dir: -1 | 1) {
@@ -280,17 +292,23 @@ useShortcuts({
     const r = itemTimes.value
     const inside = !!r && at > r.startMs + 300 && at < r.shownEndMs - 300
     const tv = tracksView.value
-    // Con un sonido o un efecto elegido, sus teclas van antes que las del trozo.
+    // Con un sonido o un efecto elegido, sus teclas van antes que las del trozo. «El vídeo de este trozo» va con su
+    // trozo: ni se mueve, ni se recorta, ni se parte, ni se duplica, ni repite por su cuenta.
+    const own = !!it && it.item.source.type === 'clip'
+    const ownClipId = it && it.item.source.type === 'clip' ? it.item.source.clipId : null
     const itemKeys = it
       ? [
           { id: 'item-deselect', keys: ['Escape'], label: 'Esc', description: 'dejar de elegir el sonido o efecto', run: () => tracks.select(null), enabled: !playing.value },
           { id: 'item-remove', keys: ['Delete'], label: 'Supr', description: 'quitar el sonido o efecto elegido (se puede deshacer)', run: () => tracks.remove(it.item.id) },
-          { id: 'item-split', keys: ['p'], label: 'P', description: 'partir el elegido donde está la línea', run: () => tracks.split(it.item.id, at), enabled: inside },
-          { id: 'item-duplicate', keys: ['d'], label: 'D', description: 'duplicar el elegido (justo detrás)', run: () => tracks.duplicate(it.item.id) },
-          { id: 'item-move-here', keys: ['m'], label: 'M', description: 'que el elegido empiece donde está la línea', run: () => tracks.moveTo(it.item.id, at) },
-          { id: 'item-trim-start', keys: ['e'], label: 'E', description: 'que el elegido empiece en la línea (recorta o alarga por delante)', run: () => tracks.trimAt(it.item.id, 'start', at), enabled: !!r && at < r.endMs - 300 },
-          { id: 'item-trim-end', keys: ['t'], label: 'T', description: 'que el elegido termine en la línea', run: () => tracks.trimAt(it.item.id, 'end', at), enabled: !!r && at > r.startMs + 300 },
-          { id: 'item-repeat', keys: ['r'], label: 'R', description: 'repetir el elegido (o dejar de repetirlo)', run: () => tracks.setRepeat(it.item.id, !it.item.repeat), enabled: !it.item.still },
+          { id: 'item-split', keys: ['p'], label: 'P', description: 'partir el elegido donde está la línea', run: () => tracks.split(it.item.id, at), enabled: inside && !own },
+          { id: 'item-duplicate', keys: ['d'], label: 'D', description: 'duplicar el elegido (justo detrás)', run: () => tracks.duplicate(it.item.id), enabled: !own },
+          { id: 'item-move-here', keys: ['m'], label: 'M', description: 'que el elegido empiece donde está la línea', run: () => tracks.moveTo(it.item.id, at), enabled: !own },
+          { id: 'item-trim-start', keys: ['e'], label: 'E', description: 'que el elegido empiece en la línea (recorta o alarga por delante)', run: () => tracks.trimAt(it.item.id, 'start', at), enabled: !!r && at < r.endMs - 300 && !own },
+          { id: 'item-trim-end', keys: ['t'], label: 'T', description: 'que el elegido termine en la línea', run: () => tracks.trimAt(it.item.id, 'end', at), enabled: !!r && at > r.startMs + 300 && !own },
+          { id: 'item-repeat', keys: ['r'], label: 'R', description: 'repetir el elegido (o dejar de repetirlo)', run: () => tracks.setRepeat(it.item.id, !it.item.repeat), enabled: !it.item.still && !own },
+          ...(ownClipId
+            ? [{ id: 'item-corner', keys: ['q'], label: 'Q', description: 'llevar tu vídeo a una esquina en la línea (o volver a pantalla completa)', run: () => void tracks.cornerHere(ownClipId) }]
+            : []),
           { id: 'item-up', keys: ['ArrowUp'], label: '↑', description: 'pasar el elegido a la pista de arriba', run: () => tracks.moveToNeighbourTrack(it.item.id, -1) },
           { id: 'item-down', keys: ['ArrowDown'], label: '↓', description: 'pasar el elegido a la pista de abajo', run: () => tracks.moveToNeighbourTrack(it.item.id, 1) },
           // Marcas de tamaño y sitio (solo en los efectos).
@@ -312,6 +330,7 @@ useShortcuts({
             { id: 'clip-trim-start', keys: ['e'], label: 'E', description: 'que el trozo elegido empiece en la línea', run: clipStartHere, enabled: lineInClip.value },
             { id: 'clip-trim-end', keys: ['t'], label: 'T', description: 'que el trozo elegido termine en la línea', run: clipEndHere, enabled: lineInClip.value },
             { id: 'clip-split', keys: ['p'], label: 'P', description: 'partir el trozo elegido en la línea', run: clipSplitHere, enabled: lineInClip.value },
+            { id: 'clip-corner', keys: ['q'], label: 'Q', description: 'llevar el vídeo del trozo a una esquina en la línea (o volver a pantalla completa)', run: cornerHere, enabled: canCorner.value },
           ]
         : []
     return [
@@ -570,6 +589,20 @@ onBeforeUnmount(() => {
                 <KeyHint k="P" />
               </button>
             </div>
+            <button
+              v-if="clip.sourceHasVideo"
+              class="btn corner"
+              type="button"
+              :disabled="!canCorner"
+              :aria-label="cornerLabel"
+              :title="`${cornerLabel}: tu vídeo se encoge hasta la esquina (o vuelve a llenar la pantalla) desde donde está la línea, dejando ver el vídeo de detrás`"
+              data-testid="clip-corner"
+              @click="cornerHere"
+            >
+              <AppIcon :name="cornerLabel.startsWith('Volver') ? 'fullscreen' : 'corner'" />
+              <span class="txt corner-txt">{{ cornerLabel.startsWith('Volver') ? 'Pantalla completa' : 'A una esquina' }}</span>
+              <KeyHint k="Q" />
+            </button>
             <span class="spacer" />
             <button class="btn tail" type="button" data-testid="copy-clip" aria-label="Copiar este trozo" @click="copySelected">
               <AppIcon name="copy" />
@@ -942,6 +975,7 @@ onBeforeUnmount(() => {
   }
   .clip-actions .tail .txt,
   .clip-actions .fade-txt,
+  .clip-actions .corner-txt,
   .move-label {
     display: none;
   }
@@ -953,7 +987,8 @@ onBeforeUnmount(() => {
     gap: 6px;
   }
 }
-@container strip (max-width: 1220px) {
+/* Con «Aparecer» y «A una esquina» la barra no cabe entera a 1280 px: los textos se van antes. */
+@container strip (max-width: 1340px) {
   .clip-actions .txt {
     display: none;
   }

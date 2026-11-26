@@ -5,7 +5,13 @@
 //   «Aparecer» (dibujito de cada curva y tres duraciones), y medir en la vista previa (parada, en instantes de la
 //   curva) el volumen del <audio>, la transparencia del efecto y la capa negra y el volumen del trozo frente al
 //   mismo cálculo del dominio; guardar «Para WhatsApp» y medir en el fichero el brillo y el sonido del trozo.
-// - Movimiento («Tamaño y sitio» con marcas) y la esquina: ver más abajo (secciones B y C).
+// - Movimiento (B): poner una pegatina, marcar dos sitios (K y arrastrando en «Tamaño y sitio»), medir en la vista
+//   previa a mitad de camino, reproducir, J / L / N, arrastrar un rombo, «Cómo viaja», quitar marcas, F, partir
+//   con marcas, y medir en el fichero el camino de la estrella.
+// - La esquina (C): «Llevar a una esquina aquí» (Q) en un trozo sin nada detrás (se elige el fondo, un paso de
+//   deshacer), la vista previa a mitad del viaje y en la esquina, «Volver a pantalla completa aquí», «Tu vídeo» en
+//   su pista y su barra, copiar y pegar el trozo, el fichero guardado (dónde está en cada instante) y un vídeo de la
+//   versión de antes con la esquina que se abre igual.
 //
 // Capturas motion-*.png a 1280×800 y 1100×700 en test-output/screenshots/.
 //
@@ -55,10 +61,12 @@ mkdirSync(own, { recursive: true })
 const grey = join(own, 'Trozo gris con tono.mp4')
 const tone = join(own, 'Tono de prueba.m4a')
 const square = join(own, 'Cuadrado rojo.png')
+const blue = join(own, 'Fondo azul.mp4')
 const ff = (args) => execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', ...args])
 if (!existsSync(grey)) ff(['-f', 'lavfi', '-i', 'color=c=0xc8c8c8:size=1920x1080:rate=30:duration=10', '-f', 'lavfi', '-i', 'sine=frequency=330:sample_rate=48000:duration=10', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '256k', '-shortest', grey])
 if (!existsSync(tone)) ff(['-f', 'lavfi', '-i', 'sine=frequency=1000:sample_rate=48000:duration=6', '-c:a', 'aac', '-b:a', '192k', tone])
 if (!existsSync(square)) ff(['-f', 'lavfi', '-i', 'color=c=red:size=200x200', '-frames:v', '1', square])
+if (!existsSync(blue)) ff(['-f', 'lavfi', '-i', 'color=c=0x2040c0:size=1920x1080:rate=30:duration=30', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', blue])
 
 const outputFolder = join(homedir(), 'Videos', 'Mis montajes (pruebas)')
 const filesBefore = new Set(existsSync(outputFolder) ? readdirSync(outputFolder) : [])
@@ -570,6 +578,185 @@ try {
     check(`En el fichero (${v.width}×${v.height}): la estrella viaja por el mismo camino que en la vista previa (±2 % del marco)`, worst <= 0.02, `${rows.join(' · ')} · peor ${worst.toFixed(4)}`)
     await app.click('[data-testid=back-to-editor]')
     await waitScreen('editor')
+  }
+
+  // ============================================================ C. Tu vídeo a una esquina y de vuelta (en las pistas)
+
+  /** El <video> del trozo cuando va encima (el vídeo de este trozo): su rect en fracciones del marco. */
+  const ownVideoRect = () =>
+    app.evaluate(`const f = document.querySelector('[data-testid=preview-frame]').getBoundingClientRect();
+      const v = [...document.querySelectorAll('[data-testid=player] video.video:not(.cover)')].find((e) => !e.classList.contains('hidden') && e.dataset.clipVideo);
+      if (!v) return null; const r = v.getBoundingClientRect();
+      return { cx: (r.left + r.width / 2 - f.left) / f.width, cy: (r.top + r.height / 2 - f.top) / f.height, h: r.height / f.height, radius: parseFloat(getComputedStyle(v).borderTopLeftRadius) || 0, playing: v.videoWidth > 0, z: Number(getComputedStyle(v).zIndex) }`)
+  const ownLook = (clipIndex) => S('const c = store.project.value.clips[args.i]; const f = domain.findClipVideoItem(store.project.value, c.id); return f ? { id: f.item.id, track: f.track.id, look: f.item.look } : null', { i: clipIndex })
+  const ownWant = (clipIndex) =>
+    S(`const p = store.project.value; const c = p.clips[args.i]; const f = domain.findClipVideoItem(p, c.id); const s = domain.clipStartTimes(p)[args.i];
+      const t = Number(document.querySelector('[data-testid=player]').dataset.currentMs); return domain.boxAt(f.item.look, t - s)`, { i: clipIndex })
+  {
+    // Trozo 2 (el horizontal, de 10 a 20 s): con la línea a los 12 s, Q. Aún no tiene nada detrás: se elige.
+    const c2 = await app.center('[data-testid=clip-block-2]')
+    await app.clickAt(c2.x, c2.y)
+    await sleep(300)
+    await seekTo(12_000)
+    const label = await app.evaluate('return document.querySelector("[data-testid=clip-corner]").getAttribute("aria-label")')
+    check('En la barra del trozo: «Llevar a una esquina aquí» (Q)', label === 'Llevar a una esquina aquí', label)
+    await shot('motion-08-barra-trozo-esquina.png')
+    await queuePick([blue])
+    await app.key('q')
+    await app.waitFor('return !!window.__easyCut.domain.findClipVideoItem(window.__easyCut.store.project.value, window.__easyCut.store.project.value.clips[1].id)', { timeoutMs: 15_000, what: 'el vídeo del trozo en las pistas' })
+    await noErrorDialog('llevar a una esquina')
+    let own = await ownLook(1)
+    const pic = await S('return store.project.value.clips[1].picture')
+    check('Q sin nada detrás: se elige el vídeo de detrás y el trozo pasa a tener su vídeo encima, en una pista', pic.kind === 'cover' && pic.sourcePath === blue && !!own, JSON.stringify({ pic: pic.kind, own: own?.track }))
+    check('Dos marcas: en la línea a pantalla completa y, 0,8 s después, en la esquina', own.look.keyframes.length === 2 && Math.abs(own.look.keyframes[0].atMs - 2000) <= 60 && own.look.keyframes[0].box.scale === 1 && own.look.keyframes[1].box.scale === 0.28, JSON.stringify(own.look.keyframes.map((k) => [k.atMs, k.box.scale])))
+    const undoSteps = await S('return store.history.value.past.length')
+    await app.key('z', { ctrl: true })
+    const afterUndo = await S('return { pic: store.project.value.clips[1].picture.kind, own: !!domain.findClipVideoItem(store.project.value, store.project.value.clips[1].id) }')
+    check('Un solo paso de deshacer (vídeo de detrás y esquina a la vez)', afterUndo.pic === 'own' && !afterUndo.own, JSON.stringify(afterUndo))
+    await app.key('y', { ctrl: true })
+    check('Y rehacer lo vuelve a poner', (await S('return store.history.value.past.length')) === undoSteps && !!(await ownLook(1)))
+
+    // En la vista previa: a mitad del viaje, entre los dos; y luego en la esquina, con las esquinas redondeadas.
+    await seekTo(12_400)
+    await app.waitFor(`return [...document.querySelectorAll('[data-testid=player] video.video:not(.cover)')].some((e) => !e.classList.contains('hidden') && e.dataset.clipVideo && e.readyState >= 2) || null`, { timeoutMs: 10_000, what: 'vídeo del trozo encima' })
+    const mid = await ownVideoRect()
+    const midWant = await ownWant(1)
+    const midErr = Math.max(Math.abs(mid.cx - midWant.x), Math.abs(mid.cy - midWant.y), Math.abs(mid.h - midWant.scale))
+    check('Vista previa: a mitad del viaje está donde dice el dominio (±2 %), encogiéndose', midErr <= 0.02 && midWant.scale < 0.95 && midWant.scale > 0.3, `${mid.cx.toFixed(3)},${mid.cy.toFixed(3)} alto ${mid.h.toFixed(3)} / ${midWant.x.toFixed(3)},${midWant.y.toFixed(3)} ${midWant.scale.toFixed(3)}`)
+    await seekTo(14_000)
+    const inCorner = await ownVideoRect()
+    check('En la esquina: abajo a la derecha, pequeño, con las esquinas redondeadas y encima del fondo', Math.abs(inCorner.cx - 0.8375) < 0.02 && Math.abs(inCorner.cy - 0.82) < 0.02 && Math.abs(inCorner.h - 0.28) < 0.02 && inCorner.radius > 0 && inCorner.z > 0 && inCorner.playing, JSON.stringify(inCorner))
+    await shot('motion-09-en-la-esquina.png')
+
+    // Más adelante, «Volver a pantalla completa aquí» (con el botón).
+    const c2b = await app.center('[data-testid=clip-block-2]')
+    await app.clickAt(c2b.x, c2b.y)
+    await sleep(300)
+    await seekTo(16_000)
+    const label2 = await app.evaluate('return document.querySelector("[data-testid=clip-corner]").getAttribute("aria-label")')
+    check('Ya en la esquina, el botón dice «Volver a pantalla completa aquí»', label2 === 'Volver a pantalla completa aquí', label2)
+    await app.click('[data-testid=clip-corner]')
+    own = await ownLook(1)
+    check('Vuelve: cuatro marcas, la última a pantalla completa', own.look.keyframes.length === 4 && own.look.keyframes[3].box.scale === 1, JSON.stringify(own.look.keyframes.map((k) => [k.atMs, k.box.scale])))
+    await seekTo(17_500)
+    const full = await ownVideoRect()
+    check('Vista previa: otra vez a pantalla completa (sin esquinas redondeadas)', Math.abs(full.h - 1) < 0.02 && full.radius === 0, JSON.stringify(full))
+    const diamonds = await app.evaluate(`return document.querySelectorAll('[data-testid=track-item][data-item-id="${own.id}"] [data-testid=item-mark]').length`)
+    check('Sus marcas se ven en su pista, como las de una pegatina', diamonds === 4, `${diamonds} rombos`)
+    const badges = await app.evaluate('return document.querySelector("[data-testid=clip-block-2]").dataset.badges')
+    check('El trozo lo indica en la fila «Vídeo»', badges.includes('corner'), badges)
+
+    // Elegir «Tu vídeo» en su pista: lo que tiene sentido para él (sin partir, duplicar, mover ni recortar).
+    await selectItem(own.id)
+    const bar = await app.evaluate(`const b = document.querySelector('[data-testid=item-bar]'); return { name: b.querySelector('.name').textContent.trim(), corner: !!b.querySelector('[data-testid=item-corner]'), split: !!b.querySelector('[data-testid=item-split]'), dup: !!b.querySelector('[data-testid=item-duplicate]'), handles: document.querySelectorAll('[data-testid=track-item][data-item-id="${own.id}"] [data-testid^=item-handle]').length }`)
+    check('Su barra: «Tu vídeo (trozo 2)», con «A una esquina» y sin partir ni duplicar; su bloque, sin asas', bar.name === 'Tu vídeo (trozo 2)' && bar.corner && !bar.split && !bar.dup && bar.handles === 0, JSON.stringify(bar))
+    const keys = await app.evaluate('return window.__easyCut.shortcuts().filter((s) => s.enabled).map((s) => s.label)')
+    check('Y sus teclas: Q y las marcas sí; P, D, M, E, T y R no', keys.includes('Q') && keys.includes('K') && !keys.includes('P') && !keys.includes('D') && !keys.includes('M') && !keys.includes('R'), keys.join(' '))
+    for (const [w, h] of [[1280, 800], [1100, 700]]) {
+      await app.setViewport(w, h)
+      await sleep(400)
+      await barInOneLine('[data-testid=item-bar] .item-bar', `«Tu vídeo» elegido, ${w}×${h}`)
+      await visibleKeyHintsAreShortcuts(`«Tu vídeo» elegido, ${w}×${h}`)
+      await shot(`motion-10-tu-video-${w}.png`)
+    }
+    await app.setViewport(1280, 800)
+    // «Tamaño y sitio» también vale para él: con la línea en la esquina, arrastrar cambia esa marca.
+    await seekTo(14_500)
+    await app.click('[data-testid=item-box]')
+    await waitScreen('box-editor')
+    const before = (await ownLook(1)).look.keyframes.map((k) => k.box.x)
+    const bx = await app.center('[data-testid=box-editor]')
+    await app.drag({ x: bx.x, y: bx.y }, { x: bx.x - 120, y: bx.y - 60 }, 10)
+    const afterDrag = (await ownLook(1)).look
+    check('«Tamaño y sitio» de «Tu vídeo»: el recuadro sale en la vista previa y arrastrarlo pone una marca en ese instante', afterDrag.keyframes.length === 5 && afterDrag.keyframes.some((k) => Math.abs(k.atMs - 4500) <= 60 && k.box.x < 0.8), `${before.length} → ${afterDrag.keyframes.length}: ${JSON.stringify(afterDrag.keyframes.map((k) => [k.atMs, Number(k.box.x.toFixed(3))]))}`)
+    await shot('motion-10b-tu-video-tamano-y-sitio.png')
+    await app.key('z', { ctrl: true })
+    await app.key('Escape')
+    await app.key('Escape')
+
+    // Copiar y pegar el trozo se lleva su vídeo encima (es parte de cómo se ve).
+    await app.clickAt(c2b.x, c2b.y)
+    await sleep(200)
+    await app.key('c', { ctrl: true })
+    await app.key('v', { ctrl: true })
+    await sleep(400)
+    const pasted = await S('const p = store.project.value; return p.clips.length === 3 ? !!domain.findClipVideoItem(p, p.clips[2].id) : null')
+    check('Copiar y pegar el trozo pega también su vídeo encima, con sus marcas', pasted === true, String(pasted))
+    await app.key('z', { ctrl: true })
+  }
+
+  // --- Guardar y medir en el fichero dónde está el vídeo del trozo (lo que no es azul) en el viaje. El cuadrado rojo
+  // (a pantalla completa de 13 a 17 s, encima) se quita antes para que no tape la medida.
+  {
+    await S('tracks.remove(args.id); return true', { id: fxId })
+    await app.click('[data-testid=save-video]')
+    await waitScreen('save-view')
+    await app.click('[data-testid=preset-whatsapp]')
+    await app.waitFor('return !!document.querySelector("[data-testid=done-view]")', { timeoutMs: 180_000, what: 'vídeo con la esquina guardado' })
+    await noErrorDialog('guardar con la esquina')
+    const out = await S('return store.lastExport.value.path')
+    const notBlueBox = (ms) => {
+      const buf = execFileSync('ffmpeg', ['-v', 'error', '-ss', (ms / 1000).toFixed(3), '-i', out, '-frames:v', '1', '-vf', 'scale=640:360:flags=area,format=rgb24', '-f', 'rawvideo', '-'], { maxBuffer: 64 * 1024 * 1024 })
+      let minX = 640
+      let maxX = -1
+      let minY = 360
+      let maxY = -1
+      for (let y = 0; y < 360; y++)
+        for (let x = 0; x < 640; x++) {
+          const i = (y * 640 + x) * 3
+          const blueish = Math.abs(buf[i] - 0x20) < 30 && Math.abs(buf[i + 1] - 0x40) < 30 && Math.abs(buf[i + 2] - 0xc0) < 30
+          if (blueish) continue
+          minX = Math.min(minX, x)
+          maxX = Math.max(maxX, x)
+          minY = Math.min(minY, y)
+          maxY = Math.max(maxY, y)
+        }
+      return maxX < 0 ? null : { cx: (minX + maxX + 1) / 2 / 640, cy: (minY + maxY + 1) / 2 / 360, h: (maxY - minY + 1) / 360 }
+    }
+    const want = (t) => S('const p = store.project.value; const c = p.clips[1]; const f = domain.findClipVideoItem(p, c.id); const s = domain.clipStartTimes(p)[1]; return domain.boxAt(f.item.look, args.t - s)', { t })
+    const rows = []
+    let worst = 0
+    for (const t of [12_300, 12_500, 14_000, 16_500, 18_500]) {
+      const frameT = (Math.floor((t * 30) / 1000) * 1000) / 30
+      const got = notBlueBox(t)
+      const w = await want(frameT)
+      const err = got ? Math.max(Math.abs(got.cx - w.x), Math.abs(got.cy - w.y), Math.abs(got.h - w.scale)) : 1
+      worst = Math.max(worst, err)
+      rows.push(`${t} ms: ${got ? `${got.cx.toFixed(3)},${got.cy.toFixed(3)} alto ${got.h.toFixed(3)}` : '—'} / ${w.x.toFixed(3)},${w.y.toFixed(3)} ${w.scale.toFixed(3)}`)
+    }
+    check('En el fichero: el vídeo del trozo va a la esquina y vuelve por el mismo camino que en la vista previa (±2 %)', worst <= 0.02, `${rows.join(' · ')} · peor ${worst.toFixed(4)}`)
+    const pcm = ffprobe(out).streams.find((s) => s.codec_type === 'audio')
+    check('Y su sonido sigue saliendo del trozo (el guardado lleva audio)', !!pcm)
+    await app.click('[data-testid=back-to-editor]')
+    await waitScreen('editor')
+  }
+
+  // --- Abrir un vídeo guardado con la versión de antes, con la esquina: se ve igual (en las pistas).
+  {
+    const v4 = {
+      app: 'easy-cut',
+      version: 4,
+      name: 'Esquina de antes',
+      project: {
+        aspect: '16:9',
+        clips: [{ id: 'old', sourcePath: media.horizontal, sourceDurationMs: 10_000, sourceHasVideo: true, segments: [{ startMs: 0, endMs: 10_000 }], speed: 1, picture: { kind: 'cover', sourcePath: blue, sourceDurationMs: 30_000, startMs: 0, framing: { mode: 'fit-blur', zoom: 1, offsetX: 0, offsetY: 0 }, quarterTurns: 0, inset: { corner: 'top-left', size: 'medium' } } }],
+        media: [],
+      },
+    }
+    // Sin ningún diálogo: el JSON de la versión 4 se escribe tal cual como un vídeo de la lista (write_project, por
+    // id) y se abre con openProject, que lo lee y lo convierte como cualquier vídeo de antes. (Una prueba nunca
+    // puede abrir un diálogo nativo: CDP no lo cierra y roba el foco.)
+    const opened = await S(`const id = 'esquina-de-antes-e2e'; await window.__easyCut.bridge.writeProject(id, args.json);
+      return await store.openProject(id)`, { json: JSON.stringify(v4) })
+    await waitScreen('editor')
+    const tracksNow = await S('return store.project.value.tracks.map((t) => ({ name: t.name, items: t.items.map((i) => ({ type: i.source.type, box: i.look?.box, rounded: i.look?.rounded })) }))')
+    check('Un vídeo de la versión de antes con la esquina se abre con su vídeo en una pista («Tu vídeo en la esquina»)', opened === true && tracksNow.length === 1 && tracksNow[0].items[0].type === 'clip' && tracksNow[0].items[0].rounded, JSON.stringify(tracksNow))
+    await seekTo(3000)
+    await app.waitFor(`return [...document.querySelectorAll('[data-testid=player] video.video:not(.cover)')].some((e) => !e.classList.contains('hidden') && e.dataset.clipVideo && e.readyState >= 2) || null`, { timeoutMs: 10_000, what: 'vídeo del trozo encima' })
+    const r = await ownVideoRect()
+    // La esquina de antes: arriba a la izquierda, mediana (40 % del alto), a 4 % del alto de los bordes.
+    check('Y se ve donde se veía: arriba a la izquierda, mediano, con las esquinas redondeadas', Math.abs(r.cx - (0.0225 + 0.2)) < 0.02 && Math.abs(r.cy - (0.04 + 0.2)) < 0.02 && Math.abs(r.h - 0.4) < 0.02 && r.radius > 0, JSON.stringify(r))
+    await shot('motion-11-esquina-de-antes.png')
   }
 } catch (e) {
   check('La prueba ha llegado al final', false, e instanceof Error ? e.stack ?? e.message : String(e))

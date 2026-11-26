@@ -7,7 +7,10 @@
 // Lo que se ve lo decide la imagen del trozo: su vídeo; el fondo liso con «Solo se oye» (el <video> sigue
 // sonando, escondido; también reproduce sin problema un fichero de solo sonido); u otro vídeo encima en un
 // segundo <video> silenciado que sigue el tiempo de salida del trozo (se recoloca si se separa más de
-// 150 ms y se queda en su última imagen si se acaba), con el vídeo del trozo en pequeño en una esquina.
+// 150 ms y se queda en su última imagen si se acaba). Si el trozo lleva «el vídeo de este trozo» en una pista de
+// efectos (en una esquina, o yendo y viniendo de ella con marcas), es su propio <video> el que se coloca encima con
+// el sitio y el tamaño de cada instante (boxAt, transform) entre las capas de las pistas (z-index): así va siempre
+// a la vez que su sonido, porque es el mismo elemento que marca el reloj del montaje.
 //
 // Pantalla completa (`fullscreenable`): la raíz del propio reproductor pasa a la capa superior del navegador con
 // la Popover API (`popover="manual"` + `showPopover()`), sin moverla en el DOM. Así no se vuelve a montar nada
@@ -26,7 +29,11 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   buildPlaybackPlan,
   clipOutputAt,
+  boxAt,
   clipShowsOwnVideo,
+  cornerRadius,
+  findClipVideoItem,
+  FULL_FRAME_SCALE,
   clipStartTimes,
   computeFramingLayout,
   clipOutputMs,
@@ -39,7 +46,6 @@ import {
   formatClock,
   formatReviewRate,
   hasReachedSpanEnd,
-  insetRect,
   locatePlayback,
   mediaRate,
   normalizeReviewRate,
@@ -140,9 +146,22 @@ function coverOf(clip: Clip | null): CoverPicture | null {
   return clip && clip.picture.kind === 'cover' ? clip.picture : null
 }
 
-/** ¿Se enseña el vídeo del propio trozo (entero o en la esquina)? */
+/** «El vídeo de este trozo» en una pista de efectos que se ve (con otro vídeo de fondo en el trozo). */
+function clipVideoOf(clip: Clip) {
+  if (clip.picture.kind !== 'cover' || !clip.sourceHasVideo) return null
+  const found = findClipVideoItem(props.project, clip.id)
+  return found && !found.track.hidden && found.item.look ? found : null
+}
+
+/** ¿Se enseña el vídeo del propio trozo (entero, o encima en una pista)? */
 function showsOwn(clip: Clip): boolean {
-  return clipShowsOwnVideo(clip) && !!mediaOf(clip.sourcePath)?.hasVideo
+  return (clipShowsOwnVideo(clip) || !!clipVideoOf(clip)) && !!mediaOf(clip.sourcePath)?.hasVideo
+}
+
+/** Capa de una pista de efectos (la de más abajo, 1): el orden de apilado con los efectos (z-index). */
+function effectLayer(trackId: string): number {
+  const order = props.project.tracks.filter((t) => t.kind === 'effect').map((t) => t.id)
+  return order.length - order.indexOf(trackId)
 }
 
 const activeKind = computed<'own' | 'none' | 'cover' | null>(() => {
@@ -177,26 +196,39 @@ function placed(l: FramingLayout) {
   }
 }
 
-/** Estilo del <video> del trozo: entero, en la esquina o escondido (pero sonando). */
+/**
+ * Estilo del <video> del trozo: entero, encima en una pista (el vídeo de este trozo) o escondido (pero sonando).
+ * Encima: un recuadro con la forma del marco que lo llena recortando al centro (object-fit: cover, como al
+ * guardar), llevado a su sitio y tamaño de este instante con transform; las esquinas redondeadas (el radio se
+ * divide por el tamaño, que el transform lo multiplica); oscurecido con el trozo si aparece o desaparece.
+ */
 function videoStyle(clip: Clip) {
-  const cover = coverOf(clip)
-  if (cover && cover.inset && showsOwn(clip) && frame.value.width > 0) {
-    // En la esquina: recorte centrado con la forma del vídeo (aproximado; lo guardado es exacto).
-    const r = insetRect(cover.inset, frame.value.width, frame.value.height)
+  const cv = clipVideoOf(clip)
+  if (cv && showsOwn(clip) && frame.value.width > 0) {
+    const W = frame.value.width
+    const H = frame.value.height
+    const look = cv.item.look!
+    const index = props.project.clips.indexOf(clip)
+    const local = clip.id === activeClip.value?.id ? clipOutputAt(props.project, index, currentMs.value) : 0
+    const box = boxAt(look, local)
     const odd = clip.quarterTurns % 2 === 1
-    const w = odd ? r.height : r.width
-    const h = odd ? r.width : r.height
+    const w = odd ? H : W
+    const h = odd ? W : H
+    const radius = box.scale < FULL_FRAME_SCALE ? cornerRadius(look, W, H) / Math.max(0.01, box.scale) : 0
     return {
       width: `${w}px`,
       height: `${h}px`,
-      left: `${r.left + r.width / 2 - w / 2}px`,
-      top: `${r.top + r.height / 2 - h / 2}px`,
-      transform: clip.quarterTurns ? `rotate(${clip.quarterTurns * 90}deg)` : undefined,
+      left: `${W / 2 - w / 2}px`,
+      top: `${H / 2 - h / 2}px`,
+      transform: `translate(${(box.x - 0.5) * W}px, ${(box.y - 0.5) * H}px) scale(${box.scale})${clip.quarterTurns ? ` rotate(${clip.quarterTurns * 90}deg)` : ''}`,
+      transformOrigin: 'center',
       objectFit: 'cover' as const,
-      borderRadius: `${r.radius}px`,
+      borderRadius: `${radius}px`,
+      zIndex: String(10 + effectLayer(cv.track.id)),
+      filter: clipFade.value < 0.999 && clip.id === activeClip.value?.id ? `brightness(${clipFade.value})` : undefined,
     }
   }
-  if (!cover) {
+  if (!coverOf(clip)) {
     const l = layoutFor(clip)
     if (l) return placed(l)
   }
@@ -204,8 +236,7 @@ function videoStyle(clip: Clip) {
 }
 
 function videoVisible(clip: Clip): boolean {
-  if (clip.id !== activeClip.value?.id || !showsOwn(clip)) return false
-  return clip.picture.kind === 'own' || !!coverOf(clip)?.inset
+  return clip.id === activeClip.value?.id && showsOwn(clip)
 }
 
 function coverStyle(clip: Clip) {
@@ -911,7 +942,8 @@ defineExpose({
           :key="clip.id"
           :ref="(el) => register(clip.id, el)"
           class="video"
-          :class="{ hidden: !videoVisible(clip), inset: clip.picture.kind === 'cover' }"
+          :class="{ hidden: !videoVisible(clip), inset: !!clipVideoOf(clip) }"
+          :data-clip-video="clipVideoOf(clip)?.item.id ?? ''"
           :src="store.mediaSrc(clip.sourcePath)"
           :style="videoStyle(clip)"
           preload="auto"
@@ -941,7 +973,7 @@ defineExpose({
           <span class="spinner" />
           Preparando la vista previa…
         </div>
-        <slot name="overlay" />
+        <div class="overlay-layer"><slot name="overlay" /></div>
       </div>
     </div>
     <div class="controls">
@@ -1054,6 +1086,15 @@ defineExpose({
   transform-origin: 50% 50%;
   pointer-events: none;
 }
+.overlay-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+}
+.overlay-layer > :deep(*) {
+  pointer-events: auto;
+}
 .clip-fade {
   position: absolute;
   inset: 0;
@@ -1061,7 +1102,8 @@ defineExpose({
   pointer-events: none;
 }
 .video.inset {
-  box-shadow: 0 2px 12px rgb(0 0 0 / 0.45);
+  /* Encima, como al guardar: sin sombra (el fichero no la lleva). */
+  box-shadow: none;
 }
 .video.hidden {
   visibility: hidden;
@@ -1104,6 +1146,7 @@ defineExpose({
 }
 .empty {
   position: absolute;
+  z-index: 50;
   inset: 0;
   display: grid;
   place-items: center;
@@ -1112,6 +1155,7 @@ defineExpose({
 }
 .notice {
   position: absolute;
+  z-index: 50;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
@@ -1186,6 +1230,7 @@ defineExpose({
 /* «Repasar más rápido»: aviso visible mientras dura, para no confundirlo con la velocidad de un trozo. */
 .review-notice {
   position: absolute;
+  z-index: 50;
   left: 50%;
   bottom: 12px;
   transform: translateX(-50%);

@@ -2,7 +2,9 @@
 import { describe, expect, it } from 'vitest'
 import { buildExportCommand, buildSoundExportCommand, coverSeekMs, roundedMaskExpression, soundSampleCount } from './ffmpeg-args'
 import { buildOutputFileName, isAudioPath, isMediaPath, isVideoPath } from './file-name'
-import { dominantAspect, insetRect, PLAIN_BACKGROUND_HEX } from './layout'
+import { dominantAspect, PLAIN_BACKGROUND_HEX } from './layout'
+import { legacyInsetBox } from './project'
+import { putClipVideo } from './corner'
 import { computeOutputSpec, estimateSoundSizeBytes, visibleMedia } from './output'
 import { buildPlaybackPlan, clipOutputAt, coverNeedsResync, coverTimeAt, previewPicture } from './playback'
 import {
@@ -22,7 +24,6 @@ import {
   setCover,
   setCoverFraming,
   setCoverStart,
-  setInset,
   setPicture,
   setSpeed,
   splitClip,
@@ -71,7 +72,8 @@ describe('modelo de la imagen', () => {
   it('poner otro vídeo encima, empezar en…, encuadre, esquina y quitarlo', () => {
     let p = addClip(createProject(), createClip(hd, 'a'))
     p = setCover(p, 'a', vertical, 1000)
-    expect(cover(p, 'a')).toMatchObject({ sourcePath: vertical.path, sourceDurationMs: 8000, startMs: 1000, inset: null, quarterTurns: 0 })
+    expect(cover(p, 'a')).toMatchObject({ sourcePath: vertical.path, sourceDurationMs: 8000, startMs: 1000, quarterTurns: 0 })
+    expect('inset' in cover(p, 'a')).toBe(false)
     expect(clipPaths(findClip(p, 'a')!)).toEqual([hd.path, vertical.path])
     // «Empieza en…» no pasa del final menos medio segundo.
     p = setCoverStart(p, 'a', 99_000)
@@ -80,20 +82,18 @@ describe('modelo de la imagen', () => {
     expect(cover(p, 'a').startMs).toBe(0)
     p = setCoverFraming(p, 'a', { mode: 'fill' })
     expect(cover(p, 'a').framing.mode).toBe('fill')
-    p = setInset(p, 'a', { corner: 'bottom-right', size: 'small' })
-    expect(clipShowsOwnVideo(findClip(p, 'a')!)).toBe(true)
-    // Cambiarlo por otro conserva la esquina.
+    // Con otro vídeo encima, su propio vídeo ya no es la imagen del trozo (en una esquina, va en las pistas).
+    expect(clipShowsOwnVideo(findClip(p, 'a')!)).toBe(false)
     p = setCover(p, 'a', shortCover)
-    expect(cover(p, 'a').inset).toEqual({ corner: 'bottom-right', size: 'small' })
+    expect(cover(p, 'a').sourcePath).toBe(shortCover.path)
     p = removeCover(p, 'a')
     expect(findClip(p, 'a')!.picture).toEqual({ kind: 'own' })
   })
 
-  it('la esquina solo vale si el trozo tiene imagen propia', () => {
+  it('«el vídeo de este trozo» solo vale si el trozo tiene imagen propia', () => {
     let p = addClip(createProject(), createClip(voice, 's'))
     p = setCover(p, 's', hd)
-    p = setInset(p, 's', { corner: 'top-left', size: 'medium' })
-    expect(cover(p, 's').inset).toBeNull()
+    expect(putClipVideo(p, 's', legacyInsetBox({ corner: 'top-left', size: 'medium' }, '16:9'), { itemId: 'v', trackId: 't' })).toBe(p)
     expect(findClip(removeCover(p, 's'), 's')!.picture).toEqual({ kind: 'none' })
   })
 
@@ -164,7 +164,7 @@ describe('migración y lectura', () => {
     let p = addClip(createProject(), createClip(voice, 's'))
     p = addClip(p, createClip(hd, 'a'))
     p = setCover(p, 'a', vertical, 1200)
-    p = setInset(p, 'a', { corner: 'top-right', size: 'medium' })
+    p = putClipVideo(p, 'a', legacyInsetBox({ corner: 'top-right', size: 'medium' }, '16:9'), { itemId: 'v', trackId: 't' })
     p = addClip(p, createClip(hd, 'b'))
     p = setPicture(p, 'b', { kind: 'none' })
     expect(parseProject(serializeProject(p))).toEqual(syncMediaPool(p))
@@ -186,7 +186,9 @@ describe('migración y lectura', () => {
     const p = parseProject(json)
     expect(p.clips[0]!.picture).toEqual({ kind: 'own' })
     expect(p.clips[1]!.picture).toEqual({ kind: 'none' })
-    expect(p.clips[2]!.picture).toMatchObject({ kind: 'cover', startMs: 4000, inset: null })
+    expect(p.clips[2]!.picture).toMatchObject({ kind: 'cover', startMs: 4000 })
+    // La esquina de un sonido (sin imagen propia) no se convierte en nada.
+    expect(p.tracks).toEqual([])
   })
 })
 
@@ -204,7 +206,7 @@ describe('vista previa', () => {
     const c = cover(p, 's')
     expect(coverTimeAt(c, t)).toBe(2000)
     expect(coverTimeAt(c, 5000)).toBe(3000)
-    expect(previewPicture(findClip(p, 's')!, 1000)).toEqual({ kind: 'cover', path: shortCover.path, timeMs: 2000, frozen: false, inset: null })
+    expect(previewPicture(findClip(p, 's')!, 1000)).toEqual({ kind: 'cover', path: shortCover.path, timeMs: 2000, frozen: false })
     expect(previewPicture(findClip(p, 's')!, 2500)).toMatchObject({ timeMs: 3000, frozen: true })
     expect(previewPicture(findClip(p, 'a')!, 0)).toEqual({ kind: 'own' })
     // Si el vídeo de encima no está en el disco, se enseña lo de serie.
@@ -216,14 +218,20 @@ describe('vista previa', () => {
     expect(coverNeedsResync(1000, 1200)).toBe(true)
   })
 
-  it('la esquina en pantalla y en ffmpeg (pares) caen en el mismo sitio', () => {
-    const screen = insetRect({ corner: 'bottom-right', size: 'small' }, 640, 360)
-    expect(screen.width).toBeCloseTo(640 * 0.28)
-    expect(screen.left + screen.width).toBeCloseTo(640 - 360 * 0.04)
-    const ff = insetRect({ corner: 'bottom-right', size: 'small' }, 1280, 720, true)
-    expect(ff).toEqual({ left: 1280 - 358 - 28, top: 720 - 202 - 28, width: 358, height: 202, radius: 16 })
-    const tl = insetRect({ corner: 'top-left', size: 'medium' }, 1280, 720, true)
-    expect([tl.left, tl.top, tl.width, tl.height]).toEqual([28, 28, 512, 288])
+  it('la esquina de antes, como centro y tamaño relativos al marco (horizontal, vertical y cuadrado)', () => {
+    // Horizontal: el margen (4 % del alto) es el 2,25 % del ancho.
+    const br = legacyInsetBox({ corner: 'bottom-right', size: 'small' }, '16:9')
+    expect(br.scale).toBe(0.28)
+    expect(br.x).toBeCloseTo(1 - 0.0225 - 0.14)
+    expect(br.y).toBeCloseTo(1 - 0.04 - 0.14)
+    // En píxeles de 1280×720: el recuadro de antes (left 894, top 490, 358×202) con ±1 px.
+    expect(1280 * br.x - (1280 * 0.28) / 2).toBeCloseTo(894, -0.5)
+    expect(720 * br.y - (720 * 0.28) / 2).toBeCloseTo(490, -0.5)
+    const tl = legacyInsetBox({ corner: 'top-left', size: 'medium' }, '9:16')
+    expect(tl.x).toBeCloseTo(0.04 + 0.2)
+    expect(tl.y).toBeCloseTo(0.0225 + 0.2)
+    const sq = legacyInsetBox({ corner: 'top-right', size: 'small' }, '1:1')
+    expect([sq.x, sq.y]).toEqual([1 - 0.04 - 0.14, 0.04 + 0.14].map((v) => expect.closeTo(v, 9)))
   })
 })
 
@@ -305,18 +313,20 @@ describe('ffmpeg según la imagen', () => {
     expect(fill).toContain('scale=1920:3414')
   })
 
-  it('vídeo de encima + yo en la esquina: recorte centrado, máscara redondeada y overlay en su sitio', () => {
+  it('vídeo de encima + su propio vídeo en la esquina (en las pistas): sus fotogramas, recorte, overlay y esquinas', () => {
     let p = addClip(createProject(), createClip(hd, 'a'))
     p = setSpeed(p, 'a', 2)
     p = setCover(p, 'a', shortCover)
-    p = setInset(p, 'a', { corner: 'bottom-right', size: 'small' })
+    p = putClipVideo(p, 'a', legacyInsetBox({ corner: 'bottom-right', size: 'small' }, '16:9'), { itemId: 'v', trackId: 't' })
     const fc = buildExportCommand(p, media, 'whatsapp', 'libx264', 'o.mp4').filterComplex
-    expect(fc).toContain('[0:v:0]setpts=PTS-STARTPTS[v0seg]')
-    expect(fc).toContain('[v0seg]setpts=(PTS-STARTPTS)/2,fps=30,tpad=stop_mode=clone:stop=30,trim=end_frame=150,scale=358:202:force_original_aspect_ratio=increase:')
-    expect(fc).toContain('crop=358:202,setsar=1,format=yuva420p[v0inset]')
-    expect(fc).toContain(`geq=lum='${roundedMaskExpression(16)}',loop=loop=-1:size=1,trim=end_frame=150`)
-    expect(fc).toContain('[v0inset][v0mask]alphamerge[v0insetround]')
-    expect(fc).toContain('[v0base][v0insetround]overlay=x=894:y=490:shortest=1')
+    // Su vídeo, a ×2 y con los fotogramas del trozo, recortado con la forma del marco.
+    expect(fc).toContain('[0:v:0]setpts=PTS-STARTPTS[cv0seg]')
+    expect(fc).toContain('[cv0seg]setpts=(PTS-STARTPTS)/2,fps=30,tpad=stop_mode=clone:stop=30,trim=end_frame=150,crop=1920:1080,setsar=1,format=yuv420p[cv0]')
+    // En su sitio (el de antes con ±1 px: 894,490 358×202) y con las esquinas de 16 px.
+    expect(fc).toContain('[cv0]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=150,trim=end_frame=150,scale=358:202:flags=bicubic,format=gbrap')
+    expect(fc).toMatch(/overlay=x=89[34]:y=4(89|90):format=gbrp/)
+    expect(fc).toContain('crop=16:16:')
+    expect(fc).toContain('alphamerge')
     expect(fc).toContain('[1:v:0]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=150,trim=end_frame=150')
   })
 

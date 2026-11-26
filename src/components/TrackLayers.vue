@@ -83,14 +83,15 @@ const selectedEffect = computed<ResolvedItem | null>(() => {
   const id = selectedId.value
   if (!id) return null
   const timing = projectTiming(props.project)
-  return resolveTracks(props.project, timing).find((r) => r.item.id === id && r.track.kind === 'effect' && pathOf(r.item) !== null) ?? null
+  // «El vídeo de este trozo» también se coloca aquí (lo pinta el reproductor, pero el recuadro es el mismo).
+  return resolveTracks(props.project, timing).find((r) => r.item.id === id && r.track.kind === 'effect' && (pathOf(r.item) !== null || r.item.source.type === 'clip')) ?? null
 })
 
 const effects = computed(() => {
   const t = coarseMs.value
   const list = resolved.value.filter((r) => r.track.kind === 'effect' && r.startMs <= t + 2000 && r.shownEndMs > t - 250).slice(0, EFFECT_POOL)
   const sel = selectedEffect.value
-  if (editingBox.value && sel && !list.some((r) => r.item.id === sel.item.id)) list.push(sel)
+  if (editingBox.value && sel && sel.item.source.type !== 'clip' && !list.some((r) => r.item.id === sel.item.id)) list.push(sel)
   // De abajo arriba: la primera pista de efectos es la de encima.
   const order = props.project.tracks.filter((x) => x.kind === 'effect').map((x) => x.id)
   return list.sort((a, b) => order.indexOf(b.track.id) - order.indexOf(a.track.id))
@@ -116,6 +117,8 @@ function srcOf(item: TrackItem): string {
 }
 
 function mediaSize(item: TrackItem): { width: number; height: number } {
+  // El vídeo de un trozo tiene la forma del marco (se recorta al centro).
+  if (item.source.type === 'clip') return { width: props.frameWidth, height: props.frameHeight }
   const p = pathOf(item)
   const m = p ? store.media.value[p] : null
   return { width: m?.width ?? 0, height: m?.height ?? 0 }
@@ -139,6 +142,12 @@ function rectStyle(item: TrackItem, look: EffectLook, box: EffectBox) {
   }
 }
 
+/** Capa de una pista de efectos (la de más abajo, 1), como en el reproductor. */
+function layerOf(trackId: string): number {
+  const order = props.project.tracks.filter((t) => t.kind === 'effect').map((t) => t.id)
+  return order.length - order.indexOf(trackId)
+}
+
 /** Instante del elemento que se enseña: el de la línea; en «Tamaño y sitio», sujeto a su tramo. */
 function localOf(r: ResolvedItem): number {
   return Math.min(Math.max(0, props.currentMs - r.startMs), Math.max(0, r.shownEndMs - r.startMs))
@@ -156,6 +165,8 @@ function effectStyle(r: ResolvedItem) {
   const fade = isActive(r, t) ? itemFadeAt(r.item, t - r.startMs, r.shownEndMs - r.startMs) : 1
   return {
     ...rectStyle(r.item, look, boxAt(look, localOf(r))),
+    // Entre las capas de las pistas (el vídeo de un trozo encima, del reproductor, va en la suya).
+    zIndex: String(10 + layerOf(r.track.id)),
     mixBlendMode: look.mix === 'light' ? ('screen' as const) : ('normal' as const),
     opacity: String(active ? look.opacity * fade : 0),
     visibility: active ? ('visible' as const) : ('hidden' as const),
@@ -261,7 +272,7 @@ const tryingEl = ref<HTMLVideoElement | null>(null)
 const trying = computed(() => tracks.trying.value)
 const tryingLook = computed<EffectLook>(() => {
   const d = trying.value?.asset.defaults.look
-  return { mix: d?.mix ?? 'normal', opacity: d?.opacity ?? 1, fit: d?.fit ?? 'cover', box: { x: 0.5, y: 0.5, scale: 1, ...d?.box }, keyframes: [] }
+  return { mix: d?.mix ?? 'normal', opacity: d?.opacity ?? 1, fit: d?.fit ?? 'cover', box: { x: 0.5, y: 0.5, scale: 1, ...d?.box }, keyframes: [], rounded: false }
 })
 const tryingStyle = computed(() => {
   const t = trying.value
@@ -490,7 +501,7 @@ function lengthOf(r: ResolvedItem): number {
   line-height: 18px;
   text-align: center;
   pointer-events: none;
-  z-index: 1;
+  z-index: 41;
 }
 .mark-dot.here {
   background: var(--accent);
@@ -498,6 +509,7 @@ function lengthOf(r: ResolvedItem): number {
 }
 .box-editor {
   position: absolute;
+  z-index: 40;
   outline: 2px dashed #fff;
   box-shadow:
     0 0 0 1px rgb(0 0 0 / 0.6),

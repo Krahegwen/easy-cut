@@ -122,9 +122,11 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
     // Todos los originales tienen que seguir ahí (los vídeos de encima solo si se guarda un vídeo), también
     // los sonidos y efectos de las pistas que suenan o se ven.
     const itemPath = request.itemPath ?? ((i: TrackItem) => (i.source.type === 'file' ? i.source.path : null))
+    // «El vídeo de este trozo» no es un fichero aparte: es el original de su trozo, que ya se comprueba.
     const trackPaths = project.tracks
       .filter((t) => !(t.kind === 'sound' ? t.muted : t.hidden))
       .flatMap((t) => t.items)
+      .filter((i) => i.source.type !== 'clip')
       .map((i) => itemPath(i))
     if (trackPaths.some((p) => p === null)) {
       throw new ExportError('Falta por descargar algo de la biblioteca. Mira si hay conexión a internet y vuelve a probar.', 'elemento de la biblioteca sin fichero')

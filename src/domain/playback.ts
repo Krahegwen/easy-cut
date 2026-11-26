@@ -138,7 +138,7 @@ export function coverNeedsResync(actualMs: number, expectedMs: number): boolean 
 export type PreviewPicture =
   | { kind: 'own' }
   | { kind: 'none' }
-  | { kind: 'cover'; path: string; timeMs: number; frozen: boolean; inset: CoverPicture['inset'] }
+  | { kind: 'cover'; path: string; timeMs: number; frozen: boolean }
 
 /**
  * Qué enseña la vista previa del trozo a los `clipOutMs` ms de su salida. Si el vídeo de encima no está
@@ -147,7 +147,7 @@ export type PreviewPicture =
 export function previewPicture(clip: Clip, clipOutMs: number, coverAvailable = true): PreviewPicture {
   const p = clip.picture
   if (p.kind === 'cover' && coverAvailable) {
-    return { kind: 'cover', path: p.sourcePath, timeMs: coverTimeAt(p, clipOutMs), frozen: coverIsFrozen(p, clipOutMs), inset: p.inset }
+    return { kind: 'cover', path: p.sourcePath, timeMs: coverTimeAt(p, clipOutMs), frozen: coverIsFrozen(p, clipOutMs) }
   }
   if (p.kind === 'none' || !clip.sourceHasVideo) return { kind: 'none' }
   return { kind: 'own' }

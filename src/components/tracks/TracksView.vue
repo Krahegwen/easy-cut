@@ -20,6 +20,7 @@ import {
   snapPoints,
   snapTime,
   visibleMarks,
+  findClipVideoItem,
   type BoxKeyframe,
   type Clip,
   type ResolvedItem,
@@ -184,10 +185,10 @@ function clipPicture(c: Clip): ClipPicture {
   if (c.picture.kind === 'cover') return store.coverMissing(c) ? 'cover-lost' : 'cover'
   return c.picture.kind === 'none' || !c.sourceHasVideo ? 'sound' : 'own'
 }
-type BadgeId = 'speed' | 'mute' | 'pauses' | 'cover' | 'sound' | 'attached' | 'fades'
+type BadgeId = 'speed' | 'mute' | 'pauses' | 'cover' | 'sound' | 'attached' | 'fades' | 'corner'
 interface Badge {
   id: BadgeId
-  icon: 'speed' | 'mute' | 'pauses' | 'cover-video' | 'wave' | 'tracks' | 'fade-in'
+  icon: 'speed' | 'mute' | 'pauses' | 'cover-video' | 'wave' | 'tracks' | 'fade-in' | 'corner' | 'motion'
   text: string
 }
 const attached = computed(() => attachedCounts(project.value))
@@ -200,6 +201,11 @@ function clipBadges(c: Clip): Badge[] {
   const pic = clipPicture(c)
   if (pic === 'cover') out.push({ id: 'cover', icon: 'cover-video', text: 'Vídeo encima' })
   if (pic === 'sound') out.push({ id: 'sound', icon: 'wave', text: 'Solo se oye' })
+  const own = findClipVideoItem(project.value, c.id)
+  if (own?.item.look) {
+    const moves = own.item.look.keyframes.length >= 2
+    out.push({ id: 'corner', icon: moves ? 'motion' : 'corner', text: moves ? 'Su vídeo va y viene de una esquina' : 'Su vídeo encima, en una pista' })
+  }
   if (c.fadeInMs > 0 || c.fadeOutMs > 0) {
     const text = c.fadeInMs > 0 && c.fadeOutMs > 0 ? 'Aparece y desaparece poco a poco' : c.fadeInMs > 0 ? 'Aparece poco a poco' : 'Desaparece poco a poco'
     out.push({ id: 'fades', icon: 'fade-in', text })
@@ -349,6 +355,8 @@ function itemDown(r: ResolvedItem, mode: DragMode, e: PointerEvent) {
   if (e.button !== 0) return
   e.stopPropagation()
   tracks.select(r.item.id)
+  // «El vídeo de este trozo» va con su trozo: se elige, pero no se arrastra.
+  if (r.item.source.type === 'clip') return
   dragState.value = { id: r.item.id, mode, startX: e.clientX, startY: e.clientY, origStart: r.startMs, origEnd: r.endMs, trackId: r.track.id, active: false, fits: true }
   window.addEventListener('pointermove', itemMove)
   window.addEventListener('pointerup', itemUp)
@@ -495,7 +503,17 @@ function waveStyle(r: ResolvedItem) {
   return { backgroundImage: `url("${url}")`, backgroundSize: `${full}px 100%`, backgroundPositionX: `${-x(item.inMs)}px`, backgroundRepeat: 'no-repeat' }
 }
 function effectThumbPath(r: ResolvedItem): string | null {
+  if (r.item.source.type === 'clip') {
+    const clipId = r.item.source.clipId
+    return project.value.clips.find((c) => c.id === clipId)?.sourcePath ?? null
+  }
   return library.itemPath(r.item)
+}
+/** El nombre de un elemento en su bloque: «Tu vídeo (trozo 2)» para el vídeo de un trozo. */
+function itemLabel(r: ResolvedItem): string {
+  if (r.item.source.type !== 'clip') return r.item.name
+  const clipId = r.item.source.clipId
+  return `Tu vídeo (trozo ${project.value.clips.findIndex((c) => c.id === clipId) + 1})`
 }
 
 const lostPaths = computed(() => new Set(store.missingItems.value.map((i) => i.id)))
@@ -576,13 +594,15 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
               </span>
               <span class="label">
                 <AppIcon v-if="r.item.repeat" name="repeat" :size="15" />
-                {{ r.item.name }}
+                {{ itemLabel(r) }}
               </span>
               <span v-if="r.item.fadeInMs" class="fade in" :style="{ width: fadeWidth(r.item.fadeInMs) }" />
               <span v-if="r.item.fadeOutMs" class="fade out" :style="{ width: fadeWidth(r.item.fadeOutMs) }" />
               <span v-if="overflowStyle(r)" class="overflow" :style="overflowStyle(r)!" title="Esto pasa del final del vídeo: se corta al guardar" />
-              <span class="handle start" data-testid="item-handle-start" @pointerdown="itemDown(r, 'start', $event)" />
-              <span class="handle end" data-testid="item-handle-end" @pointerdown="itemDown(r, 'end', $event)" />
+              <template v-if="r.item.source.type !== 'clip'">
+                <span class="handle start" data-testid="item-handle-start" @pointerdown="itemDown(r, 'start', $event)" />
+                <span class="handle end" data-testid="item-handle-end" @pointerdown="itemDown(r, 'end', $event)" />
+              </template>
               <span
                 v-for="k in marksOf(r)"
                 :key="k.atMs"

@@ -4,6 +4,12 @@
 
 import { computed, ref, shallowRef, watch } from 'vue'
 import {
+  clipStartTimes as clipStarts,
+  cornerMoveAt,
+  findClipVideoItem,
+  moveToCornerAt,
+  setCover,
+  type CornerMove,
   addMark,
   boxAt,
   clearMotion as clearMotionOfLook,
@@ -444,6 +450,62 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     editor.preview((p) => updateEffectLook(p, itemId, (l) => moveMarkOfLook(l, fromMs, toMs)))
   }
 
+  // ---------------------------------------------------------------- el vídeo del trozo, a una esquina y de vuelta
+
+  /** El instante del trozo (su tiempo de salida) que está en la línea, sujeto a su tramo. */
+  function clipLocalAtLine(clipId: string): number {
+    const p = editor.project.value
+    const i = p.clips.findIndex((c) => c.id === clipId)
+    if (i < 0) return 0
+    return Math.max(0, Math.min(clipOutputMs(p.clips[i]!), playheadMs.value - clipStarts(p)[i]!))
+  }
+
+  /** Qué hará «Llevar a una esquina aquí» con la línea donde está: ir a la esquina o volver a pantalla completa. */
+  function cornerMove(clipId: string): CornerMove {
+    return cornerMoveAt(editor.project.value, clipId, clipLocalAtLine(clipId))
+  }
+
+  /**
+   * «Llevar a una esquina aquí» / «Volver a pantalla completa aquí»: el vídeo del trozo se encoge hasta la esquina
+   * (o vuelve) desde la línea, en menos de un segundo. Si el trozo aún no tiene nada detrás (otro vídeo de fondo),
+   * primero se elige ese vídeo. Un solo paso de deshacer.
+   */
+  async function cornerHere(clipId: string): Promise<boolean> {
+    let p = editor.history.value.present
+    const clip = p.clips.find((c) => c.id === clipId)
+    if (!clip) return false
+    if (!clip.sourceHasVideo) {
+      editor.showToast('Este trozo es un sonido: no tiene imagen que llevar a una esquina.')
+      return false
+    }
+    const local = clipLocalAtLine(clipId)
+    if (clip.picture.kind !== 'cover') {
+      editor.showToast('Elige qué vídeo se verá detrás cuando te vayas a la esquina.')
+      const info = await editor.chooseCoverVideo()
+      if (!info) return false
+      p = setCover(editor.history.value.present, clipId, info)
+    }
+    const res = moveToCornerAt(p, clipId, local, { itemId: newId('item'), trackId: newId('track'), trackName: 'Tu vídeo encima' })
+    if (!res) {
+      editor.showToast('Este trozo es demasiado corto para eso.')
+      return false
+    }
+    editor.commit(res.project)
+    selectedItemId.value = null
+    editor.showToast(
+      res.move === 'to-corner'
+        ? 'Hecho: en ese momento te vas a la esquina. Para volver a pantalla completa, lleva la línea más adelante y pulsa otra vez.'
+        : 'Hecho: en ese momento vuelves a pantalla completa.',
+      { label: 'Deshacer', run: editor.undo },
+    )
+    return true
+  }
+
+  /** El elemento «vídeo de este trozo» de un trozo (si lo tiene). */
+  function clipVideoItemId(clipId: string): string | null {
+    return findClipVideoItem(editor.project.value, clipId)?.item.id ?? null
+  }
+
   /** «Cómo viaja»: la curva del tramo de la línea. */
   function setTravelEasing(itemId: string, easing: MotionEasing) {
     const local = localAtLine(itemId)
@@ -619,6 +681,9 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     movePickedMarkHere,
     previewMoveMark,
     setTravelEasing,
+    cornerMove,
+    cornerHere,
+    clipVideoItemId,
     setTrackMuted,
     setTrackHidden,
     setMainMuted,

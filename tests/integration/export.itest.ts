@@ -28,7 +28,9 @@ import {
   setCover,
   setFraming,
   setInOut,
-  setInset,
+  legacyInsetBox,
+  putClipVideo,
+  updateEffectLook,
   setMuted,
   setPicture,
   setSpeed,
@@ -389,9 +391,11 @@ describe.sequential('ffmpeg real', () => {
     // 4) Vídeo de encima + yo en la esquina, partido: la segunda parte sigue el vídeo de encima y va en otra esquina.
     p = addClip(p, createClip(media.get(files.horizontal)!, 'ins'))
     p = setCover(p, 'ins', media.get(files.coverLong)!, 1000)
-    p = setInset(p, 'ins', { corner: 'bottom-right', size: 'small' })
+    // Desde la versión 5, su vídeo en la esquina va en una pista («el vídeo de este trozo»); al partir, cada parte
+    // lleva el suyo.
+    p = putClipVideo(p, 'ins', legacyInsetBox({ corner: 'bottom-right', size: 'small' }, '16:9'), { itemId: 'iv', trackId: 'esquina' })
     p = splitClip(p, 'ins', 4000, 'ins2')
-    p = setInset(p, 'ins2', { corner: 'top-left', size: 'medium' })
+    p = updateEffectLook(p, 'iv~ins2', (l) => ({ ...l, box: legacyInsetBox({ corner: 'top-left', size: 'medium' }, '16:9') }))
     return p
   }
 

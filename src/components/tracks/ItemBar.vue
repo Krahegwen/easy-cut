@@ -32,6 +32,13 @@ const emit = defineEmits<{ seek: [ms: number] }>()
 
 const found = computed(() => tracks.selectedItem.value)
 const item = computed(() => found.value?.item ?? null)
+/** «El vídeo de este trozo»: va con su trozo (solo tamaño y sitio, a una esquina y quitarlo). */
+const ownClipId = computed(() => (item.value?.source.type === 'clip' ? item.value.source.clipId : null))
+const ownClipNumber = computed(() => (ownClipId.value ? store.project.value.clips.findIndex((c) => c.id === ownClipId.value) + 1 : 0))
+const cornerLabel = computed(() => (ownClipId.value && tracks.cornerMove(ownClipId.value) === 'to-full' ? 'Volver a pantalla completa aquí' : 'Llevar a una esquina aquí'))
+function corner() {
+  if (ownClipId.value) void tracks.cornerHere(ownClipId.value)
+}
 const isEffect = computed(() => found.value?.track.kind === 'effect')
 /** Ruta del fichero del elemento si no se encuentra (para «Buscarlo»). */
 const lostPath = computed(() => {
@@ -282,7 +289,7 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
     <div v-else class="item-bar" :class="{ effect: isEffect }">
       <div class="title">
         <AppIcon :name="isEffect ? 'light' : 'sound'" :size="22" />
-        <span class="name" :title="`${item.name} (en «${found.track.name}»)`">{{ item.name }}</span>
+        <span class="name" :title="`${item.name} (en «${found.track.name}»)`">{{ ownClipId ? `Tu vídeo (trozo ${ownClipNumber})` : item.name }}</span>
         <span class="where muted">en «{{ found.track.name }}»</span>
       </div>
 
@@ -291,7 +298,12 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
           <AppIcon :name="moving ? 'motion' : 'resize'" />
           <span class="txt">Tamaño y sitio</span>
         </button>
-        <div class="pop-wrap">
+        <button v-if="ownClipId" class="btn small" type="button" :aria-label="cornerLabel" :title="cornerLabel" data-testid="item-corner" @click="corner">
+          <AppIcon :name="cornerLabel.startsWith('Volver') ? 'fullscreen' : 'corner'" />
+          <span class="txt">{{ cornerLabel.startsWith('Volver') ? 'Pantalla completa' : 'A una esquina' }}</span>
+          <KeyHint k="Q" />
+        </button>
+        <div v-if="!ownClipId" class="pop-wrap">
           <button class="btn small" type="button" data-testid="item-mix" :aria-expanded="open === 'mix'" title="Cómo se mezcla" @click="toggle('mix')">
             <AppIcon name="blend" />
             {{ item.look?.mix === 'light' ? 'Como luz' : 'Normal' }}
@@ -308,7 +320,7 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
             </button>
           </div>
         </div>
-        <div class="pop-wrap">
+        <div v-if="!ownClipId" class="pop-wrap">
           <button class="btn small" type="button" data-testid="item-opacity" :aria-expanded="open === 'opacity'" title="Transparencia" aria-label="Transparencia" @click="toggle('opacity')">
             <AppIcon name="eye" />
             {{ opacityPercent }} %
@@ -341,7 +353,7 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
         </div>
       </div>
 
-      <div class="pop-wrap">
+      <div v-if="!ownClipId" class="pop-wrap">
         <button
           class="btn small toggle"
           :class="{ selected: item.fadeInMs > 0 || item.fadeOutMs > 0 }"
@@ -360,13 +372,15 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
           <FadePicker :fades="item" :subject="fadeSubject" @change="setFade" />
         </div>
       </div>
-      <button v-if="!item.still" class="btn small toggle" :class="{ selected: item.repeat }" type="button" :aria-pressed="item.repeat" title="Repetir" aria-label="Repetir" data-testid="item-repeat" @click="repeat">
+      <button v-if="!item.still && !ownClipId" class="btn small toggle" :class="{ selected: item.repeat }" type="button" :aria-pressed="item.repeat" title="Repetir" aria-label="Repetir" data-testid="item-repeat" @click="repeat">
         <AppIcon name="repeat" />
         <span class="txt">Repetir</span>
         <KeyHint k="R" />
       </button>
 
       <span class="spacer" />
+      <p v-if="ownClipId" class="own-note muted" data-testid="item-own-note">Va con su trozo: se recorta, se parte y se mueve con él.</p>
+      <template v-if="!ownClipId">
       <button class="btn small" type="button" data-testid="item-move-here" title="Que empiece donde está la línea" aria-label="A la línea" @click="moveHere">
         <AppIcon name="move-here" />
         <span class="txt action-txt">A la línea</span>
@@ -382,6 +396,7 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
         <span class="txt action-txt">Duplicar</span>
         <KeyHint k="D" />
       </button>
+      </template>
       <button class="btn small danger" type="button" data-testid="item-remove" title="Quitar" aria-label="Quitar" @click="remove">
         <AppIcon name="trash" />
         <span class="txt">Quitar</span>
@@ -511,6 +526,13 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
 }
 .choice .choice-text span {
   font-size: 13px;
+}
+.own-note {
+  font-size: 14px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .fades-pop {
   width: min(600px, calc(100vw - 48px));

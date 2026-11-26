@@ -11,6 +11,13 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import {
   addClip,
   addMark,
+  BT709_SETPARAMS,
+  cornerBox,
+  findClipVideoItem,
+  moveToCornerAt,
+  parseProject,
+  roundedMaskExpression,
+  setCover,
   addTrack,
   boxAt,
   buildExportCommand,
@@ -48,6 +55,12 @@ const f = {
   tone: join(OUT, 'tono-1khz-4s.wav'),
   red: join(OUT, 'fx-rojo-200.png'),
   light: join(OUT, 'fx-cuadrado-blanco-sobre-negro.mp4'),
+  /** El que habla (un patrón que se mueve, con tono) y el vídeo de fondo (otro patrón): para la esquina de antes. */
+  talk: join(OUT, 'src-yo-testsrc2-1080p30.mp4'),
+  backdrop: join(OUT, 'src-fondo-mandelbrot-1080p30.mp4'),
+  /** Verde liso (el que habla) sobre azul liso (el fondo): para medir dónde está en cada instante. */
+  green: join(OUT, 'src-yo-verde-1080p30.mp4'),
+  blue: join(OUT, 'src-fondo-azul-1080p30.mp4'),
 }
 const media = new Map<string, MediaInfo>()
 
@@ -65,7 +78,11 @@ beforeAll(async () => {
   await ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=1000:sample_rate=48000:duration=4', '-af', 'volume=2', f.tone])
   await ffmpeg(['-f', 'lavfi', '-i', 'color=c=red:size=200x200', '-frames:v', '1', f.red])
   await ffmpeg(['-f', 'lavfi', '-i', 'color=c=black:size=1920x1080:rate=30:duration=4', '-vf', 'drawbox=x=760:y=340:w=400:h=400:color=white:t=fill', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', f.light])
-  for (const p of [f.grey, f.base, f.tone, f.light]) media.set(p, await probe(p))
+  await ffmpeg(['-f', 'lavfi', '-i', 'testsrc2=size=1920x1080:rate=30:duration=8', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=8', ...enc, f.talk])
+  await ffmpeg(['-f', 'lavfi', '-i', 'mandelbrot=size=1920x1080:rate=30', '-t', '8', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', f.backdrop])
+  await ffmpeg(['-f', 'lavfi', '-i', 'color=c=0x20c040:size=1920x1080:rate=30:duration=8', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=8', ...enc, f.green])
+  await ffmpeg(['-f', 'lavfi', '-i', 'color=c=0x2040c0:size=1920x1080:rate=30:duration=10', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', f.blue])
+  for (const p of [f.grey, f.base, f.tone, f.light, f.talk, f.backdrop, f.green, f.blue]) media.set(p, await probe(p))
   media.set(f.red, await probe(f.red, true))
 })
 
@@ -301,6 +318,145 @@ describe.sequential('aparecer y desaparecer con curva (ffmpeg real)', () => {
     console.table(rows)
     console.log('Coste de guardar (10 s a 1080p, libx264):', { sinMovimiento: still.ms, conMovimiento: moved.ms, peorError: worst.toFixed(4) })
     report.push({ caso: 'movimiento', sinMovimientoMs: still.ms, conMovimientoMs: moved.ms, peorError: worst, rows })
+  })
+
+  // ------------------------------------------------------------------ C. El vídeo del trozo a una esquina y de vuelta
+
+  /** SSIM entre dos imágenes del mismo tamaño (1 = iguales). */
+  async function ssim(a: string, b: string): Promise<number> {
+    // ssim da el resultado en el registro normal (no con -loglevel error).
+    const { stderr } = await run('ffmpeg', ['-hide_banner', '-i', a, '-i', b, '-lavfi', '[0:v][1:v]ssim', '-f', 'null', '-'], BIG)
+    const m = /All:([\d.]+)/.exec(stderr)
+    return m ? Number(m[1]) : 0
+  }
+  async function frameAt(path: string, ms: number, out: string, vf?: string): Promise<string> {
+    await ffmpeg(['-ss', (ms / 1000).toFixed(3), '-i', path, '-frames:v', '1', ...(vf ? ['-vf', vf] : []), out])
+    return out
+  }
+
+  it('un proyecto de antes con la esquina se ve igual al abrirlo (fotogramas del guardado de antes y del convertido)', async () => {
+    // El proyecto de la versión 4: el trozo que habla, con el fondo encima y él en la esquina de abajo a la derecha.
+    const v4 = JSON.stringify({
+      app: 'easy-cut',
+      version: 4,
+      project: {
+        aspect: '16:9',
+        clips: [
+          {
+            id: 'a',
+            sourcePath: f.talk,
+            sourceDurationMs: media.get(f.talk)!.durationMs,
+            sourceHasVideo: true,
+            segments: [{ startMs: 500, endMs: 6500 }],
+            speed: 1,
+            picture: { kind: 'cover', sourcePath: f.backdrop, sourceDurationMs: media.get(f.backdrop)!.durationMs, startMs: 1000, framing: { mode: 'fit-blur', zoom: 1, offsetX: 0, offsetY: 0 }, quarterTurns: 0, inset: { corner: 'bottom-right', size: 'small' } },
+          },
+        ],
+        media: [],
+      },
+    })
+    const migrated = parseProject(v4)
+    expect(migrated.tracks.flatMap((t) => t.items).map((i) => i.source.type)).toEqual(['clip'])
+    const now = await exportVideo('esquina-convertida', migrated)
+
+    // El guardado de antes, con el filtro de la versión 4 (el de ffmpeg-args.ts de entonces): la imagen del trozo
+    // con el fondo y su vídeo en la esquina (recorte centrado, máscara geq una sola vez, alphamerge, overlay).
+    const coverOnly = { ...migrated, tracks: [] }
+    const out = join(OUT, 'esquina-antes.mp4')
+    const script = join(OUT, 'esquina-antes.filter.txt')
+    const draft = buildExportCommand(coverOnly, media, 'youtube', 'libx264', out)
+    const W = draft.spec.width
+    const H = draft.spec.height
+    const frames = Math.round((6000 * 30) / 1000)
+    const ev = (n: number) => Math.max(2, Math.round(n / 2) * 2)
+    const iw = ev(W * 0.28)
+    const ih = ev(H * 0.28)
+    const margin = ev(Math.min(W, H) * 0.04)
+    const left = W - iw - margin
+    const top = H - ih - margin
+    const radius = Math.max(2, Math.round(Math.min(iw, ih) * 0.08))
+    const legacy = [
+      '[0:v:0]setpts=PTS-STARTPTS[old0seg]',
+      `[old0seg]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=30,trim=end_frame=${frames},scale=${iw}:${ih}:force_original_aspect_ratio=increase:flags=bicubic:out_color_matrix=bt709:out_range=tv,crop=${iw}:${ih},setsar=1,format=yuva420p[old0inset]`,
+      `color=c=white:s=${iw}x${ih}:r=30,trim=end_frame=1,format=gray,geq=lum='${roundedMaskExpression(radius)}',loop=loop=-1:size=1,trim=end_frame=${frames},setpts=N/30/TB[old0mask]`,
+      '[old0inset][old0mask]alphamerge[old0round]',
+      `[v0][old0round]overlay=x=${left}:y=${top}:shortest=1,setsar=1,format=yuv420p,${BT709_SETPARAMS}[v0old]`,
+    ]
+    const fc = draft.filterComplex.replace('[v0][a0]concat', '[v0old][a0]concat') + ';\n' + legacy.join(';\n')
+    writeFileSync(script, fc)
+    const cmd = buildExportCommand(coverOnly, media, 'youtube', 'libx264', out, { filterScriptPath: script })
+    const res = await exportRun(cmd.args)
+    expect(res.code, res.stderr).toBe(0)
+
+    const rows: Record<string, unknown>[] = []
+    for (const ms of [300, 2000, 4500, 5800]) {
+      const a = await frameAt(out, ms, join(OUT, `esquina-antes-${ms}.png`))
+      const b = await frameAt(now.out, ms, join(OUT, `esquina-ahora-${ms}.png`))
+      const whole = await ssim(a, b)
+      // La esquina, por zonas: el color medio de 8 × 5 casillas (el sitio de ahora puede caer 1 px más allá, porque
+      // el de antes redondeaba el margen a pares, y en un patrón de barras de colores eso hunde el SSIM sin que se
+      // note nada; por casillas se compara lo que se ve).
+      const cells = async (path: string, vf: string) => {
+        const { stdout } = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', (ms / 1000).toFixed(3), '-i', path, '-frames:v', '1', '-vf', `${vf},format=rgb24`, '-f', 'rawvideo', '-'], { ...BIG, encoding: 'buffer' })
+        return [...(stdout as unknown as Buffer)]
+      }
+      const worstOf = async (vf: string) => {
+        const ca = await cells(out, vf)
+        const cb = await cells(now.out, vf)
+        return Math.max(...ca.map((v, k) => Math.abs(v - cb[k]!)))
+      }
+      const corner = await worstOf(`crop=${iw}:${ih}:${left}:${top},scale=8:5:flags=area`)
+      // Y el fotograma entero, en 16 × 9 casillas.
+      const frameCells = await worstOf('scale=16:9:flags=area')
+      rows.push({ ms, ssim: whole.toFixed(4), cornerWorstLevel: corner, frameWorstLevel: frameCells })
+      // Medido: SSIM del fotograma entero entre 0,93 y 0,97 (el tramo pasa ahora por RGB y vuelve y el fondo es un
+      // fractal lleno de detalle a 8 Mbit/s); las casillas, a pocos niveles.
+      expect(whole, `fotograma entero a los ${ms} ms`).toBeGreaterThan(0.9)
+      expect(corner, `la esquina a los ${ms} ms`).toBeLessThanOrEqual(16)
+      expect(frameCells, `el fotograma por casillas a los ${ms} ms`).toBeLessThanOrEqual(10)
+    }
+    console.table(rows)
+    console.log('Coste de guardar la esquina (6 s a 1080p, libx264):', { antes: res.ms, ahora: now.ms })
+    report.push({ caso: 'esquina-de-antes', antesMs: res.ms, ahoraMs: now.ms, rows })
+  })
+
+  it('«Llevar a una esquina aquí» y «Volver a pantalla completa aquí»: el vídeo del trozo viaja y vuelve (±2 %)', async () => {
+    let p = createProject('16:9')
+    p = addClip(p, createClip(media.get(f.green)!, 'g'))
+    p = setCover(p, 'g', media.get(f.blue)!)
+    const base0 = p
+    const go = moveToCornerAt(p, 'g', 1500, { itemId: 'yo', trackId: 'Tu vídeo encima' })!
+    const back = moveToCornerAt(go.project, 'g', 5000, { itemId: 'yo', trackId: 'Tu vídeo encima' })!
+    p = back.project
+    expect([go.move, back.move]).toEqual(['to-corner', 'to-full'])
+    const still = await exportVideo('esquina-quieta', moveToCornerAt(base0, 'g', 0, { itemId: 'yo', trackId: 't' })!.project)
+    const moved = await exportVideo('esquina-viaje', p)
+    const look = findClipVideoItem(p, 'g')!.item.look!
+    const green = (r: number, g: number, b: number) => g > 140 && r < 90 && b < 110
+    const rows: Record<string, unknown>[] = []
+    for (const ms of [1000, 1700, 1900, 2100, 3500, 5200, 5400, 5600, 7000]) {
+      const frameMs = (Math.floor((ms * 30) / 1000) * 1000) / 30
+      const want = boxAt(look, frameMs)
+      const got = await blob(moved.out, ms, green)
+      expect(got, `a los ${ms} ms`).not.toBeNull()
+      const err = Math.max(Math.abs(got!.cx - want.x), Math.abs(got!.cy - want.y), Math.abs(got!.h - want.scale))
+      rows.push({ ms, x: got!.cx.toFixed(3), wantX: want.x.toFixed(3), y: got!.cy.toFixed(3), wantY: want.y.toFixed(3), size: got!.h.toFixed(3), wantSize: want.scale.toFixed(3) })
+      expect(err, `a los ${ms} ms`).toBeLessThanOrEqual(0.02)
+    }
+    console.table(rows)
+    // En la esquina, las esquinas redondeadas dejan ver el fondo (azul) justo en el vértice del recuadro.
+    const corner = cornerBox('16:9')
+    const vx = Math.round((corner.x + corner.scale / 2) * 1920) - 3
+    const vy = Math.round((corner.y + corner.scale / 2) * 1080) - 3
+    const atVertex = await averageColor(moved.out, 3500, vx, vy, 4)
+    const inside = await averageColor(moved.out, 3500, Math.round(corner.x * 1920), Math.round(corner.y * 1080), 8)
+    console.log('Esquina redondeada:', { atVertex, inside })
+    expect(atVertex[2]!).toBeGreaterThan(150)
+    expect(inside[1]!).toBeGreaterThan(150)
+    // Y a pantalla completa, sin esquinas: el vértice de la pantalla es del trozo (verde).
+    expect((await averageColor(moved.out, 7500, 1916, 1076, 4))[1]!).toBeGreaterThan(150)
+    console.log('Coste de guardar el viaje a la esquina (8 s a 1080p, libx264):', { quieto: still.ms, viajando: moved.ms })
+    report.push({ caso: 'llevar-a-la-esquina', quietoMs: still.ms, viajandoMs: moved.ms, rows })
   })
 
   it('resumen', () => {
