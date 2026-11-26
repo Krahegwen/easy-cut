@@ -11,6 +11,8 @@ import {
   anchorAt,
   anchorTimeMs,
   clipOutputMs,
+  clipTimeline,
+  type ClipTimeline,
   MAX_ITEM_VOLUME,
   normalizeLook,
   type EffectLook,
@@ -31,25 +33,16 @@ export const DEFAULT_STILL_MS = 4000
 // ---------------------------------------------------------------------------
 // Tiempos de la fila principal
 
-/** Inicio y duración de cada trozo y duración total, para resolver los anclajes. */
-export interface ProjectTiming {
-  starts: number[]
-  lengths: number[]
-  totalMs: number
-}
+/** Inicio y duración de cada trozo, sus juntas y duración total, para resolver los anclajes (ver ClipTimeline). */
+export type ProjectTiming = ClipTimeline
 
 /**
- * Tiempos de la fila de trozos. Sin `lengths`, los de la vista previa (clipOutputMs); al guardar se pasan
- * los de los fotogramas enteros de cada trozo, para que cada sonido caiga donde cae su trozo en el fichero.
+ * Tiempos de la fila de trozos (con los solapes de las transiciones). Sin `lengths`, los de la vista previa
+ * (clipOutputMs); al guardar se pasan los de los fotogramas enteros de cada trozo con `unitsPerMs` = F/1000, para que
+ * cada sonido caiga donde cae su trozo en el fichero.
  */
-export function projectTiming(project: Project, lengths: readonly number[] = project.clips.map(clipOutputMs)): ProjectTiming {
-  const starts: number[] = []
-  let acc = 0
-  for (const len of lengths) {
-    starts.push(acc)
-    acc += len
-  }
-  return { starts, lengths: [...lengths], totalMs: acc }
+export function projectTiming(project: Project, lengths: readonly number[] = project.clips.map(clipOutputMs), unitsPerMs = 1): ProjectTiming {
+  return clipTimeline(project, lengths, unitsPerMs)
 }
 
 // ---------------------------------------------------------------------------
