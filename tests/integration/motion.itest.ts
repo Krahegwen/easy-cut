@@ -20,6 +20,7 @@ import {
   setCover,
   addTrack,
   boxAt,
+  buildEncoderProbeArgs,
   buildExportCommand,
   buildProbeArgs,
   createClip,
@@ -40,6 +41,7 @@ import {
   type NewItem,
   type Project,
   type TrackItem,
+  type VideoEncoder,
 } from '../../src/domain'
 
 const run = promisify(execFile)
@@ -63,6 +65,8 @@ const f = {
   blue: join(OUT, 'src-fondo-azul-1080p30.mp4'),
 }
 const media = new Map<string, MediaInfo>()
+/** ¿Hay NVENC en este PC? (el movimiento y la esquina se miden también con él, como en export.itest). */
+let nvenc = false
 
 async function probe(path: string, still = false): Promise<MediaInfo> {
   const { stdout } = await run('ffprobe', buildProbeArgs(path), BIG)
@@ -83,6 +87,12 @@ beforeAll(async () => {
   await ffmpeg(['-f', 'lavfi', '-i', 'color=c=0x20c040:size=1920x1080:rate=30:duration=8', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=8', ...enc, f.green])
   await ffmpeg(['-f', 'lavfi', '-i', 'color=c=0x2040c0:size=1920x1080:rate=30:duration=10', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', f.blue])
   for (const p of [f.grey, f.base, f.tone, f.light, f.talk, f.backdrop, f.green, f.blue]) media.set(p, await probe(p))
+  try {
+    await run('ffmpeg', buildEncoderProbeArgs('h264_nvenc'), BIG)
+    nvenc = true
+  } catch {
+    nvenc = false
+  }
   media.set(f.red, await probe(f.red, true))
 })
 
@@ -123,11 +133,11 @@ function exportRun(args: string[]): Promise<{ code: number; stderr: string; ms: 
   })
 }
 
-async function exportVideo(name: string, p: Project): Promise<{ out: string; ms: number }> {
+async function exportVideo(name: string, p: Project, encoder: VideoEncoder = 'libx264'): Promise<{ out: string; ms: number }> {
   const out = join(OUT, `${name}.mp4`)
   const script = join(OUT, `${name}.filter.txt`)
-  writeFileSync(script, buildExportCommand(p, media, 'youtube', 'libx264', out).filterComplex)
-  const cmd = buildExportCommand(p, media, 'youtube', 'libx264', out, { filterScriptPath: script })
+  writeFileSync(script, buildExportCommand(p, media, 'youtube', encoder, out).filterComplex)
+  const cmd = buildExportCommand(p, media, 'youtube', encoder, out, { filterScriptPath: script })
   const res = await exportRun(cmd.args)
   expect(res.code, res.stderr).toBe(0)
   return { out, ms: res.ms }
@@ -285,10 +295,12 @@ describe.sequential('aparecer y desaparecer con curva (ffmpeg real)', () => {
     return { cx: (minX + maxX + 1) / 2 / 480, cy: (minY + maxY + 1) / 2 / 270, w: (maxX - minX + 1) / 480, h: (maxY - minY + 1) / 270 }
   }
 
-  it('una pegatina con marcas viaja por el fichero como en la vista previa (±2 % del marco), y «como luz» también', async () => {
-    const still = await exportVideo('sin-movimiento', movingProject(false))
+  for (const encoder of ['libx264', 'h264_nvenc'] as const)
+  it(`una pegatina con marcas viaja por el fichero como en la vista previa (±2 % del marco), y «como luz» también · ${encoder}`, async (ctx) => {
+    if (encoder === 'h264_nvenc' && !nvenc) ctx.skip()
+    const still = await exportVideo(`sin-movimiento-${encoder}`, movingProject(false), encoder)
     const p = movingProject(true)
-    const moved = await exportVideo('con-movimiento', p)
+    const moved = await exportVideo(`con-movimiento-${encoder}`, p, encoder)
     const red = p.tracks.find((t) => t.id === 'Encima')!.items[0]!
     const light = p.tracks.find((t) => t.id === 'Luz')!.items[0]!
     const rows: Record<string, unknown>[] = []
@@ -316,8 +328,8 @@ describe.sequential('aparecer y desaparecer con curva (ffmpeg real)', () => {
       expect(err, `luz a los ${local} ms`).toBeLessThanOrEqual(0.02)
     }
     console.table(rows)
-    console.log('Coste de guardar (10 s a 1080p, libx264):', { sinMovimiento: still.ms, conMovimiento: moved.ms, peorError: worst.toFixed(4) })
-    report.push({ caso: 'movimiento', sinMovimientoMs: still.ms, conMovimientoMs: moved.ms, peorError: worst, rows })
+    console.log(`Coste de guardar (10 s a 1080p, ${encoder}):`, { sinMovimiento: still.ms, conMovimiento: moved.ms, peorError: worst.toFixed(4) })
+    report.push({ caso: `movimiento-${encoder}`, sinMovimientoMs: still.ms, conMovimientoMs: moved.ms, peorError: worst, rows })
   })
 
   // ------------------------------------------------------------------ C. El vídeo del trozo a una esquina y de vuelta
@@ -420,7 +432,9 @@ describe.sequential('aparecer y desaparecer con curva (ffmpeg real)', () => {
     report.push({ caso: 'esquina-de-antes', antesMs: res.ms, ahoraMs: now.ms, rows })
   })
 
-  it('«Llevar a una esquina aquí» y «Volver a pantalla completa aquí»: el vídeo del trozo viaja y vuelve (±2 %)', async () => {
+  for (const encoder of ['libx264', 'h264_nvenc'] as const)
+  it(`«Llevar a una esquina aquí» y «Volver a pantalla completa aquí»: el vídeo del trozo viaja y vuelve (±2 %) · ${encoder}`, async (ctx) => {
+    if (encoder === 'h264_nvenc' && !nvenc) ctx.skip()
     let p = createProject('16:9')
     p = addClip(p, createClip(media.get(f.green)!, 'g'))
     p = setCover(p, 'g', media.get(f.blue)!)
@@ -429,8 +443,8 @@ describe.sequential('aparecer y desaparecer con curva (ffmpeg real)', () => {
     const back = moveToCornerAt(go.project, 'g', 5000, { itemId: 'yo', trackId: 'Tu vídeo encima' })!
     p = back.project
     expect([go.move, back.move]).toEqual(['to-corner', 'to-full'])
-    const still = await exportVideo('esquina-quieta', moveToCornerAt(base0, 'g', 0, { itemId: 'yo', trackId: 't' })!.project)
-    const moved = await exportVideo('esquina-viaje', p)
+    const still = await exportVideo(`esquina-quieta-${encoder}`, moveToCornerAt(base0, 'g', 0, { itemId: 'yo', trackId: 't' })!.project, encoder)
+    const moved = await exportVideo(`esquina-viaje-${encoder}`, p, encoder)
     const look = findClipVideoItem(p, 'g')!.item.look!
     const green = (r: number, g: number, b: number) => g > 140 && r < 90 && b < 110
     const rows: Record<string, unknown>[] = []
@@ -455,8 +469,8 @@ describe.sequential('aparecer y desaparecer con curva (ffmpeg real)', () => {
     expect(inside[1]!).toBeGreaterThan(150)
     // Y a pantalla completa, sin esquinas: el vértice de la pantalla es del trozo (verde).
     expect((await averageColor(moved.out, 7500, 1916, 1076, 4))[1]!).toBeGreaterThan(150)
-    console.log('Coste de guardar el viaje a la esquina (8 s a 1080p, libx264):', { quieto: still.ms, viajando: moved.ms })
-    report.push({ caso: 'llevar-a-la-esquina', quietoMs: still.ms, viajandoMs: moved.ms, rows })
+    console.log(`Coste de guardar el viaje a la esquina (8 s a 1080p, ${encoder}):`, { quieto: still.ms, viajando: moved.ms })
+    report.push({ caso: `llevar-a-la-esquina-${encoder}`, quietoMs: still.ms, viajandoMs: moved.ms, rows })
   })
 
   it('resumen', () => {

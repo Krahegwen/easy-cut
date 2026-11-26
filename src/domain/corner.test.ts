@@ -14,8 +14,10 @@ import {
   parseProject,
   removeClip,
   serializeProject,
+  removeCover,
   setCover,
   setInOut,
+  setPicture,
   splitClip,
   type Project,
 } from './project'
@@ -161,6 +163,27 @@ describe('va con su trozo', () => {
     const lookBefore = findClipVideoItem(before, 'a')!.item.look!
     for (const t of [0, 3000, 3200, 3399]) expect(boxAt(first.look!, t)).toEqual(boxAt(lookBefore, t))
     for (const t of [3400, 3600, 3800, 6000]) expect(boxAt(second.look!, t - 3400).scale).toBeCloseTo(boxAt(lookBefore, t).scale, 9)
+  })
+
+  it('solo encima de otro vídeo: volver «Imagen» a su vídeo (o «Solo se oye») lo quita, en el mismo paso', () => {
+    for (const picture of [{ kind: 'own' } as const, { kind: 'none' } as const]) {
+      const p = setPicture(withCorner(), 'a', picture)
+      expect(findClipVideoItem(p, 'a')).toBeNull()
+      expect(p.clips[0]!.picture.kind).toBe(picture.kind)
+    }
+    expect(findClipVideoItem(removeCover(withCorner(), 'a'), 'a')).toBeNull()
+    // Cambiar el vídeo de fondo por otro no lo quita.
+    expect(findClipVideoItem(setCover(withCorner(), 'a', fakeMedia({ path: 'C:\\otro.mp4', durationMs: 9000 })), 'a')).not.toBeNull()
+    // Y no se puede poner sin otro vídeo de fondo.
+    expect(putClipVideo(base(), 'b', cornerBox('16:9'), { itemId: 'v', trackId: 't' })).toEqual(base())
+  })
+
+  it('un proyecto guardado con «Tu vídeo» en un trozo que muestra su propio vídeo lo descarta al leerlo', () => {
+    const p = withCorner()
+    const json = JSON.parse(serializeProject(p))
+    json.project.clips[0].picture = { kind: 'own' }
+    const back = parseProject(JSON.stringify(json))
+    expect(findClipVideoItem(back, 'a')).toBeNull()
   })
 
   it('ponerlo quieto en un sitio (lo que hacía la esquina de antes)', () => {

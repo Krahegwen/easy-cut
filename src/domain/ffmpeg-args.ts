@@ -449,7 +449,8 @@ export function planTrackItems(
       const clipId = r.item.source.clipId
       const clipIndex = project.clips.findIndex((c) => c.id === clipId)
       const clip = project.clips[clipIndex]
-      if (!clip || !clip.sourceHasVideo) continue
+      // Solo encima de otro vídeo (el dominio no deja otra cosa; por si acaso, no se pinta dos veces).
+      if (!clip || !clip.sourceHasVideo || clip.picture.kind !== 'cover') continue
       const media = lookup(mediaByPath, clip.sourcePath)
       if (!media.hasVideo) continue
       planned.push({ item: r.item, kind: r.track.kind, path: clip.sourcePath, media, clipIndex, startMs: r.startMs, lengthMs: r.shownEndMs - r.startMs })
@@ -901,7 +902,8 @@ export function buildExportCommand(
       picture.push(`[v${i}nofade]${fade},${BT709_SETPARAMS}[v${i}]`)
     }
     chains.push(...picture)
-    // Su propio vídeo encima, en una pista (la misma entrada: ffmpeg la reparte entre los dos usos).
+    // Su propio vídeo encima, en una pista. Solo con otro vídeo de imagen (setPicture), así que su vídeo no se usa
+    // también como imagen del trozo: la entrada se lee una vez.
     if (clipVideos.has(i)) chains.push(...clipVideoChains(clip, i, mainInput, media, spec, frames).chains)
     chains.push(...audioChains(clip, media, i, mainInput, samples, project.mainMuted))
     concatInputs.push(`[v${i}][a${i}]`)

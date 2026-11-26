@@ -37,6 +37,7 @@ import {
   setInOut,
   setMuted,
   setPicture,
+  findClipVideoItem,
   setSpeed,
   sourceToOutput,
   splitClip,
@@ -411,7 +412,11 @@ async function choosePicture(kind: Picture['kind']) {
   if (!c) return
   if (c.picture.kind === 'cover') lastCovers.set(c.id, c.picture)
   if (kind === 'own' || kind === 'none') {
+    const hadOwnVideo = !!findClipVideoItem(store.project.value, c.id)
     store.apply((p) => setPicture(p, c.id, { kind }))
+    if (hadOwnVideo && !findClipVideoItem(store.project.value, c.id)) {
+      store.showToast('Tu vídeo encima (en la esquina) se ha quitado: solo va encima de otro vídeo.', { label: 'Deshacer', run: store.undo })
+    }
     return
   }
   if (c.picture.kind === 'cover') return
@@ -433,7 +438,10 @@ async function changeCover() {
 
 function dropCover() {
   const c = clip.value
-  if (c) store.apply((p) => removeCover(p, c.id))
+  if (!c) return
+  const hadOwnVideo = !!findClipVideoItem(store.project.value, c.id)
+  store.apply((p) => removeCover(p, c.id))
+  if (hadOwnVideo) store.showToast('Tu vídeo encima (en la esquina) se ha quitado: solo va encima de otro vídeo.', { label: 'Deshacer', run: store.undo })
 }
 
 function dragCoverStart(e: Event, commit: boolean) {

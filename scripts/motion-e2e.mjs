@@ -683,6 +683,23 @@ try {
     const pasted = await S('const p = store.project.value; return p.clips.length === 3 ? !!domain.findClipVideoItem(p, p.clips[2].id) : null')
     check('Copiar y pegar el trozo pega también su vídeo encima, con sus marcas', pasted === true, String(pasted))
     await app.key('z', { ctrl: true })
+
+    // «Imagen» → «su vídeo»: «Tu vídeo» encima no puede quedarse (se vería su vídeo dos veces): se quita en el mismo
+    // paso, con aviso y «Deshacer».
+    await app.clickAt(c2b.x, c2b.y)
+    await sleep(200)
+    await app.click('[data-testid=fix-clip]')
+    await waitScreen('clip-editor')
+    await app.click('[data-testid=tab-picture]')
+    await app.click('[data-testid=picture-own]')
+    await sleep(300)
+    const afterOwn = await S('const c = store.project.value.clips[1]; return { pic: c.picture.kind, own: !!domain.findClipVideoItem(store.project.value, c.id), toast: document.querySelector("[data-testid=toast]")?.textContent ?? "" }')
+    check('«Imagen» → «su vídeo» quita «Tu vídeo» encima en el mismo paso y lo avisa', afterOwn.pic === 'own' && !afterOwn.own && afterOwn.toast.includes('se ha quitado'), JSON.stringify(afterOwn))
+    await app.key('z', { ctrl: true })
+    const back = await S('const c = store.project.value.clips[1]; return { pic: c.picture.kind, own: !!domain.findClipVideoItem(store.project.value, c.id) }')
+    check('Y deshacer lo devuelve todo (fondo y «Tu vídeo»)', back.pic === 'cover' && back.own, JSON.stringify(back))
+    await app.click('[data-testid=clip-done]')
+    await waitScreen('editor')
   }
 
   // --- Guardar y medir en el fichero dónde está el vídeo del trozo (lo que no es azul) en el viaje. El cuadrado rojo

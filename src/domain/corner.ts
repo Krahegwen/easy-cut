@@ -69,7 +69,8 @@ export function createClipVideoItem(clip: Clip, id: string): TrackItem {
  */
 export function putClipVideo(project: Project, clipId: string, box: EffectBox, ids: { itemId: string; trackId: string; trackName?: string }): Project {
   const clip = project.clips.find((c) => c.id === clipId)
-  if (!clip || !clip.sourceHasVideo) return project
+  // Solo encima de otro vídeo (ver setPicture): con su propio vídeo de imagen se vería dos veces.
+  if (!clip || !clip.sourceHasVideo || clip.picture.kind !== 'cover') return project
   const found = findClipVideoItem(project, clipId)
   if (found) {
     const look: EffectLook = { ...found.item.look!, box: { ...box }, keyframes: [] }

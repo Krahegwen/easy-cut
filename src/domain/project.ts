@@ -914,10 +914,22 @@ function samePicture(a: Picture, b: Picture): boolean {
 
 /** Cambia lo que se ve. Se normaliza: «su vídeo» no vale si el original no tiene imagen. */
 export function setPicture(project: Project, clipId: string, picture: Picture): Project {
-  return updateClip(project, clipId, (clip) => {
+  const changed = updateClip(project, clipId, (clip) => {
     const next = normalizePicture(picture, clip.sourceHasVideo)
     return samePicture(next, clip.picture) ? clip : { ...clip, picture: next }
   })
+  // «El vídeo de este trozo» solo tiene sentido encima de otro vídeo: con su propio vídeo o «Solo se oye» de
+  // imagen, se quita en el mismo paso (si no, al guardar se vería su vídeo dos veces, uno encima del otro).
+  const clip = findClip(changed, clipId)
+  if (!clip || clip.picture.kind === 'cover' || !findClipVideoItem(changed, clipId)) return changed
+  return withoutClipVideo(changed, clipId)
+}
+
+/** Quita «el vídeo de este trozo» de un trozo (si lo tiene). */
+export function withoutClipVideo(project: Project, clipId: string): Project {
+  const has = (i: TrackItem) => i.source.type === 'clip' && i.source.clipId === clipId
+  if (!project.tracks.some((t) => t.items.some(has))) return project
+  return { ...project, tracks: project.tracks.map((t) => (t.items.some(has) ? { ...t, items: t.items.filter((i) => !has(i)) } : t)) }
 }
 
 /**
@@ -1338,7 +1350,7 @@ function keepValidClipVideos(tracks: Track[], clips: readonly Clip[]): Track[] {
     const items = t.items.filter((i) => {
       if (i.source.type !== 'clip') return true
       const clip = clips.find((c) => c.id === (i.source as { clipId: string }).clipId)
-      if (!clip || !clip.sourceHasVideo || seen.has(clip.id) || t.kind !== 'effect') return false
+      if (!clip || !clip.sourceHasVideo || clip.picture.kind !== 'cover' || seen.has(clip.id) || t.kind !== 'effect') return false
       seen.add(clip.id)
       return true
     })
