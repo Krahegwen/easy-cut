@@ -2,6 +2,10 @@
 
 import { ref, shallowRef } from 'vue'
 import {
+  audibleOrVisible,
+  emptyCells,
+  formatClock,
+  resolveTracks,
   buildSaveLogEntry,
   computeOutputSpec,
   emptyExportReport,
@@ -23,6 +27,7 @@ import {
   type TrimRange,
   type VideoEncoder,
 } from '../domain'
+import { askConfirm } from '../lib/confirm'
 import { CancelledError } from '../native/bridge'
 import type { EditorStore, Screen } from './editor'
 import type { LibraryStore } from './library'
@@ -121,8 +126,27 @@ export function createSaveFlow(store: EditorStore, library: LibraryStore | null 
   /** Desde dónde se ha guardado lo último: «Tu vídeo» o «Solo recortar» (adónde vuelven Guardando y ¡Listo!). */
   const origin = ref<SaveTool>('editor')
 
+  /**
+   * Un collage que se ve con algún hueco vacío: se avisa antes de guardar el vídeo (se vería liso). false si se
+   * prefiere volver.
+   */
+  async function confirmEmptyCells(): Promise<boolean> {
+    const holes = audibleOrVisible(resolveTracks(store.project.value)).filter((r) => r.item.collage && emptyCells(r.item.collage).length > 0)
+    if (holes.length === 0) return true
+    const first = holes[0]!
+    const n = emptyCells(first.item.collage!).length
+    const what = n === 1 ? 'un hueco vacío' : `${n} huecos vacíos`
+    return askConfirm({
+      title: holes.length === 1 ? `El collage de ${formatClock(first.startMs)} tiene ${what}` : `Hay ${holes.length} collages con huecos vacíos`,
+      message: 'Se verán lisos, del color del fondo. ¿Guardar igualmente?',
+      confirmLabel: 'Guardar igualmente',
+      cancelLabel: 'No, volver',
+    })
+  }
+
   async function start(id: SaveTarget) {
     if (running.value) return
+    if (id !== 'sound' && !(await confirmEmptyCells())) return
     begin(id, 'editor')
     // Lo que espera la persona cuenta desde aquí (también lo que tarde en bajar algo de la biblioteca).
     const startedAt = new Date()

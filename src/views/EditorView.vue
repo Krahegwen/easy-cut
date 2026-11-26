@@ -18,6 +18,7 @@ import type { PlayerTime } from '../components/player-types'
 import { clipDurationMs, clipStartTimes, formatDuration, isTrackMediaPath, neighbourMark, removeCover, resolveTracks, setAspect, setClipFade, type AspectRatio, type Easing } from '../domain'
 import FadePicker from '../components/FadePicker.vue'
 import TransitionPicker from '../components/TransitionPicker.vue'
+import CollageDialog from '../components/tracks/CollageDialog.vue'
 import { LAYER_PRIORITY } from '../lib/shortcuts'
 import KeyHint from '../components/KeyHint.vue'
 import KeysButton from '../components/KeysButton.vue'
@@ -237,6 +238,16 @@ function copySelected() {
  */
 async function paste() {
   player.value?.pause()
+  // En «Huecos», los vídeos copiados en el Explorador van a los huecos (el elegido y los vacíos que siguen).
+  const col = tracks.selectedCollage.value
+  if (col && tracks.cellsEditing.value) {
+    const source = await store.pasteSource()
+    const sys = store.systemClipboard.value
+    if ((source.kind === 'files' || source.kind === 'not-media') && sys?.paths.length) {
+      await tracks.fillCells(col.id, tracks.pickedCell.value, sys.paths)
+      return
+    }
+  }
   if (item.value || tracks.libraryOpen.value) {
     const source = await store.pasteSource()
     if (source.kind === 'files' || source.kind === 'not-media') {
@@ -249,6 +260,12 @@ async function paste() {
     }
   }
   void pasteFromClipboard()
+}
+
+/** «Collage» (C): el diálogo de cuántos vídeos y cómo se reparten. */
+function openCollage() {
+  player.value?.pause()
+  tracks.collageDialog.value = true
 }
 
 /** Trozo anterior o siguiente (RePág / AvPág). */
@@ -335,7 +352,7 @@ useShortcuts({
           { id: 'item-move-here', keys: ['m'], label: 'M', description: 'que el elegido empiece donde está la línea', run: () => tracks.moveTo(it.item.id, at), enabled: !own },
           { id: 'item-trim-start', keys: ['e'], label: 'E', description: 'que el elegido empiece en la línea (recorta o alarga por delante)', run: () => tracks.trimAt(it.item.id, 'start', at), enabled: !!r && at < r.endMs - 300 && !own },
           { id: 'item-trim-end', keys: ['t'], label: 'T', description: 'que el elegido termine en la línea', run: () => tracks.trimAt(it.item.id, 'end', at), enabled: !!r && at > r.startMs + 300 && !own },
-          { id: 'item-repeat', keys: ['r'], label: 'R', description: 'repetir el elegido (o dejar de repetirlo)', run: () => tracks.setRepeat(it.item.id, !it.item.repeat), enabled: !it.item.still && !own },
+          { id: 'item-repeat', keys: ['r'], label: 'R', description: 'repetir el elegido (o dejar de repetirlo)', run: () => tracks.setRepeat(it.item.id, !it.item.repeat), enabled: !it.item.still && !own && !it.item.collage },
           ...(ownClipId
             ? [{ id: 'item-corner', keys: ['q'], label: 'Q', description: 'llevar tu vídeo a una esquina en la línea (o volver a pantalla completa)', run: () => void tracks.cornerHere(ownClipId) }]
             : []),
@@ -373,6 +390,7 @@ useShortcuts({
       // Pantalla completa de la vista previa (en «Tamaño y sitio» la F es suya: esa capa va antes).
       { id: 'fullscreen', keys: ['f'], label: 'F', description: 'ver la vista previa a pantalla completa', run: () => p?.toggleFullscreen(), enabled: has },
       { id: 'library', keys: ['b'], label: 'B', description: 'añadir sonidos y efectos (biblioteca)', run: openLibrary, enabled: has },
+      { id: 'collage', keys: ['c'], label: 'C', description: 'hacer un collage (varios vídeos a la vez) donde está la línea', run: openCollage, enabled: has },
       { id: 'zoom-in', keys: ['+'], label: '+', description: 'acercar las pistas', run: () => tv?.zoomBy(1), enabled: has, repeat: true },
       { id: 'zoom-out', keys: ['-'], label: '-', description: 'alejar las pistas', run: () => tv?.zoomBy(-1), enabled: has, repeat: true },
       { id: 'go-start', keys: ['Home'], label: 'Inicio', description: 'ir al principio', run: () => p?.seek(0), enabled: has },
@@ -677,6 +695,8 @@ onBeforeUnmount(() => {
         @try="tryTransition"
       />
     </template>
+    <!-- «Collage»: cuántos vídeos y cómo se reparten. -->
+    <CollageDialog v-if="tracks.collageDialog.value" @close="tracks.collageDialog.value = false" />
   </main>
 </template>
 

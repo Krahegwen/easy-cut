@@ -96,3 +96,7 @@ export type IconName =
   | 'mark'
   | 'mark-off'
   | 'motion'
+  | 'collage'
+  | 'swap'
+  | 'fit-fill'
+  | 'fit-whole'

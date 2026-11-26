@@ -1332,6 +1332,8 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     revertClipChanges,
     ensureProxy,
     mediaSrc,
+    ensureCellProxy,
+    cellSrc,
     thumbnail,
     thumbnails,
     waveform,
