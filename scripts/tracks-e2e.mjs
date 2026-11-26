@@ -1022,9 +1022,9 @@ try {
     await app.waitFor('return !!document.querySelector("[data-testid=done-view]")', { timeoutMs: 180_000, what: 'vídeo con pegatina guardado' })
     await noErrorDialog('guardar con pegatina')
     const out = await S('return store.lastExport.value.path')
-    const v = ffprobe(out).streams.find((s) => s.codec_type === 'video')
-    // Color de un punto (fracción del ancho y del alto) en un instante del fichero, y de un vídeo sin pegatina.
+    // Color de un punto (fracción del ancho y del alto, de cada fichero) en un instante del guardado y del original.
     const pixel = (path, sec, fx, fy) => {
+      const v = ffprobe(path).streams.find((s) => s.codec_type === 'video')
       const x = Math.round(fx * v.width)
       const y = Math.round(fy * v.height)
       const buf = execFileSync('ffmpeg', ['-v', 'error', '-ss', String(sec), '-i', path, '-frames:v', '1', '-vf', `crop=1:1:${x}:${y},format=rgb24`, '-f', 'rawvideo', '-'])

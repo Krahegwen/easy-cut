@@ -160,7 +160,7 @@ async function setState(state) {
   }
   await app.evaluate('document.activeElement?.blur(); return true')
   // Con el ratón encima de la primera tarjeta con vídeo (si las tarjetas solo se mueven al pasar el ratón).
-  const pos = state === 'raton' ? await app.evaluate('const v = document.querySelector("[data-testid=library-asset] .preview video"); if (!v) return null; const r = v.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }') : { x: 5, y: 5 }
+  const pos = state === 'raton' ? await app.evaluate('const v = document.querySelector("[data-testid=library-asset] .preview video")?.closest(".preview"); if (!v) return null; v.scrollIntoView({ block: "nearest" }); const r = v.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }') : { x: 5, y: 5 }
   if (pos) await app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y, button: 'none' })
   // Todas moviéndose a la vez (como antes de que se quedaran quietas), a mano, para compararlo en el mismo código;
   // en los demás casos, las que no tienen el ratón encima, quietas (por si venían de «todas»).
