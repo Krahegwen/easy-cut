@@ -5,6 +5,7 @@
 // ItemAnchor en project.ts). Aquí: resolver los tiempos, colocar sin solapes, mover, recortar, partir,
 // duplicar, imanes y lo que hace falta para la vista previa. Todo puro e inmutable, en milisegundos.
 
+import { collageName, collageNaturalMs, COLLAGE_DEFAULT_MS } from './collage'
 import { copyLook, shiftKeyframes, splitKeyframes } from './keyframes'
 import { effectiveFadeLengths, fadeGainAt, isEasing, type Easing } from './motion'
 import {
@@ -13,6 +14,7 @@ import {
   clipOutputMs,
   clipTimeline,
   type ClipTimeline,
+  type Collage,
   MAX_ITEM_VOLUME,
   normalizeLook,
   type EffectLook,
@@ -53,9 +55,9 @@ export function itemLoopMs(item: TrackItem): number {
   return Math.max(1, item.outMs - item.inMs)
 }
 
-/** ¿Su duración en pantalla se elige aparte (repite o es una imagen fija)? */
+/** ¿Su duración en pantalla se elige aparte (repite, es una imagen fija o es un collage)? */
 export function itemHasFreeLength(item: TrackItem): boolean {
-  return item.repeat || item.still
+  return item.repeat || item.still || item.source.type === 'collage'
 }
 
 /** Cuánto dura en pantalla si empieza en `startMs` (null en durationMs = hasta el final del vídeo). */
@@ -298,7 +300,62 @@ export function createItem(input: NewItem): TrackItem {
     fadeInEasing: isEasing(d.fadeInEasing) ? d.fadeInEasing : 'linear',
     fadeOutEasing: isEasing(d.fadeOutEasing) ? d.fadeOutEasing : 'linear',
     look,
+    collage: null,
   }
+}
+
+/**
+ * Un collage nuevo (aún sin sitio), vacío o con los huecos ya puestos: siempre «Normal», a pantalla completa y sin
+ * sonido propio (suena, como mucho, el hueco que se elija). Dura lo que el vídeo más largo de sus huecos (sin pasar
+ * de `maxMs`) o, sin vídeos, COLLAGE_DEFAULT_MS.
+ */
+export function createCollageItem(id: string, collage: Collage, maxMs = Number.POSITIVE_INFINITY): TrackItem {
+  return {
+    id,
+    source: { type: 'collage' },
+    name: collageName(collage),
+    sourceDurationMs: 0,
+    still: false,
+    hasAudio: false,
+    anchor: { clipId: null, offsetMs: 0 },
+    inMs: 0,
+    outMs: 0,
+    phaseMs: 0,
+    repeat: false,
+    durationMs: collageDurationFor(collage, maxMs),
+    volume: 0,
+    fadeInMs: 0,
+    fadeOutMs: 0,
+    fadeInEasing: 'linear',
+    fadeOutEasing: 'linear',
+    look: normalizeLook({ mix: 'normal', opacity: 1, fit: 'cover', box: { x: 0.5, y: 0.5, scale: 1 } }),
+    collage,
+  }
+}
+
+/** Lo que dura de serie un collage: lo del vídeo más largo (sin pasar de `maxMs`) o, sin vídeos, COLLAGE_DEFAULT_MS. */
+export function collageDurationFor(collage: Collage, maxMs = Number.POSITIVE_INFINITY): number {
+  const natural = collageNaturalMs(collage) ?? COLLAGE_DEFAULT_MS
+  return Math.max(MIN_ITEM_MS, Math.round(Math.min(natural, Math.max(MIN_ITEM_MS, maxMs))))
+}
+
+/**
+ * Cambia los huecos de un collage (con una función de collage.ts). Mientras el collage dure lo de serie (lo de su
+ * vídeo más largo, o lo de un collage vacío), sigue a sus vídeos: al poner uno más largo, se alarga (sin pasar del
+ * final del vídeo ni pisar al siguiente); si se ha recortado a mano, se queda como está.
+ */
+export function updateCollage(project: Project, itemId: string, fn: (c: Collage) => Collage, timing = projectTiming(project)): Project {
+  const n = neighbours(project, itemId, timing)
+  if (!n || !n.self.item.collage) return project
+  const item = n.self.item
+  const collage = fn(item.collage!)
+  if (collage === item.collage) return project
+  let durationMs = item.durationMs
+  const s = n.self.startMs
+  const room = Math.min(n.nextStart, timing.totalMs) - s
+  const before = collageDurationFor(item.collage!, room)
+  if (durationMs !== null && item.phaseMs === 0 && Math.abs(durationMs - before) <= 1) durationMs = collageDurationFor(collage, room)
+  return updateItem(project, itemId, (i) => ({ ...i, collage, durationMs, name: collageName(collage) }))
 }
 
 function clampVolume(v: number): number {
@@ -496,20 +553,24 @@ export function trimItemStart(project: Project, itemId: string, newStartMs: numb
   if (!n || n.self.item.source.type === 'clip') return project
   const { item, startMs: s, endMs: e } = n.self
   let start = Math.round(Math.min(Math.max(newStartMs, n.prevEnd, 0), e - MIN_ITEM_MS))
+  const collage = item.source.type === 'collage'
+  // Un collage no se alarga por delante de su principio (sus vídeos empiezan ahí).
+  if (collage) start = Math.max(start, s - item.phaseMs)
   let next: TrackItem
   if (itemHasFreeLength(item)) {
     const delta = start - s
     next = {
       ...item,
       durationMs: item.durationMs === null ? null : e - start,
-      phaseMs: item.repeat ? mod(item.phaseMs + delta, itemLoopMs(item)) : 0,
+      // Un collage va por donde iba, sin vueltas.
+      phaseMs: item.repeat ? mod(item.phaseMs + delta, itemLoopMs(item)) : collage ? item.phaseMs + delta : 0,
     }
   } else {
     const inMs = Math.min(Math.max(0, item.inMs + (start - s)), item.outMs - MIN_ITEM_MS)
     start = s + (inMs - item.inMs)
     next = { ...item, inMs }
   }
-  if (start === s && next.inMs === item.inMs && next.durationMs === item.durationMs) return project
+  if (start === s && next.inMs === item.inMs && next.durationMs === item.durationMs && next.phaseMs === item.phaseMs) return project
   // Las marcas de sitio y tamaño van en tiempo del elemento: se corren para quedarse en su sitio del vídeo.
   if (next.look && next.look.keyframes.length > 0 && start !== s) next = { ...next, look: { ...next.look, keyframes: shiftKeyframes(next.look.keyframes, s - start) } }
   next = { ...next, anchor: anchorForItem(project, next, start, timing) }
@@ -553,7 +614,14 @@ export function splitItem(project: Project, itemId: string, atMs: number, newId:
     : { ...item, outMs: item.inMs + elapsed, fadeOutMs: 0 }
   const restLength = item.durationMs === null ? null : r.endMs - at
   let second: TrackItem = itemHasFreeLength(item)
-    ? { ...item, id: newId, durationMs: restLength, phaseMs: item.repeat ? mod(item.phaseMs + elapsed, itemLoopMs(item)) : 0, fadeInMs: 0 }
+    ? {
+        ...item,
+        id: newId,
+        durationMs: restLength,
+        // Si repite, por dónde va la vuelta; un collage, por dónde va (sin vueltas).
+        phaseMs: item.repeat ? mod(item.phaseMs + elapsed, itemLoopMs(item)) : item.source.type === 'collage' ? item.phaseMs + elapsed : 0,
+        fadeInMs: 0,
+      }
     : { ...item, id: newId, inMs: item.inMs + elapsed, fadeInMs: 0 }
   // Las marcas de sitio y tamaño: cada mitad se queda con las suyas (ver splitKeyframes).
   const marks = item.look ? splitKeyframes(item.look.keyframes, elapsed) : null
@@ -631,7 +699,7 @@ export function setItemRepeat(project: Project, itemId: string, repeat: boolean,
   const n = neighbours(project, itemId, timing)
   if (!n) return project
   const { item, startMs: s } = n.self
-  if (item.still || item.repeat === repeat || item.source.type === 'clip') return project
+  if (item.still || item.repeat === repeat || item.source.type === 'clip' || item.source.type === 'collage') return project
   let next: TrackItem
   if (repeat) {
     // Un efecto repite su fichero entero (así no hay que guardar la vuelta en memoria al guardar el vídeo).
@@ -727,7 +795,11 @@ export function itemLocalMs(project: Project, itemId: string, atMs: number, timi
 
 /** Rutas de fichero (no de la biblioteca) que usan las pistas. */
 export function trackFilePaths(project: Project): string[] {
-  return [...new Set(allItems(project).flatMap((i) => (i.source.type === 'file' ? [i.source.path] : [])))]
+  return [
+    ...new Set(
+      allItems(project).flatMap((i) => (i.source.type === 'file' ? [i.source.path] : i.collage ? i.collage.cells.flatMap((c) => (c.source ? [c.source.path] : [])) : [])),
+    ),
+  ]
 }
 
 /** Ids de la biblioteca que usan las pistas. */

@@ -60,6 +60,7 @@ export function createClipVideoItem(clip: Clip, id: string): TrackItem {
     fadeInEasing: 'linear',
     fadeOutEasing: 'linear',
     look: { mix: 'normal', opacity: 1, box: { ...FULL_BOX }, fit: 'cover', keyframes: [], rounded: true },
+    collage: null,
   }
 }
 

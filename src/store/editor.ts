@@ -211,7 +211,14 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
   })
   /** Sonidos y efectos de fichero cuyo original no se encuentra (o no se ha podido leer). */
   const missingItems = computed(() =>
-    project.value.tracks.flatMap((t) => t.items).filter((i) => i.source.type === 'file' && (!!missing.value[i.source.path] || !media.value[i.source.path])),
+    project.value.tracks
+      .flatMap((t) => t.items)
+      .filter(
+        (i) =>
+          (i.source.type === 'file' && (!!missing.value[i.source.path] || !media.value[i.source.path])) ||
+          // Un collage con el vídeo de algún hueco perdido.
+          !!i.collage?.cells.some((c) => c.source && (!!missing.value[c.source.path] || !media.value[c.source.path])),
+      ),
   )
   const hasMissing = computed(
     () =>
@@ -1014,6 +1021,31 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     return bridge.mediaUrl(proxies.value[path] ?? path)
   }
 
+  /**
+   * Copias pequeñas (540p) de los vídeos de los huecos de un collage: aparte de `proxies`, para que el trozo que
+   * use el mismo fichero se siga viendo con el original. Si no se puede hacer, se usa el original (sin avisar: se
+   * guarda bien igualmente y en la vista previa solo cuesta más).
+   */
+  const cellProxies = shallowRef<Record<string, string>>({})
+  const cellProxyStatus = shallowRef<Record<string, ProxyStatus>>({})
+  async function ensureCellProxy(path: string) {
+    if (cellProxyStatus.value[path]) return
+    cellProxyStatus.value = { ...cellProxyStatus.value, [path]: 'working' }
+    try {
+      const proxy = proxies.value[path] ?? (await bridge.makePreviewProxy(path).result)
+      cellProxies.value = { ...cellProxies.value, [path]: proxy }
+      cellProxyStatus.value = { ...cellProxyStatus.value, [path]: 'ready' }
+    } catch (e) {
+      cellProxyStatus.value = { ...cellProxyStatus.value, [path]: 'error' }
+      console.warn('[easy-cut] no se ha podido preparar la copia pequeña de un hueco del collage', path, e)
+    }
+  }
+
+  /** De dónde sale el vídeo de un hueco en la vista previa (su copia pequeña si la hay). */
+  function cellSrc(path: string): string {
+    return bridge.mediaUrl(cellProxies.value[path] ?? proxies.value[path] ?? path)
+  }
+
   const thumbCache = new Map<string, Promise<Thumbnail | null>>()
   /** Miniatura de un instante del original (cacheada en memoria; el bridge la cachea en disco). */
   function thumbnail(path: string, timeMs: number, height: number): Promise<Thumbnail | null> {
@@ -1232,6 +1264,7 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     missing,
     proxies,
     proxyStatus,
+    cellProxyStatus,
     selectedClipId,
     selectedClip,
     selectedIndex,
@@ -1299,6 +1332,8 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     revertClipChanges,
     ensureProxy,
     mediaSrc,
+    ensureCellProxy,
+    cellSrc,
     thumbnail,
     thumbnails,
     waveform,

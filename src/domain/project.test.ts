@@ -368,7 +368,7 @@ describe('serialización', () => {
     p = setTargetDuration(setAspect(p, '1:1'), 60_000)
     const json = serializeProject(p)
     expect(JSON.parse(json).app).toBe('easy-cut')
-    expect(JSON.parse(json).version).toBe(6)
+    expect(JSON.parse(json).version).toBe(7)
     expect(parseProject(json)).toEqual(syncMediaPool(p))
   })
 

@@ -37,6 +37,19 @@ function toTracks(at: DropPoint | null | undefined): boolean {
   return !!el?.closest('[data-testid=track-row], [data-testid=track-header], [data-testid=add-track-row]')
 }
 
+/**
+ * En «Huecos», ¿en qué hueco del collage cae lo soltado? El de debajo del puntero; encima de la vista previa pero
+ * fuera de los huecos, el elegido. null si no se están editando los huecos o se suelta en otro sitio.
+ */
+function dropCell(at: DropPoint | null | undefined): number | null {
+  if (!tracks.cellsEditing.value || !tracks.selectedCollage.value) return null
+  if (!at) return tracks.pickedCell.value
+  const el = document.elementFromPoint(at.x, at.y)
+  const slot = el?.closest('[data-cell-index]') as HTMLElement | null
+  if (slot) return Number(slot.dataset.cellIndex)
+  return el?.closest('[data-testid=track-layers], .preview') ? tracks.pickedCell.value : null
+}
+
 let stopDrop: (() => void) | null = null
 let stopKeys: (() => void) | null = null
 const onBeforeUnload = () => void store.flushAutosave()
@@ -47,6 +60,12 @@ onMounted(() => {
   stopDrop = store.bridge.onFilesDropped({
     onDrop: (paths, at) => {
       const screen = store.screen.value
+      const cell = screen === 'editor' ? dropCell(at) : null
+      const collage = tracks.selectedCollage.value
+      if (cell !== null && collage) {
+        void tracks.fillCells(collage.id, cell, paths)
+        return
+      }
       // Encima de las pistas (o con la biblioteca abierta), lo que se suelta va a las pistas, donde está la línea.
       if (screen === 'editor' && toTracks(at)) void tracks.addFiles(paths, tracks.playheadMs.value)
       else if (screen === 'pick' || screen === 'editor') void addVideos(paths)
@@ -87,8 +106,8 @@ onBeforeUnmount(() => {
   <TeleprompterView v-else-if="store.screen.value === 'teleprompter'" />
   <TrimView v-else-if="store.screen.value === 'trim'" />
 
-  <div v-if="hovering && store.screen.value === 'editor'" class="drop-hint" :class="{ tracks: toTracks(hoverPoint) }" data-testid="drop-hint">
-    {{ toTracks(hoverPoint) ? 'Suelta aquí los sonidos, vídeos o imágenes para ponerlos en las pistas, donde está la línea' : 'Suelta los vídeos o sonidos para añadirlos al final de tu vídeo (encima de las pistas de sonidos o efectos, van a las pistas)' }}
+  <div v-if="hovering && store.screen.value === 'editor'" class="drop-hint" :class="{ tracks: toTracks(hoverPoint) || dropCell(hoverPoint) !== null }" data-testid="drop-hint">
+    {{ dropCell(hoverPoint) !== null ? `Suelta aquí para ponerlo en el hueco ${dropCell(hoverPoint)! + 1} del collage` : toTracks(hoverPoint) ? 'Suelta aquí los sonidos, vídeos o imágenes para ponerlos en las pistas, donde está la línea' : 'Suelta los vídeos o sonidos para añadirlos al final de tu vídeo (encima de las pistas de sonidos o efectos, van a las pistas)' }}
   </div>
   <PreparingOverlay />
   <ToastBar />

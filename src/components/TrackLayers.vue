@@ -8,11 +8,24 @@
 // el de la marca de la línea, que se crea si no la hay). Los efectos con marcas viajan de una a otra: el mismo
 // cálculo que al guardar (boxAt), en cada fotograma, con `transform` (translate + scale) sobre su recuadro a tamaño
 // 1. Con «Repasar más rápido» (`rate`), todo suena y se mueve a ese factor (playbackRate), como el reloj del montaje.
+// Un collage es un recuadro como cualquier efecto con un hueco por vídeo dentro (los mismos rectángulos que al
+// guardar, cellRects y cellContentLayout); cada hueco es su propio <video>, que sigue el tiempo del collage a velocidad
+// normal y se queda en su última imagen al acabarse; suenan los huecos no silenciados. Los <video> de los efectos
+// tienen un cupo (VIDEO_BUDGET: un efecto de vídeo cuenta 1, una imagen 0 y un collage, sus huecos con vídeo).
 
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   audibleOrVisible,
   boxAt,
+  cellContentLayout,
+  cellRects,
+  cellSounds,
+  cellTimeAt,
+  COLLAGE_BACKGROUND_HEX,
+  COLLAGE_GAP_HEX,
+  layoutById,
+  needsCellProxy,
+  type CollageCell,
   COVER_DRIFT_TOLERANCE_MS,
   visibleMarks,
   effectRect,
@@ -32,6 +45,7 @@ import {
   type TrackItem,
 } from '../domain'
 import { library, store, tracks } from '../store'
+import CollageCells from './tracks/CollageCells.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -50,9 +64,10 @@ const props = withDefaults(
   { rate: 1 },
 )
 
-/** Sonidos montados a la vez, como mucho. */
+/** Sonidos montados a la vez, como mucho (los huecos que suenan de un collage también cuentan). */
 const SOUND_POOL = 8
-const EFFECT_POOL = 6
+/** <video> de los efectos montados a la vez, como mucho (un collage cuenta lo que tenga de vídeos). */
+const VIDEO_BUDGET = 6
 /** Se carga lo que empieza en los próximos segundos, para que no tarde en sonar. */
 const AHEAD_MS = 3000
 
@@ -64,8 +79,20 @@ function pathOf(item: TrackItem): string | null {
 
 const resolved = computed(() => {
   const timing = projectTiming(props.project)
-  return audibleOrVisible(resolveTracks(props.project, timing)).filter((r) => pathOf(r.item) !== null)
+  return audibleOrVisible(resolveTracks(props.project, timing)).filter((r) => r.item.collage || pathOf(r.item) !== null)
 })
+
+/** ¿Se puede ver este hueco? (tiene fichero, se encuentra y se ha leído). */
+function cellReady(c: CollageCell): boolean {
+  const path = c.source?.path
+  return !!path && !store.missing.value[path] && !!store.media.value[path]
+}
+
+/** Lo que cuesta en <video> un efecto: 1, una imagen 0 y un collage sus huecos con vídeo. */
+function videoCost(r: ResolvedItem): number {
+  if (r.item.collage) return r.item.collage.cells.filter((c) => cellReady(c) && !c.source!.still).length
+  return r.item.still ? 0 : 1
+}
 
 // La lista de montados cambia cada cuarto de segundo como mucho (no en cada fotograma).
 const coarseMs = computed(() => Math.floor(props.currentMs / 250) * 250)
@@ -74,6 +101,8 @@ const sounds = computed(() => {
   const t = coarseMs.value
   return resolved.value.filter((r) => r.track.kind === 'sound' && r.startMs <= t + AHEAD_MS && r.shownEndMs > t - 250).slice(0, SOUND_POOL)
 })
+/** Cuántos de los sonidos montados quedan para los huecos de los collages. */
+const soundRoom = computed(() => SOUND_POOL - sounds.value.length)
 
 const selectedId = computed(() => tracks.selectedItemId.value)
 const editingBox = computed(() => tracks.boxEditing.value && !!selectedEffect.value)
@@ -84,14 +113,27 @@ const selectedEffect = computed<ResolvedItem | null>(() => {
   if (!id) return null
   const timing = projectTiming(props.project)
   // «El vídeo de este trozo» también se coloca aquí (lo pinta el reproductor, pero el recuadro es el mismo).
-  return resolveTracks(props.project, timing).find((r) => r.item.id === id && r.track.kind === 'effect' && (pathOf(r.item) !== null || r.item.source.type === 'clip')) ?? null
+  return resolveTracks(props.project, timing).find((r) => r.item.id === id && r.track.kind === 'effect' && (pathOf(r.item) !== null || r.item.source.type === 'clip' || !!r.item.collage)) ?? null
 })
+
+const editingCells = computed(() => tracks.cellsEditing.value && !!selectedEffect.value?.item.collage)
 
 const effects = computed(() => {
   const t = coarseMs.value
-  const list = resolved.value.filter((r) => r.track.kind === 'effect' && r.startMs <= t + 2000 && r.shownEndMs > t - 250).slice(0, EFFECT_POOL)
+  // Lo que se ve ahora primero; luego lo que empieza en los próximos 2 s, mientras quede cupo de <video>.
+  const candidates = resolved.value
+    .filter((r) => r.track.kind === 'effect' && r.startMs <= t + 2000 && r.shownEndMs > t - 250)
+    .sort((a, b) => Number(isActive(b, t)) - Number(isActive(a, t)) || a.startMs - b.startMs)
+  const list: ResolvedItem[] = []
+  let budget = VIDEO_BUDGET
+  for (const r of candidates) {
+    const cost = videoCost(r)
+    if (cost > budget) continue
+    list.push(r)
+    budget -= cost
+  }
   const sel = selectedEffect.value
-  if (editingBox.value && sel && sel.item.source.type !== 'clip' && !list.some((r) => r.item.id === sel.item.id)) list.push(sel)
+  if ((editingBox.value || editingCells.value) && sel && sel.item.source.type !== 'clip' && !list.some((r) => r.item.id === sel.item.id)) list.push(sel)
   // De abajo arriba: la primera pista de efectos es la de encima.
   const order = props.project.tracks.filter((x) => x.kind === 'effect').map((x) => x.id)
   return list.sort((a, b) => order.indexOf(b.track.id) - order.indexOf(a.track.id))
@@ -105,6 +147,8 @@ const WAIT_DONE_MS = 8
 const WAIT_AHEAD_MAX_MS = 400
 
 const elements = new Map<string, HTMLMediaElement>()
+/** Fondo de un hueco vacío y de las bandas de un vídeo «Entero». */
+const BG = `#${COLLAGE_BACKGROUND_HEX}`
 const sync = ref<Record<string, { expected: number; actual: number | null; active: boolean }>>({})
 
 function register(id: string, el: unknown) {
@@ -117,8 +161,8 @@ function srcOf(item: TrackItem): string {
 }
 
 function mediaSize(item: TrackItem): { width: number; height: number } {
-  // El vídeo de un trozo tiene la forma del marco (se recorta al centro).
-  if (item.source.type === 'clip') return { width: props.frameWidth, height: props.frameHeight }
+  // El vídeo de un trozo y el collage tienen la forma del marco (el vídeo de un trozo se recorta al centro).
+  if (item.source.type === 'clip' || item.collage) return { width: props.frameWidth, height: props.frameHeight }
   const p = pathOf(item)
   const m = p ? store.media.value[p] : null
   return { width: m?.width ?? 0, height: m?.height ?? 0 }
@@ -160,7 +204,7 @@ function isActive(r: ResolvedItem, t: number): boolean {
 function effectStyle(r: ResolvedItem) {
   const look = r.item.look!
   const t = props.currentMs
-  const forced = editingBox.value && r.item.id === selectedId.value
+  const forced = (editingBox.value || editingCells.value) && r.item.id === selectedId.value
   const active = isActive(r, t) || forced
   const fade = isActive(r, t) ? itemFadeAt(r.item, t - r.startMs, r.shownEndMs - r.startMs) : 1
   return {
@@ -230,9 +274,120 @@ function syncOne(r: ResolvedItem, exact: boolean) {
   }
 }
 
+// ------------------------------------------------------------------ collage
+
+/** Los huecos del collage en el marco (px de pantalla; el recuadro a tamaño 1 es el marco entero). */
+function collageCells(r: ResolvedItem) {
+  const c = r.item.collage!
+  const layout = layoutById(c.layoutId)
+  if (!layout) return []
+  const W = props.frameWidth
+  const H = props.frameHeight
+  return cellRects(layout, W, H, c.gap).map((rect, i) => {
+    const cell = c.cells[i]!
+    const ready = cellReady(cell)
+    const m = ready ? store.media.value[cell.source!.path]! : null
+    const content = m ? cellContentLayout(cell, m.width, m.height, rect.width, rect.height) : null
+    return {
+      i,
+      key: `${r.item.id}:${i}`,
+      cell,
+      ready,
+      still: !!cell.source?.still,
+      rectStyle: { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` },
+      contentStyle: content ? { left: `${content.left}px`, top: `${content.top}px`, width: `${content.width}px`, height: `${content.height}px` } : {},
+      src: ready ? store.cellSrc(cell.source!.path) : '',
+    }
+  })
+}
+
+function collageStyle(r: ResolvedItem) {
+  return { ...effectStyle(r), background: `#${COLLAGE_GAP_HEX[r.item.collage!.gap]}` }
+}
+
+/** Los huecos que suenan, dentro del cupo de sonidos montados (los de los collages más cercanos primero). */
+const soundingCellKeys = computed(() => {
+  const keys = new Set<string>()
+  let room = soundRoom.value
+  for (const r of effects.value) {
+    if (!r.item.collage) continue
+    r.item.collage.cells.forEach((c, i) => {
+      if (room > 0 && cellSounds(c) && cellReady(c)) {
+        keys.add(`${r.item.id}:${i}`)
+        room--
+      }
+    })
+  }
+  return keys
+})
+
+/** Lleva cada hueco de un collage a su instante (a velocidad normal; quieto en su última imagen) con su sonido. */
+function syncCollage(r: ResolvedItem, exact: boolean) {
+  const c = r.item.collage!
+  const t = props.currentMs
+  const local = t - r.startMs
+  const length = r.shownEndMs - r.startMs
+  const active = isActive(r, t)
+  const forced = editingCells.value && r.item.id === selectedId.value
+  const collageMs = r.item.phaseMs + Math.max(0, Math.min(local, length))
+  c.cells.forEach((cell, i) => {
+    const key = `${r.item.id}:${i}`
+    const el = elements.get(key)
+    const at = cellTimeAt(cell, collageMs)
+    if (!at || cell.source?.still) return
+    const expected = at.ms
+    sync.value[key] = { expected, actual: el && el.readyState >= 1 ? Math.round(el.currentTime * 1000) : null, active }
+    if (!el || el.readyState < 1) return
+    const rate = mediaRate(1, props.rate)
+    if (el.playbackRate !== rate) {
+      el.defaultPlaybackRate = rate
+      el.playbackRate = rate
+    }
+    const sounding = soundingCellKeys.value.has(key)
+    el.muted = !sounding
+    el.volume = sounding && active && !at.frozen ? Math.min(1, Math.max(0, cell.volume * itemFadeAt(r.item, local, length))) : 0
+    // Quieto: en su última imagen (o el collage aún no empieza / ya acabó): parado en su sitio, sin buscar otra vez.
+    if (!active || at.frozen || !props.playing) {
+      if (!el.paused) el.pause()
+      const want = !active && !forced && local < 0 ? (cellTimeAt(cell, r.item.phaseMs)?.ms ?? 0) : expected
+      if (!el.seeking && (exact || Math.abs(el.currentTime * 1000 - want) > 45) && Math.abs(el.currentTime * 1000 - want) > 20) el.currentTime = want / 1000
+      return
+    }
+    const ahead = el.currentTime * 1000 - expected
+    const silentClock = !sounding
+    if (el.paused) {
+      if (silentClock && (clockWaiting() || (ahead > WAIT_DONE_MS && ahead <= WAIT_AHEAD_MAX_MS))) return
+      if (!el.seeking && Math.abs(ahead) > 45) el.currentTime = expected / 1000
+      void el.play().catch(() => {})
+    } else if (silentClock && !el.seeking && ahead > AHEAD_PAUSE_MS && ahead <= WAIT_AHEAD_MAX_MS) {
+      el.pause()
+    } else if (!el.seeking && Math.abs(ahead) > COVER_DRIFT_TOLERANCE_MS) {
+      el.currentTime = expected / 1000
+    }
+  })
+}
+
+/** Un hueco que el <video> no sabe reproducir (o que es muy grande) pide su copia pequeña. */
+function onCellMetadata(r: ResolvedItem, i: number, e: Event) {
+  const cell = r.item.collage?.cells[i]
+  const path = cell?.source?.path
+  const m = path ? store.media.value[path] : null
+  const el = e.target as HTMLVideoElement
+  if (path && ((m && needsCellProxy(m)) || el.videoWidth === 0)) void store.ensureCellProxy(path)
+  syncCollage(r, true)
+}
+
+function onCellError(r: ResolvedItem, i: number) {
+  const path = r.item.collage?.cells[i]?.source?.path
+  if (path) void store.ensureCellProxy(path)
+}
+
 function syncAll(exact = false) {
   for (const r of sounds.value) syncOne(r, exact)
-  for (const r of effects.value) syncOne(r, exact)
+  for (const r of effects.value) {
+    if (r.item.collage) syncCollage(r, exact)
+    else syncOne(r, exact)
+  }
   syncTrying(exact)
 }
 
@@ -374,6 +529,14 @@ onBeforeUnmount(() => {
   }
 })
 
+/** Dónde está ahora el collage elegido (para «Huecos»): su recuadro en el instante de la línea. */
+const cellsRect = computed(() => {
+  const r = selectedEffect.value
+  if (!r || !editingCells.value) return null
+  const look = r.item.look!
+  return effectRect({ ...look, box: boxAt(look, localOf(r)) }, props.frameWidth, props.frameHeight, props.frameWidth, props.frameHeight)
+})
+
 defineExpose({ sync })
 
 /** Para las pruebas: cuánto dura en pantalla cada elemento montado. */
@@ -383,10 +546,40 @@ function lengthOf(r: ResolvedItem): number {
 </script>
 
 <template>
-  <div class="track-layers" :class="{ editing: editingBox }" data-testid="track-layers" :data-sync="JSON.stringify(sync)">
+  <div class="track-layers" :class="{ editing: editingBox || editingCells }" data-testid="track-layers" :data-sync="JSON.stringify(sync)">
     <template v-for="r in effects" :key="r.item.id">
+      <div v-if="r.item.collage" class="fx collage" :style="collageStyle(r)" :data-item-id="r.item.id" data-testid="track-collage">
+        <div
+          v-for="c in collageCells(r)"
+          :key="c.key"
+          class="cell"
+          :style="{ ...c.rectStyle, background: BG }"
+          :data-cell="c.i"
+          data-testid="collage-cell"
+        >
+          <template v-if="c.ready">
+            <img v-if="c.still" class="cell-media" :src="c.src" :style="c.contentStyle" alt="" draggable="false" />
+            <video
+              v-else
+              :ref="(el) => register(c.key, el)"
+              class="cell-media"
+              :src="c.src"
+              :style="c.contentStyle"
+              :data-cell-key="c.key"
+              data-testid="collage-cell-video"
+              muted
+              preload="auto"
+              playsinline
+              disablepictureinpicture
+              disableremoteplayback
+              @loadedmetadata="onCellMetadata(r, c.i, $event)"
+              @error="onCellError(r, c.i)"
+            />
+          </template>
+        </div>
+      </div>
       <img
-        v-if="r.item.still"
+        v-else-if="r.item.still"
         class="fx"
         :src="srcOf(r.item)"
         :style="effectStyle(r)"
@@ -445,6 +638,7 @@ function lengthOf(r: ResolvedItem): number {
       data-testid="mark-dot"
       aria-hidden="true"
     >{{ d.n }}</span>
+    <CollageCells v-if="cellsRect && selectedEffect" :item="selectedEffect.item" :rect="cellsRect" />
     <div
       v-if="editRect"
       class="box-editor"
@@ -486,6 +680,18 @@ function lengthOf(r: ResolvedItem): number {
   object-fit: fill;
   pointer-events: none;
   transform-origin: center;
+}
+.collage {
+  overflow: hidden;
+}
+.cell {
+  position: absolute;
+  overflow: hidden;
+}
+.cell-media {
+  position: absolute;
+  object-fit: fill;
+  pointer-events: none;
 }
 .mark-dot {
   position: absolute;

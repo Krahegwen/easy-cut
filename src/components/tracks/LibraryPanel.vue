@@ -14,6 +14,7 @@ import {
   mediaUsage,
   NO_USAGE,
   poolActions,
+  MAX_COLLAGE_CELLS,
   poolForDisplay,
   searchLibrary,
   usageTotal,
@@ -333,6 +334,23 @@ function progressOf(a: LibraryAsset): number | null {
 // ------------------------------------------------------------------ «De mi ordenador»: lo ya traído
 
 const pool = computed(() => (tab.value === 'computer' ? poolForDisplay(store.project.value) : []))
+
+// «Hacer un collage con estos»: se marcan de 2 a 4 vídeos o fotos y se pone un collage donde está la línea, con la
+// distribución que mejor encaja con su forma.
+const collagePick = ref<string[] | null>(null)
+const collageable = (m: MediaEntry) => m.kind !== 'sound' && !isLost(m.path)
+const canCollage = computed(() => store.project.value.clips.length > 0 && pool.value.filter(collageable).length >= 2)
+function toggleCollagePick(path: string) {
+  const list = collagePick.value
+  if (!list) return
+  collagePick.value = list.includes(path) ? list.filter((p) => p !== path) : list.length >= MAX_COLLAGE_CELLS ? list : [...list, path]
+}
+async function makeCollage() {
+  const list = collagePick.value
+  if (!list || list.length < 2) return
+  collagePick.value = null
+  await tracks.createCollageFrom(list, tracks.playheadMs.value)
+}
 const usage = computed(() => mediaUsage(store.project.value))
 function usesOf(path: string): number {
   return usageTotal(usage.value.get(path) ?? NO_USAGE)
@@ -491,7 +509,21 @@ function poolThumb(m: MediaEntry): string | null {
           Sonidos, vídeos o imágenes (un logo, una pegatina…). También puedes soltarlos aquí o pegarlos con <KeyHint k="Ctrl V" />
         </p>
       </div>
-      <h3 v-if="pool.length" class="pool-title">Ya traídos a este vídeo</h3>
+      <div v-if="pool.length" class="pool-title-row">
+        <h3 class="pool-title">Ya traídos a este vídeo</h3>
+        <button v-if="!collagePick" class="btn small" type="button" :disabled="!canCollage" title="Marca de 2 a 4 vídeos o fotos y se ponen a la vez, cada uno en su hueco" data-testid="pool-collage-start" @click="collagePick = []">
+          <AppIcon name="collage" />
+          Hacer un collage
+        </button>
+      </div>
+      <div v-if="collagePick" class="collage-pick card" data-testid="pool-collage-bar">
+        <span>Marca de 2 a 4 vídeos o fotos: van a la vez, cada uno en su hueco ({{ collagePick.length }} marcados).</span>
+        <button class="btn small primary" type="button" :disabled="collagePick.length < 2" data-testid="pool-collage-make" @click="makeCollage">
+          <AppIcon name="collage" />
+          Hacer un collage con estos
+        </button>
+        <button class="btn small quiet" type="button" data-testid="pool-collage-cancel" @click="collagePick = null">Cancelar</button>
+      </div>
       <p v-else class="muted pool-empty" data-testid="pool-empty">Aquí saldrán los vídeos, sonidos e imágenes que traigas a este vídeo, para volver a usarlos.</p>
       <ul v-if="pool.length" class="pool" data-testid="pool-list">
         <li
@@ -542,6 +574,10 @@ function poolThumb(m: MediaEntry): string | null {
             <span v-if="isLost(m.path)" class="pool-lost" data-testid="pool-lost">No lo encuentro: puede que se haya movido o borrado.</span>
           </span>
           <span class="pool-buttons">
+            <label v-if="collagePick && collageable(m)" class="pool-check" data-testid="pool-collage-check">
+              <input type="checkbox" :checked="collagePick.includes(m.path)" :disabled="!collagePick.includes(m.path) && collagePick.length >= MAX_COLLAGE_CELLS" @change="toggleCollagePick(m.path)" />
+              Para el collage
+            </label>
             <button v-if="isLost(m.path)" class="btn small primary" type="button" data-testid="pool-relink" @click="store.relink(m.path)">
               <AppIcon name="relink" />
               Buscarlo
@@ -939,6 +975,33 @@ function poolThumb(m: MediaEntry): string | null {
   font-size: 14px;
   color: var(--warn);
   font-weight: 600;
+}
+.pool-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.collage-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+.pool-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pool-check input {
+  width: 20px;
+  height: 20px;
 }
 .pool-buttons {
   grid-area: buttons;

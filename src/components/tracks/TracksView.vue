@@ -11,6 +11,8 @@
 // elegido) abre el desplegable, y el borde del paso se arrastra para montar más o menos (con su texto en vivo).
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  ASPECT_VALUES,
+  emptyCells,
   attachedCounts,
   clipInOut,
   describeEntry,
@@ -37,6 +39,7 @@ import { reapplyPauses } from '../../lib/pauses'
 import { library, store, tracks } from '../../store'
 import AppIcon from '../AppIcon.vue'
 import KeyHint from '../KeyHint.vue'
+import LayoutIcon from '../LayoutIcon.vue'
 import ThumbImage from '../ThumbImage.vue'
 import TrackHeader from './TrackHeader.vue'
 
@@ -44,6 +47,7 @@ const props = defineProps<{ playheadMs: number; playing: boolean; transitionOpen
 const emit = defineEmits<{ seek: [ms: number]; add: []; record: []; transition: [clipId: string] }>()
 
 const project = computed(() => store.project.value)
+const frameAspect = computed(() => ASPECT_VALUES[project.value.aspect])
 const timing = computed(() => projectTiming(project.value))
 const totalMs = computed(() => Math.max(1, timing.value.totalMs))
 const effectTracks = computed(() => project.value.tracks.filter((t) => t.kind === 'effect'))
@@ -674,13 +678,18 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
               :title="r.item.name"
               @pointerdown="itemDown(r, 'move', $event)"
             >
-              <span class="thumb">
+              <span v-if="r.item.collage" class="thumb collage-thumb">
+                <LayoutIcon :layout-id="r.item.collage.layoutId" :aspect="frameAspect" :width="36" />
+              </span>
+              <span v-else class="thumb">
                 <img v-if="r.item.still && effectThumbPath(r)" :src="store.mediaSrc(effectThumbPath(r)!)" alt="" draggable="false" />
                 <ThumbImage v-else-if="effectThumbPath(r)" :path="effectThumbPath(r)!" :time-ms="Math.min(1000, r.item.sourceDurationMs / 2)" :height="64" />
               </span>
               <span class="label">
                 <AppIcon v-if="r.item.repeat" name="repeat" :size="15" />
+                <AppIcon v-if="r.item.collage" name="collage" :size="15" />
                 {{ itemLabel(r) }}
+                <span v-if="r.item.collage && emptyCells(r.item.collage).length" class="collage-warn" data-testid="collage-missing">· {{ emptyCells(r.item.collage).length === 1 ? 'Falta un vídeo' : `Faltan ${emptyCells(r.item.collage).length} vídeos` }}</span>
               </span>
               <span v-if="r.item.fadeInMs" class="fade in" :style="{ width: fadeWidth(r.item.fadeInMs) }" />
               <span v-if="r.item.fadeOutMs" class="fade out" :style="{ width: fadeWidth(r.item.fadeOutMs) }" />
@@ -849,6 +858,11 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
               <AppIcon name="add-row" :size="18" />
               Pista de efectos
             </button>
+            <button class="add-track fx" type="button" :disabled="project.clips.length === 0" title="Varios vídeos a la vez, cada uno en su hueco" data-testid="add-collage" @click="tracks.collageDialog.value = true">
+              <AppIcon name="collage" :size="18" />
+              Collage
+              <KeyHint k="C" />
+            </button>
             <span class="add-hint muted">Para pasar un sonido o un efecto a otra pista, arrástralo hasta ella (o elígelo y pulsa ↑ o ↓).</span>
           </div>
         </div>
@@ -867,6 +881,16 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
 </template>
 
 <style scoped>
+.collage-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #2a323b;
+}
+.collage-warn {
+  font-weight: 600;
+  color: #ffd27a;
+}
 .tracks-view {
   --row: 50px;
   --video-row: 64px;
