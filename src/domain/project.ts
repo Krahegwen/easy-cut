@@ -2,6 +2,7 @@
 // Todos los tiempos son milisegundos enteros. Nada de DOM ni de Node aquí.
 
 import { isEasing, isMotionEasing, type Easing, type MotionEasing } from './motion'
+import { normalizeCollage } from './collage'
 import { parseEntry, resolveJoins, joinToMs, sameEntry as sameClipEntry, type ClipEntry, type ResolvedJoin } from './transitions'
 
 export interface TimeRange {
@@ -156,7 +157,51 @@ export interface ItemAnchor {
  * fondo puede llevar su propio vídeo encima, encogerlo hasta una esquina y volver a pantalla completa con las
  * mismas marcas de sitio y tamaño que una pegatina.
  */
-export type ItemSource = { type: 'file'; path: string } | { type: 'library'; assetId: string } | { type: 'clip'; clipId: string }
+export type ItemSource = { type: 'file'; path: string } | { type: 'library'; assetId: string } | { type: 'clip'; clipId: string } | { type: 'collage' }
+
+/** La separación entre los huecos de un collage: raya oscura (de serie), raya blanca o ninguna. */
+export type CollageGap = 'dark' | 'white' | 'none'
+/** Cómo va un vídeo en su hueco: «Llenar el hueco» (recorta lo que sobra) o «Entero» (con bandas de fondo). */
+export type CellFit = 'fill' | 'whole'
+
+/** El fichero de un hueco (un vídeo o una foto del ordenador; un sonido no vale), con lo que hace falta de él. */
+export interface CollageCellSource {
+  path: string
+  /** Duración del vídeo (0 en una foto). */
+  durationMs: number
+  still: boolean
+  hasAudio: boolean
+  /** Ancho y alto visibles (con el giro aplicado); 0 si no se sabe. */
+  width: number
+  height: number
+}
+
+/** Un hueco del collage. */
+export interface CollageCell {
+  /** null = hueco vacío (se ve el fondo liso). */
+  source: CollageCellSource | null
+  /** Desde qué instante de su vídeo empieza (ms). Corre a velocidad normal; si se acaba, se queda en su última imagen. */
+  startMs: number
+  fit: CellFit
+  /** Encuadre dentro del hueco: zoom ≥ 1 y desplazamiento −1..1 (como el de un trozo). */
+  zoom: number
+  offsetX: number
+  offsetY: number
+  /** 0 = no suena (de serie). Como mucho un hueco suena. */
+  volume: number
+}
+
+/**
+ * Un collage (en un elemento de una pista de efectos con `source: { type: 'collage' }`): una plantilla con varios
+ * vídeos dentro. Ver collage.ts.
+ */
+export interface Collage {
+  /** La plantilla (ver COLLAGE_LAYOUTS). */
+  layoutId: string
+  gap: CollageGap
+  /** Tantos como huecos tiene la plantilla, en su orden. */
+  cells: CollageCell[]
+}
 
 /** normal: se pone encima (con su transparencia, si la trae) · light: «como luz», el negro desaparece. */
 export type EffectMix = 'normal' | 'light'
@@ -235,6 +280,11 @@ export interface TrackItem {
   fadeOutEasing: Easing
   /** Solo en los efectos: cómo se ve. */
   look: EffectLook | null
+  /**
+   * Solo en un collage (`source.type === 'collage'`): su plantilla y sus huecos. Un collage dura lo que se elija
+   * (`durationMs`, como una foto) y `phaseMs` es por dónde va (al recortarlo por delante o partirlo).
+   */
+  collage: Collage | null
 }
 
 export interface Track {
@@ -282,12 +332,13 @@ export interface MediaEntry {
 }
 
 /**
- * Versión 6: transiciones entre trozos (`Clip.entry`). La 5 (aparecer y desaparecer con curva, en trozos, sonidos y
+ * Versión 7: el collage (un elemento de las pistas de efectos con varios vídeos dentro, `TrackItem.collage`). La 6
+ * (transiciones entre trozos, `Clip.entry`) se migra sin collages. La 5 (aparecer y desaparecer con curva, en trozos, sonidos y
  * efectos), la 4 (con `media`, la lista de sus ficheros), la 3 (con `mainMuted` y `tracks`), la 2 (trozos con
  * `picture` y `sourceHasVideo`) y la 1 se migran al leerlas: sin transiciones (corte seco), y lo que tenía
  * «entrada/salida suave» pasa a la curva «Al mismo ritmo» con la misma duración (se ve y se oye igual).
  */
-export const PROJECT_VERSION = 6 as const
+export const PROJECT_VERSION = 7 as const
 
 export interface Project {
   version: typeof PROJECT_VERSION
@@ -1179,7 +1230,13 @@ export function usedMediaPaths(project: Project): string[] {
     add(c.sourcePath)
     if (c.picture.kind === 'cover') add(c.picture.sourcePath)
   }
-  for (const t of project.tracks) for (const i of t.items) if (i.source.type === 'file') add(i.source.path)
+  for (const t of project.tracks) {
+    for (const i of t.items) {
+      if (i.source.type === 'file') add(i.source.path)
+      // Los vídeos de los huecos de un collage.
+      if (i.collage) for (const c of i.collage.cells) if (c.source) add(c.source.path)
+    }
+  }
   return out
 }
 
@@ -1209,6 +1266,8 @@ function inferredEntry(project: Project, path: string): MediaEntry | null {
   }
   for (const t of project.tracks) {
     for (const i of t.items) {
+      const cell = i.collage?.cells.find((c) => c.source?.path === path)?.source
+      if (cell) return { ...base(cell.still ? 'image' : 'video', cell.durationMs, cell.hasAudio), width: cell.width, height: cell.height }
       if (i.source.type !== 'file' || i.source.path !== path) continue
       const kind: MediaKind = i.still ? 'image' : t.kind === 'effect' ? 'video' : 'sound'
       return base(kind, i.sourceDurationMs, i.hasAudio)
@@ -1436,6 +1495,7 @@ function migrateInsets(project: Project, insets: { clipId: string; inset: Inset 
       fadeInEasing: 'linear',
       fadeOutEasing: 'linear',
       look: { mix: 'normal', opacity: 1, box: legacyInsetBox(inset, project.aspect), fit: 'cover', keyframes: [], rounded: true },
+      collage: null,
     }
   })
   let id = MIGRATED_CORNER_TRACK_ID
@@ -1569,6 +1629,7 @@ function parseTrackItem(raw: unknown, kind: TrackKind): TrackItem[] {
   if (isObject(s) && s.type === 'file' && typeof s.path === 'string' && s.path !== '') source = { type: 'file', path: s.path }
   else if (isObject(s) && s.type === 'library' && typeof s.assetId === 'string' && s.assetId !== '') source = { type: 'library', assetId: s.assetId }
   else if (isObject(s) && s.type === 'clip' && typeof s.clipId === 'string' && s.clipId !== '' && kind === 'effect') return parseClipVideoItem(raw, s.clipId)
+  else if (isObject(s) && s.type === 'collage' && kind === 'effect') return parseCollageItem(raw)
   else return []
   const still = kind === 'effect' && raw.still === true
   const sourceDurationMs = still ? 0 : Math.round(finiteOr(raw.sourceDurationMs, 0))
@@ -1607,6 +1668,43 @@ function parseTrackItem(raw: unknown, kind: TrackKind): TrackItem[] {
       fadeInEasing: isEasing(raw.fadeInEasing) ? raw.fadeInEasing : 'linear',
       fadeOutEasing: isEasing(raw.fadeOutEasing) ? raw.fadeOutEasing : 'linear',
       look: kind === 'effect' ? normalizeLook(raw.look) : null,
+      collage: null,
+    },
+  ]
+}
+
+/**
+ * Un collage: dura lo que se eligió (como una foto; null = hasta el final del vídeo), con `phaseMs` (por dónde va,
+ * sin vueltas). Si la plantilla o los huecos no se entienden, se descarta el elemento (nunca el proyecto).
+ */
+function parseCollageItem(raw: Record<string, unknown>): TrackItem[] {
+  if (typeof raw.id !== 'string' || raw.id === '') return []
+  const collage = normalizeCollage(raw.collage)
+  if (!collage) return []
+  const a = isObject(raw.anchor) ? raw.anchor : {}
+  const duration = raw.durationMs === null ? null : Math.round(finiteOr(raw.durationMs, NaN))
+  return [
+    {
+      id: raw.id,
+      source: { type: 'collage' },
+      name: typeof raw.name === 'string' && raw.name !== '' ? raw.name.slice(0, 80) : `Collage de ${collage.cells.length}`,
+      sourceDurationMs: 0,
+      still: false,
+      hasAudio: false,
+      anchor: { clipId: typeof a.clipId === 'string' && a.clipId !== '' ? a.clipId : null, offsetMs: Math.round(finiteOr(a.offsetMs, 0)) },
+      inMs: 0,
+      outMs: 0,
+      phaseMs: Math.max(0, Math.round(finiteOr(raw.phaseMs, 0))),
+      repeat: false,
+      durationMs: duration === null || !Number.isFinite(duration) ? null : Math.max(MIN_SEGMENT_MS, duration),
+      volume: 0,
+      fadeInMs: Math.max(0, Math.round(finiteOr(raw.fadeInMs, 0))),
+      fadeOutMs: Math.max(0, Math.round(finiteOr(raw.fadeOutMs, 0))),
+      fadeInEasing: isEasing(raw.fadeInEasing) ? raw.fadeInEasing : 'linear',
+      fadeOutEasing: isEasing(raw.fadeOutEasing) ? raw.fadeOutEasing : 'linear',
+      // Siempre «Normal» y con la forma del marco (su recuadro a tamaño 1 es el marco entero).
+      look: { ...normalizeLook(raw.look), mix: 'normal', fit: 'cover', rounded: false },
+      collage,
     },
   ]
 }
@@ -1635,6 +1733,7 @@ function parseClipVideoItem(raw: Record<string, unknown>, clipId: string): Track
       fadeInEasing: 'linear',
       fadeOutEasing: 'linear',
       look: normalizeLook(raw.look),
+      collage: null,
     },
   ]
 }

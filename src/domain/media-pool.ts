@@ -2,6 +2,7 @@
 // ordenador» y volver a enlazar un original que se ha movido (comparar con el de antes, cambiarlo en todos
 // los sitios a la vez y buscar en la carpeta nueva los demás que faltaban de la misma carpeta). Puro.
 
+import { relinkCollage } from './collage'
 import { formatDuration } from './durations'
 import { baseName } from './file-name'
 import {
@@ -33,12 +34,14 @@ export interface MediaUsage {
   sounds: number
   /** Efectos de las pistas. */
   effects: number
+  /** Huecos de los collages. */
+  collages: number
 }
 
-export const NO_USAGE: MediaUsage = Object.freeze({ clips: 0, covers: 0, sounds: 0, effects: 0 })
+export const NO_USAGE: MediaUsage = Object.freeze({ clips: 0, covers: 0, sounds: 0, effects: 0, collages: 0 })
 
 export function usageTotal(u: MediaUsage): number {
-  return u.clips + u.covers + u.sounds + u.effects
+  return u.clips + u.covers + u.sounds + u.effects + u.collages
 }
 
 /** Cuántas veces usa el proyecto cada fichero del ordenador (los que no se usan no salen). */
@@ -54,7 +57,10 @@ export function mediaUsage(project: Project): Map<string, MediaUsage> {
     if (c.picture.kind === 'cover') bump(c.picture.sourcePath, 'covers')
   }
   for (const t of project.tracks) {
-    for (const i of t.items) if (i.source.type === 'file') bump(i.source.path, t.kind === 'sound' ? 'sounds' : 'effects')
+    for (const i of t.items) {
+      if (i.source.type === 'file') bump(i.source.path, t.kind === 'sound' ? 'sounds' : 'effects')
+      if (i.collage) for (const c of i.collage.cells) if (c.source) bump(c.source.path, 'collages')
+    }
   }
   return out
 }
@@ -138,6 +144,7 @@ export function relinkProblem(usage: MediaUsage, info: MediaInfo): string | null
   if (usage.covers > 0 && kind !== 'video') return 'Para el vídeo de encima hace falta un vídeo.'
   if (usage.sounds > 0 && (kind === 'image' || !info.hasAudio)) return 'Ese fichero no tiene sonido: elige uno que lo tenga.'
   if (usage.effects > 0 && kind === 'sound') return 'Un sonido no se puede ver encima del vídeo: elige un vídeo o una imagen.'
+  if (usage.collages > 0 && kind === 'sound') return 'Un sonido no puede ir en un hueco del collage: elige un vídeo o una imagen.'
   return null
 }
 
@@ -200,6 +207,12 @@ export function relinkMedia(project: Project, oldPath: string, info: MediaInfo):
   const tracks = project.tracks.map((t) => {
     let changed = false
     const items = t.items.map((i) => {
+      if (i.collage) {
+        const collage = relinkCollage(i.collage, oldPath, info)
+        if (collage === i.collage) return i
+        changed = true
+        return { ...i, collage }
+      }
       if (i.source.type !== 'file' || i.source.path !== oldPath) return i
       changed = true
       return relinkItem(i, info)

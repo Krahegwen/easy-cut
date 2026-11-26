@@ -123,11 +123,15 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
     // los sonidos y efectos de las pistas que suenan o se ven.
     const itemPath = request.itemPath ?? ((i: TrackItem) => (i.source.type === 'file' ? i.source.path : null))
     // «El vídeo de este trozo» no es un fichero aparte: es el original de su trozo, que ya se comprueba.
-    const trackPaths = project.tracks
-      .filter((t) => !(t.kind === 'sound' ? t.muted : t.hidden))
-      .flatMap((t) => t.items)
-      .filter((i) => i.source.type !== 'clip')
+    const shownItems = project.tracks.filter((t) => !(t.kind === 'sound' ? t.muted : t.hidden)).flatMap((t) => t.items)
+    // Un collage tampoco: lo que cuenta son los ficheros de sus huecos (en «Solo el sonido», solo el que suena).
+    const cellPaths = shownItems.flatMap((i) =>
+      i.collage ? i.collage.cells.filter((c) => c.source && (preset !== 'sound' || (c.volume > 0 && c.source.hasAudio))).map((c) => c.source!.path) : [],
+    )
+    const trackPaths = shownItems
+      .filter((i) => i.source.type !== 'clip' && i.source.type !== 'collage')
       .map((i) => itemPath(i))
+      .concat(cellPaths)
     if (trackPaths.some((p) => p === null)) {
       throw new ExportError('Falta por descargar algo de la biblioteca. Mira si hay conexión a internet y vuelve a probar.', 'elemento de la biblioteca sin fichero')
     }

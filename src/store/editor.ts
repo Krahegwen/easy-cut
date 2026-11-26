@@ -211,7 +211,14 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
   })
   /** Sonidos y efectos de fichero cuyo original no se encuentra (o no se ha podido leer). */
   const missingItems = computed(() =>
-    project.value.tracks.flatMap((t) => t.items).filter((i) => i.source.type === 'file' && (!!missing.value[i.source.path] || !media.value[i.source.path])),
+    project.value.tracks
+      .flatMap((t) => t.items)
+      .filter(
+        (i) =>
+          (i.source.type === 'file' && (!!missing.value[i.source.path] || !media.value[i.source.path])) ||
+          // Un collage con el vídeo de algún hueco perdido.
+          !!i.collage?.cells.some((c) => c.source && (!!missing.value[c.source.path] || !media.value[c.source.path])),
+      ),
   )
   const hasMissing = computed(
     () =>

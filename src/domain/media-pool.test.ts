@@ -134,7 +134,7 @@ describe('migración de los proyectos de antes a la versión 4', () => {
 
   it('versión 1: la lista sale de los trozos (vídeos), sin medir', () => {
     const p = parseProject(JSON.stringify({ app: 'easy-cut', version: 1, project: { aspect: '16:9', clips: [clipV1] } }))
-    expect(p.version).toBe(6)
+    expect(p.version).toBe(7)
     expect(p.media).toEqual([{ path: V, kind: 'video', durationMs: 20_000, hasVideo: true, hasAudio: true, width: 0, height: 0, fps: 0, sizeBytes: null, hasAlpha: false, probed: false }])
   })
 
@@ -174,24 +174,24 @@ describe('migración de los proyectos de antes a la versión 4', () => {
   })
 
   it('una versión más nueva que la de la app no se lee', () => {
-    expect(() => parseProject(JSON.stringify({ app: 'easy-cut', version: 7, project: { clips: [] } }))).toThrow(/más nueva/)
+    expect(() => parseProject(JSON.stringify({ app: 'easy-cut', version: 8, project: { clips: [] } }))).toThrow(/más nueva/)
   })
 })
 
 describe('usos de cada fichero', () => {
   it('cuenta trozos, vídeos de encima, sonidos y efectos', () => {
     const u = mediaUsage(sample())
-    expect(u.get(V)).toEqual({ clips: 2, covers: 0, sounds: 0, effects: 0 })
-    expect(u.get(V2)).toEqual({ clips: 0, covers: 1, sounds: 0, effects: 0 })
-    expect(u.get(S)).toEqual({ clips: 0, covers: 0, sounds: 1, effects: 0 })
+    expect(u.get(V)).toEqual({ clips: 2, covers: 0, sounds: 0, effects: 0, collages: 0 })
+    expect(u.get(V2)).toEqual({ clips: 0, covers: 1, sounds: 0, effects: 0, collages: 0 })
+    expect(u.get(S)).toEqual({ clips: 0, covers: 0, sounds: 1, effects: 0, collages: 0 })
     expect(usageTotal(u.get(IMG)!)).toBe(1)
     expect(u.has('C:\\otro.mp4')).toBe(false)
   })
 
   it('en llano', () => {
-    expect(describeUsage({ clips: 2, covers: 1, sounds: 0, effects: 0 })).toBe('Se usa 3 veces')
-    expect(describeUsage({ clips: 0, covers: 0, sounds: 1, effects: 0 })).toBe('Se usa 1 vez')
-    expect(describeUsage({ clips: 0, covers: 0, sounds: 0, effects: 0 })).toBe('Ahora no se usa')
+    expect(describeUsage({ clips: 2, covers: 1, sounds: 0, effects: 0, collages: 0 })).toBe('Se usa 3 veces')
+    expect(describeUsage({ clips: 0, covers: 0, sounds: 1, effects: 0, collages: 0 })).toBe('Se usa 1 vez')
+    expect(describeUsage({ clips: 0, covers: 0, sounds: 0, effects: 0, collages: 0 })).toBe('Ahora no se usa')
     const p = sample()
     expect(p.media.map(describeMediaEntry)).toEqual(['Vídeo · 20 s', 'Vídeo · 8 s', 'Sonido · 30 s', 'Imagen'])
   })

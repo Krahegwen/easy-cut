@@ -245,7 +245,7 @@ describe('guardar y leer (versión 6)', () => {
   it('la entrada se guarda y se lee', () => {
     const p = setTransition(base(), 'b', makeEntry('dip-black', 500))
     const q = parseProject(serializeProject(p))
-    expect(q.version).toBe(6)
+    expect(q.version).toBe(7)
     expect(q.clips[1]!.entry).toEqual({ kind: 'dip-black', durationMs: 500, overlap: false })
   })
 
