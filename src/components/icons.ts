@@ -92,3 +92,6 @@ export type IconName =
   | 'pencil'
   | 'more'
   | 'relink'
+  | 'mark'
+  | 'mark-off'
+  | 'motion'

@@ -454,7 +454,7 @@ describe('guardar y leer (versión 3)', () => {
       project: { aspect: '16:9', clips: [{ id: 'a', sourcePath: 'a.mp4', sourceDurationMs: 5000, sourceHasVideo: true, segments: [{ startMs: 0, endMs: 5000 }], picture: { kind: 'own' } }], mainMuted: true, tracks: [{ id: 'x', kind: 'sound', items: [] }] },
     })
     const p = parseProject(v2)
-    expect(p.version).toBe(4)
+    expect(p.version).toBe(5)
     expect(p.tracks).toEqual([])
     expect(p.mainMuted).toBe(false)
   })

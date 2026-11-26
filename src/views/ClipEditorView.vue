@@ -21,7 +21,6 @@ import {
   fitAspect,
   formatClock,
   formatDuration,
-  INSET_CORNERS,
   keptSourceMs,
   MAX_ZOOM,
   maxCoverStartMs,
@@ -36,9 +35,9 @@ import {
   setCoverStart,
   setFraming,
   setInOut,
-  setInset,
   setMuted,
   setPicture,
+  findClipVideoItem,
   setSpeed,
   sourceToOutput,
   splitClip,
@@ -46,8 +45,6 @@ import {
   type Clip,
   type CoverPicture,
   type FramingMode,
-  type InsetCorner,
-  type InsetSize,
   type PauseLevel,
   type Picture,
   type Project,
@@ -415,7 +412,11 @@ async function choosePicture(kind: Picture['kind']) {
   if (!c) return
   if (c.picture.kind === 'cover') lastCovers.set(c.id, c.picture)
   if (kind === 'own' || kind === 'none') {
+    const hadOwnVideo = !!findClipVideoItem(store.project.value, c.id)
     store.apply((p) => setPicture(p, c.id, { kind }))
+    if (hadOwnVideo && !findClipVideoItem(store.project.value, c.id)) {
+      store.showToast('Tu vídeo encima (en la esquina) se ha quitado: solo va encima de otro vídeo.', { label: 'Deshacer', run: store.undo })
+    }
     return
   }
   if (c.picture.kind === 'cover') return
@@ -437,7 +438,10 @@ async function changeCover() {
 
 function dropCover() {
   const c = clip.value
-  if (c) store.apply((p) => removeCover(p, c.id))
+  if (!c) return
+  const hadOwnVideo = !!findClipVideoItem(store.project.value, c.id)
+  store.apply((p) => removeCover(p, c.id))
+  if (hadOwnVideo) store.showToast('Tu vídeo encima (en la esquina) se ha quitado: solo va encima de otro vídeo.', { label: 'Deshacer', run: store.undo })
 }
 
 function dragCoverStart(e: Event, commit: boolean) {
@@ -457,32 +461,6 @@ function stepCoverStart(delta: number) {
 function setCoverMode(mode: FramingMode) {
   const c = clip.value
   if (c) store.apply((p) => setCoverFraming(p, c.id, { mode }))
-}
-
-function toggleInset() {
-  const c = clip.value
-  const cv = cover.value
-  if (!c || !cv) return
-  store.apply((p) => setInset(p, c.id, cv.inset ? null : { corner: 'bottom-right', size: 'small' }))
-}
-
-function chooseCorner(corner: InsetCorner) {
-  const c = clip.value
-  const cv = cover.value
-  if (c && cv) store.apply((p) => setInset(p, c.id, { corner, size: cv.inset?.size ?? 'small' }))
-}
-
-function chooseInsetSize(size: InsetSize) {
-  const c = clip.value
-  const cv = cover.value
-  if (c && cv) store.apply((p) => setInset(p, c.id, { corner: cv.inset?.corner ?? 'bottom-right', size }))
-}
-
-const cornerLabels: Record<InsetCorner, string> = {
-  'top-left': 'Arriba a la izquierda',
-  'top-right': 'Arriba a la derecha',
-  'bottom-left': 'Abajo a la izquierda',
-  'bottom-right': 'Abajo a la derecha',
 }
 
 // ------------------------------------------------------------------ Velocidad y sonido
@@ -883,59 +861,10 @@ function done() {
               </button>
             </div>
 
-            <template v-if="clip.sourceHasVideo">
-              <button
-                class="btn switch"
-                :class="{ on: !!cover.inset }"
-                type="button"
-                role="switch"
-                :aria-checked="!!cover.inset"
-                data-testid="inset-toggle"
-                @click="toggleInset"
-              >
-                <AppIcon name="corner" />
-                <span class="switch-label">Verme en una esquina</span>
-                <span class="knob-track"><span class="switch-knob" /></span>
-              </button>
-              <template v-if="cover.inset">
-                <div class="corners" role="radiogroup" aria-label="En qué esquina">
-                  <button
-                    v-for="corner in INSET_CORNERS"
-                    :key="corner"
-                    class="corner-btn"
-                    :class="{ selected: cover.inset.corner === corner }"
-                    type="button"
-                    role="radio"
-                    :aria-checked="cover.inset.corner === corner"
-                    :aria-label="cornerLabels[corner]"
-                    :title="cornerLabels[corner]"
-                    :data-testid="`inset-${corner}`"
-                    @click="chooseCorner(corner)"
-                  >
-                    <svg viewBox="0 0 48 30" aria-hidden="true">
-                      <rect x="1" y="1" width="46" height="28" rx="3" fill="none" stroke="currentColor" stroke-width="2" />
-                      <rect
-                        :x="corner.endsWith('left') ? 5 : 27"
-                        :y="corner.startsWith('top') ? 5 : 15"
-                        width="16"
-                        height="10"
-                        rx="2"
-                        fill="currentColor"
-                      />
-                    </svg>
-                    <span>{{ cornerLabels[corner].replace(' a la ', ', ') }}</span>
-                  </button>
-                </div>
-                <div class="pair">
-                  <button class="btn" :class="{ selected: cover.inset.size === 'small' }" type="button" data-testid="inset-small" @click="chooseInsetSize('small')">
-                    Pequeño
-                  </button>
-                  <button class="btn" :class="{ selected: cover.inset.size === 'medium' }" type="button" data-testid="inset-medium" @click="chooseInsetSize('medium')">
-                    Mediano
-                  </button>
-                </div>
-              </template>
-            </template>
+            <p v-if="clip.sourceHasVideo" class="lead small corner-tip" data-testid="corner-tip">
+              <AppIcon name="corner" />
+              ¿Quieres que se te vea en una esquina? En «Tu vídeo», con este trozo elegido, «Llevar a una esquina aquí»: te encoges hasta la esquina en ese momento y puedes volver a pantalla completa más adelante.
+            </p>
           </template>
 
           <p v-else-if="clip.picture.kind === 'none'" class="lead small" data-testid="picture-none-text">

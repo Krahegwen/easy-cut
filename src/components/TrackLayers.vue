@@ -4,13 +4,17 @@
 // aplicados en vivo; solo se montan los que suenan o van a sonar en los próximos segundos (como mucho 8). Los
 // efectos son <video>/<img> colocados sobre el marco (mix-blend-mode: screen para «Como luz»), con su
 // transparencia y sus suaves. Silenciar u ocultar una pista se nota al momento. Con «Tamaño y sitio», el efecto
-// elegido se mueve y se cambia de tamaño arrastrando sobre la vista previa. Con «Repasar más rápido» (`rate`),
-// todo suena y se mueve a ese factor (playbackRate), como el reloj del montaje.
+// elegido se mueve y se cambia de tamaño arrastrando sobre la vista previa: el valor de ESE instante (con marcas,
+// el de la marca de la línea, que se crea si no la hay). Los efectos con marcas viajan de una a otra: el mismo
+// cálculo que al guardar (boxAt), en cada fotograma, con `transform` (translate + scale) sobre su recuadro a tamaño
+// 1. Con «Repasar más rápido» (`rate`), todo suena y se mueve a ese factor (playbackRate), como el reloj del montaje.
 
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   audibleOrVisible,
+  boxAt,
   COVER_DRIFT_TOLERANCE_MS,
+  visibleMarks,
   effectRect,
   itemFadeAt,
   itemLengthMs,
@@ -21,6 +25,7 @@ import {
   moveEffectBox,
   projectTiming,
   resolveTracks,
+  type EffectBox,
   type EffectLook,
   type Project,
   type ResolvedItem,
@@ -78,14 +83,15 @@ const selectedEffect = computed<ResolvedItem | null>(() => {
   const id = selectedId.value
   if (!id) return null
   const timing = projectTiming(props.project)
-  return resolveTracks(props.project, timing).find((r) => r.item.id === id && r.track.kind === 'effect' && pathOf(r.item) !== null) ?? null
+  // «El vídeo de este trozo» también se coloca aquí (lo pinta el reproductor, pero el recuadro es el mismo).
+  return resolveTracks(props.project, timing).find((r) => r.item.id === id && r.track.kind === 'effect' && (pathOf(r.item) !== null || r.item.source.type === 'clip')) ?? null
 })
 
 const effects = computed(() => {
   const t = coarseMs.value
   const list = resolved.value.filter((r) => r.track.kind === 'effect' && r.startMs <= t + 2000 && r.shownEndMs > t - 250).slice(0, EFFECT_POOL)
   const sel = selectedEffect.value
-  if (editingBox.value && sel && !list.some((r) => r.item.id === sel.item.id)) list.push(sel)
+  if (editingBox.value && sel && sel.item.source.type !== 'clip' && !list.some((r) => r.item.id === sel.item.id)) list.push(sel)
   // De abajo arriba: la primera pista de efectos es la de encima.
   const order = props.project.tracks.filter((x) => x.kind === 'effect').map((x) => x.id)
   return list.sort((a, b) => order.indexOf(b.track.id) - order.indexOf(a.track.id))
@@ -110,11 +116,41 @@ function srcOf(item: TrackItem): string {
   return store.mediaSrc(pathOf(item) ?? '')
 }
 
-function rectStyle(item: TrackItem, look: EffectLook) {
+function mediaSize(item: TrackItem): { width: number; height: number } {
+  // El vídeo de un trozo tiene la forma del marco (se recorta al centro).
+  if (item.source.type === 'clip') return { width: props.frameWidth, height: props.frameHeight }
   const p = pathOf(item)
   const m = p ? store.media.value[p] : null
-  const r = effectRect(look, m?.width ?? 0, m?.height ?? 0, props.frameWidth, props.frameHeight)
-  return { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` }
+  return { width: m?.width ?? 0, height: m?.height ?? 0 }
+}
+
+/**
+ * El recuadro a tamaño 1 y centrado, y `transform` para llevarlo al tamaño y sitio de `box` (el centro va con el
+ * puntero y el tamaño desde el centro, como effectRect: el mismo resultado, sin recolocar en cada fotograma).
+ */
+function rectStyle(item: TrackItem, look: EffectLook, box: EffectBox) {
+  const m = mediaSize(item)
+  const W = props.frameWidth
+  const H = props.frameHeight
+  const r = effectRect({ ...look, box: { x: 0.5, y: 0.5, scale: 1 } }, m.width, m.height, W, H)
+  return {
+    left: `${r.left}px`,
+    top: `${r.top}px`,
+    width: `${r.width}px`,
+    height: `${r.height}px`,
+    transform: `translate(${(box.x - 0.5) * W}px, ${(box.y - 0.5) * H}px) scale(${box.scale})`,
+  }
+}
+
+/** Capa de una pista de efectos (la de más abajo, 1), como en el reproductor. */
+function layerOf(trackId: string): number {
+  const order = props.project.tracks.filter((t) => t.kind === 'effect').map((t) => t.id)
+  return order.length - order.indexOf(trackId)
+}
+
+/** Instante del elemento que se enseña: el de la línea; en «Tamaño y sitio», sujeto a su tramo. */
+function localOf(r: ResolvedItem): number {
+  return Math.min(Math.max(0, props.currentMs - r.startMs), Math.max(0, r.shownEndMs - r.startMs))
 }
 
 function isActive(r: ResolvedItem, t: number): boolean {
@@ -128,7 +164,9 @@ function effectStyle(r: ResolvedItem) {
   const active = isActive(r, t) || forced
   const fade = isActive(r, t) ? itemFadeAt(r.item, t - r.startMs, r.shownEndMs - r.startMs) : 1
   return {
-    ...rectStyle(r.item, look),
+    ...rectStyle(r.item, look, boxAt(look, localOf(r))),
+    // Entre las capas de las pistas (el vídeo de un trozo encima, del reproductor, va en la suya).
+    zIndex: String(10 + layerOf(r.track.id)),
     mixBlendMode: look.mix === 'light' ? ('screen' as const) : ('normal' as const),
     opacity: String(active ? look.opacity * fade : 0),
     visibility: active ? ('visible' as const) : ('hidden' as const),
@@ -234,7 +272,7 @@ const tryingEl = ref<HTMLVideoElement | null>(null)
 const trying = computed(() => tracks.trying.value)
 const tryingLook = computed<EffectLook>(() => {
   const d = trying.value?.asset.defaults.look
-  return { mix: d?.mix ?? 'normal', opacity: d?.opacity ?? 1, fit: d?.fit ?? 'cover', box: { x: 0.5, y: 0.5, scale: 1, ...d?.box } }
+  return { mix: d?.mix ?? 'normal', opacity: d?.opacity ?? 1, fit: d?.fit ?? 'cover', box: { x: 0.5, y: 0.5, scale: 1, ...d?.box }, keyframes: [], rounded: false }
 })
 const tryingStyle = computed(() => {
   const t = trying.value
@@ -266,9 +304,9 @@ function syncTrying(_exact: boolean) {
 const editRect = computed(() => {
   const r = selectedEffect.value
   if (!r || !editingBox.value) return null
-  const p = pathOf(r.item)
-  const m = p ? store.media.value[p] : null
-  const e = effectRect(r.item.look!, m?.width ?? 0, m?.height ?? 0, props.frameWidth, props.frameHeight)
+  const m = mediaSize(r.item)
+  const look = r.item.look!
+  const e = effectRect({ ...look, box: boxAt(look, localOf(r)) }, m.width, m.height, props.frameWidth, props.frameHeight)
   const left = Math.max(0, e.left)
   const top = Math.max(0, e.top)
   const right = Math.min(props.frameWidth, e.left + e.width)
@@ -277,7 +315,21 @@ const editRect = computed(() => {
   return { left: `${left}px`, top: `${top}px`, width: `${right - left}px`, height: `${bottom - top}px` }
 })
 
-let drag: { mode: 'move' | 'scale'; x: number; y: number; box: EffectLook['box']; cx: number; cy: number; dist: number } | null = null
+let drag: { mode: 'move' | 'scale'; x: number; y: number; box: EffectLook['box']; cx: number; cy: number; dist: number; local: number } | null = null
+
+/** Las marcas que se ven, en la vista previa mientras se edita: dónde estará en cada una (con su número). */
+const markDots = computed(() => {
+  const r = selectedEffect.value
+  if (!r || !editingBox.value) return []
+  const look = r.item.look!
+  const here = localOf(r)
+  return visibleMarks(look, r.shownEndMs - r.startMs).map((k, i) => ({
+    n: i + 1,
+    left: `${k.box.x * props.frameWidth}px`,
+    top: `${k.box.y * props.frameHeight}px`,
+    here: Math.abs(k.atMs - here) <= 120,
+  }))
+})
 
 function boxDown(mode: 'move' | 'scale', e: PointerEvent) {
   const r = selectedEffect.value
@@ -286,10 +338,12 @@ function boxDown(mode: 'move' | 'scale', e: PointerEvent) {
   e.stopPropagation()
   const host = (e.currentTarget as HTMLElement).closest('.track-layers') as HTMLElement
   const rect = host.getBoundingClientRect()
-  const box = r.item.look!.box
+  // Se edita el valor de este instante (con marcas, el de la marca de la línea; si no la hay, se crea).
+  const local = localOf(r)
+  const box = boxAt(r.item.look!, local)
   const cx = rect.left + box.x * props.frameWidth
   const cy = rect.top + box.y * props.frameHeight
-  drag = { mode, x: e.clientX, y: e.clientY, box: { ...box }, cx, cy, dist: Math.max(8, Math.hypot(e.clientX - cx, e.clientY - cy)) }
+  drag = { mode, x: e.clientX, y: e.clientY, box: { ...box }, cx, cy, dist: Math.max(8, Math.hypot(e.clientX - cx, e.clientY - cy)), local }
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
 }
 
@@ -297,12 +351,12 @@ function boxMove(e: PointerEvent) {
   const r = selectedEffect.value
   if (!drag || !r) return
   if (drag.mode === 'move') {
-    tracks.previewLook(r.item.id, { box: moveEffectBox(drag.box, props.frameWidth, props.frameHeight, e.clientX - drag.x, e.clientY - drag.y) })
+    tracks.previewBoxAt(r.item.id, drag.local, moveEffectBox(drag.box, props.frameWidth, props.frameHeight, e.clientX - drag.x, e.clientY - drag.y))
   } else {
     // El tamaño sigue a la distancia del puntero al centro.
     const k = Math.hypot(e.clientX - drag.cx, e.clientY - drag.cy) / drag.dist
     const scale = Math.min(MAX_EFFECT_SCALE, Math.max(MIN_EFFECT_SCALE, Math.round(drag.box.scale * k * 100) / 100))
-    tracks.previewLook(r.item.id, { box: { scale } })
+    tracks.previewBoxAt(r.item.id, drag.local, { ...drag.box, scale })
   }
 }
 
@@ -382,6 +436,15 @@ function lengthOf(r: ResolvedItem): number {
       preload="auto"
       @loadedmetadata="onMetadata(r)"
     />
+    <span
+      v-for="d in markDots"
+      :key="d.n"
+      class="mark-dot"
+      :class="{ here: d.here }"
+      :style="{ left: d.left, top: d.top }"
+      data-testid="mark-dot"
+      aria-hidden="true"
+    >{{ d.n }}</span>
     <div
       v-if="editRect"
       class="box-editor"
@@ -422,9 +485,31 @@ function lengthOf(r: ResolvedItem): number {
   position: absolute;
   object-fit: fill;
   pointer-events: none;
+  transform-origin: center;
+}
+.mark-dot {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.85);
+  color: #1d2b36;
+  border: 2px solid var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  pointer-events: none;
+  z-index: 41;
+}
+.mark-dot.here {
+  background: var(--accent);
+  color: #fff;
 }
 .box-editor {
   position: absolute;
+  z-index: 40;
   outline: 2px dashed #fff;
   box-shadow:
     0 0 0 1px rgb(0 0 0 / 0.6),

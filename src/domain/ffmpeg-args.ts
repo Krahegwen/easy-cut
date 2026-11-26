@@ -2,7 +2,10 @@
 // Siempre un array de argumentos (para spawn/execFile), nunca una cadena para el shell.
 
 import { encoderVideoArgs, type VideoEncoder } from './encoders'
-import { effectRect, insetRect, PLAIN_BACKGROUND_HEX } from './layout'
+import { cornerRadius, FULL_FRAME_SCALE } from './corner'
+import { effectRect, PLAIN_BACKGROUND_HEX } from './layout'
+import { boxExprs, hasMotion } from './keyframes'
+import { afadeCurve, effectiveFadeLengths, fadeGainAt, fadeGainExpr, num, type Fades } from './motion'
 import { computeOutputSpec, even, SOUND_BITRATE_KBPS, type OutputSpec, type PresetId } from './output'
 import {
   clipDisplaySize,
@@ -10,6 +13,7 @@ import {
   clipOutputMs,
   type Clip,
   type CoverPicture,
+  type EffectLook,
   type MediaInfo,
   type Project,
   type Speed,
@@ -17,7 +21,7 @@ import {
   type TrackKind,
   type Viewable,
 } from './project'
-import { audibleOrVisible, effectiveFades, projectTiming, resolveTracks, type ProjectTiming } from './tracks'
+import { audibleOrVisible, projectTiming, resolveTracks, type ProjectTiming } from './tracks'
 
 export const AUDIO_SAMPLE_RATE = 48_000
 /** Microfundido en los bordes de cada rango conservado, para evitar clics. */
@@ -222,17 +226,33 @@ function relativeSegments(clip: Clip) {
   return clip.segments.map((s) => ({ startMs: s.startMs - io.startMs, endMs: s.endMs - io.startMs }))
 }
 
-/** Une los rangos conservados del vídeo propio: deja la etiqueta [v{i}seg]. */
-function ownSegmentChains(clip: Clip, i: number, input: number): string[] {
+/** Une los rangos conservados del vídeo propio: deja la etiqueta [{prefix}seg] (de serie, [v{i}seg]). */
+function ownSegmentChains(clip: Clip, i: number, input: number, prefix = `v${i}`): string[] {
   const rel = relativeSegments(clip)
-  const vSeg = `v${i}seg`
+  const vSeg = `${prefix}seg`
   if (rel.length <= 1) return [`[${input}:v:0]setpts=PTS-STARTPTS[${vSeg}]`]
-  const labels = rel.map((_, j) => `[v${i}s${j}]`)
+  const labels = rel.map((_, j) => `[${prefix}s${j}]`)
   return [
     `[${input}:v:0]split=${rel.length}${labels.join('')}`,
-    ...rel.map((r, j) => `[v${i}s${j}]trim=start=${sec(r.startMs)}:end=${sec(r.endMs)},setpts=PTS-STARTPTS[v${i}t${j}]`),
-    `${rel.map((_, j) => `[v${i}t${j}]`).join('')}concat=n=${rel.length}:v=1:a=0[${vSeg}]`,
+    ...rel.map((r, j) => `[${prefix}s${j}]trim=start=${sec(r.startMs)}:end=${sec(r.endMs)},setpts=PTS-STARTPTS[${prefix}t${j}]`),
+    `${rel.map((_, j) => `[${prefix}t${j}]`).join('')}concat=n=${rel.length}:v=1:a=0[${vSeg}]`,
   ]
+}
+
+/**
+ * «El vídeo de este trozo» para las pistas: su vídeo con sus cortes, su velocidad y sus fotogramas exactos (los
+ * mismos que tendría como imagen del trozo), girado, recortado al centro con la forma del marco (lo que hacía la
+ * esquina de antes) y, si el trozo aparece o desaparece, desde/hacia negro como él. Deja [cv{i}] (W × H del
+ * recorte en `size`).
+ */
+function clipVideoChains(clip: Clip, i: number, input: number, media: MediaInfo, spec: OutputSpec, frames: number): { chains: string[]; size: { width: number; height: number } } {
+  const { width: dw, height: dh } = clipDisplaySize(clip, media)
+  const ratio = spec.width / spec.height
+  const cw = Math.min(dw, dw / dh > ratio ? even(dh * ratio) : even(dw))
+  const ch = Math.min(dh, dw / dh > ratio ? even(dh) : even(dw / ratio))
+  const fade = fadeToBlackFilter(clip, (frames * 1000) / spec.fps)
+  const parts = [...ownTiming(clip, spec.fps, frames), ...lookFilters(media, clip.quarterTurns), `crop=${cw}:${ch}`, 'setsar=1', 'format=yuv420p', ...(fade ? [fade] : [])]
+  return { chains: [...ownSegmentChains(clip, i, input, `cv${i}`), `[cv${i}seg]${parts.join(',')}[cv${i}]`], size: { width: cw, height: ch } }
 }
 
 /** Tiempos del vídeo propio: velocidad, fps fijos y el número exacto de fotogramas. */
@@ -286,6 +306,41 @@ export function roundedMaskExpression(radius: number): string {
   return `255*lte(pow(max(0,abs(X-(W-1)/2)-(W/2-${r})),2)+pow(max(0,abs(Y-(H-1)/2)-(H/2-${r})),2),${r * r})`
 }
 
+/**
+ * afade de entrada y de salida, en muestras exactas y con la curva de cada uno (ver afadeCurve). Si las dos no
+ * caben, se reparten como en la vista previa.
+ */
+export function afadeFilters(f: Fades, samples: number): string[] {
+  const lengthMs = (samples * 1000) / AUDIO_SAMPLE_RATE
+  const { inMs, outMs } = effectiveFadeLengths(f, lengthMs)
+  const fadeIn = Math.min(samples, Math.round((inMs * AUDIO_SAMPLE_RATE) / 1000))
+  const fadeOut = Math.min(samples, Math.round((outMs * AUDIO_SAMPLE_RATE) / 1000))
+  const out: string[] = []
+  const curve = (c: string) => (c === 'tri' ? '' : `:curve=${c}`)
+  if (fadeIn > 0) out.push(`afade=t=in:ss=0:ns=${fadeIn}${curve(afadeCurve(f.fadeInEasing, 'in'))}`)
+  if (fadeOut > 0) out.push(`afade=t=out:ss=${samples - fadeOut}:ns=${fadeOut}${curve(afadeCurve(f.fadeOutEasing, 'out'))}`)
+  return out
+}
+
+/** ¿Las dos curvas son lineales (o no hay)? Entonces vale el `fade` de ffmpeg tal cual (lo de antes). */
+function linearFades(f: Fades): boolean {
+  return (f.fadeInMs <= 0 || f.fadeInEasing === 'linear') && (f.fadeOutMs <= 0 || f.fadeOutEasing === 'linear')
+}
+
+/**
+ * Multiplica la imagen (YUV de 8 bits, rango TV) por el factor de aparecer y desaparecer: hacia y desde negro.
+ * Se busca Y' = 16 + (Y − 16)·k (la saturación k lleva el color a gris): lo mismo que oscurecer la imagen k veces
+ * en RGB, que es lo que hace la vista previa. eq con eval=frame y gamma ≠ 1 usa su tabla en coma flotante,
+ * out = int(256·(c·(Y/255 − 0,5) + 0,5 + b)); de ahí c = 255k/256 y b = (16,5 + 111,5k)/256 − 0,5 (el 0,5 de
+ * más redondea). Con gamma = 1 eq usa otro camino en enteros con el brillo a saltos de 2,5 niveles: medido, se
+ * quedaba hasta 5 niveles por debajo.
+ */
+export function fadeToBlackFilter(f: Fades, lengthMs: number): string | null {
+  const k = fadeGainExpr(f, lengthMs)
+  if (!k) return null
+  return `eq=contrast='${num(255 / 256)}*${k}':brightness='(16.5+111.5*${k})/256-0.5':saturation='${k}':gamma=1.0001:eval=frame`
+}
+
 /** Cadenas de audio de un trozo, con el número exacto de muestras: deja [a{i}]. `silent` = fila principal silenciada. */
 function audioChains(clip: Clip, media: MediaInfo, i: number, input: number, samples: number, silent = false): string[] {
   if (silent || !clipKeepsAudio(clip, media)) {
@@ -316,6 +371,8 @@ function audioChains(clip: Clip, media: MediaInfo, i: number, input: number, sam
     // Mismo número exacto de muestras que de fotogramas: audio y vídeo duran lo mismo.
     `apad=whole_len=${samples}`,
     `atrim=end_sample=${samples}`,
+    // Cómo aparece y desaparece el trozo (también su sonido), en muestras y con su curva.
+    ...afadeFilters(clip, samples),
     AUDIO_FORMAT,
   ]
   chains.push(`[${aSeg}]${after.join(',')}[a${i}]`)
@@ -349,34 +406,11 @@ function pictureChains(
     return [...ownSegmentChains(clip, i, mainInput), ...framedChains(`v${i}seg`, ownTiming(clip, F, frames), media, clip, spec, `v${i}`, `v${i}`)]
   }
 
-  // Vídeo de encima: setpts a cero, fps fijos y, si se acaba antes, su última imagen repetida.
+  // Vídeo de encima: setpts a cero, fps fijos y, si se acaba antes, su última imagen repetida. Su propio vídeo,
+  // si se ve encima (en una esquina o moviéndose), va en las pistas («el vídeo de este trozo»).
+  void mainInput
   const coverTiming = ['setpts=PTS-STARTPTS', `fps=${F}`, `tpad=stop_mode=clone:stop=${frames}`, `trim=end_frame=${frames}`]
-  const inset = picture.inset && media.hasVideo ? picture.inset : null
-  const coverOut = inset ? `v${i}base` : `v${i}`
-  const chains = framedChains(`${coverInput}:v:0`, coverTiming, coverMedia!, picture, spec, `c${i}`, coverOut)
-  if (!inset) return chains
-
-  // Su vídeo en pequeño: recorte centrado con la forma del vídeo, esquinas redondeadas y margen.
-  const r = insetRect(inset, W, H, true)
-  const scaleOpts = 'flags=bicubic:out_color_matrix=bt709:out_range=tv'
-  chains.push(...ownSegmentChains(clip, i, mainInput))
-  chains.push(
-    `[v${i}seg]${[
-      ...ownTiming(clip, F, frames),
-      ...lookFilters(media, clip.quarterTurns),
-      `scale=${r.width}:${r.height}:force_original_aspect_ratio=increase:${scaleOpts}`,
-      `crop=${r.width}:${r.height}`,
-      'setsar=1',
-      'format=yuva420p',
-    ].join(',')}[v${i}inset]`,
-  )
-  // La máscara se calcula una sola vez y se repite (geq por fotograma sería mucho más lento).
-  chains.push(
-    `color=c=white:s=${r.width}x${r.height}:r=${F},trim=end_frame=1,format=gray,geq=lum='${roundedMaskExpression(r.radius)}',loop=loop=-1:size=1,trim=end_frame=${frames},setpts=N/${F}/TB[v${i}mask]`,
-  )
-  chains.push(`[v${i}inset][v${i}mask]alphamerge[v${i}insetround]`)
-  chains.push(`[v${i}base][v${i}insetround]overlay=x=${r.left}:y=${r.top}:shortest=1,${VIDEO_TAIL.join(',')}[v${i}]`)
-  return chains
+  return framedChains(`${coverInput}:v:0`, coverTiming, coverMedia!, picture, spec, `c${i}`, `v${i}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -391,6 +425,8 @@ export interface PlannedItem {
   kind: TrackKind
   path: string
   media: MediaInfo
+  /** «El vídeo de este trozo»: el índice de su trozo (su imagen sale de [cv{i}], no de un fichero aparte). */
+  clipIndex?: number
   /** Tiempo en el fichero (ms, con los tiempos de fotogramas enteros de cada trozo). */
   startMs: number
   /** Lo que dura dentro del vídeo (lo que sobresale del final se corta). */
@@ -409,6 +445,17 @@ export function planTrackItems(
 ): PlannedItem[] {
   const planned: PlannedItem[] = []
   for (const r of audibleOrVisible(resolveTracks(project, timing))) {
+    if (r.item.source.type === 'clip') {
+      const clipId = r.item.source.clipId
+      const clipIndex = project.clips.findIndex((c) => c.id === clipId)
+      const clip = project.clips[clipIndex]
+      // Solo encima de otro vídeo (el dominio no deja otra cosa; por si acaso, no se pinta dos veces).
+      if (!clip || !clip.sourceHasVideo || clip.picture.kind !== 'cover') continue
+      const media = lookup(mediaByPath, clip.sourcePath)
+      if (!media.hasVideo) continue
+      planned.push({ item: r.item, kind: r.track.kind, path: clip.sourcePath, media, clipIndex, startMs: r.startMs, lengthMs: r.shownEndMs - r.startMs })
+      continue
+    }
     const path = itemPath(r.item)
     if (!path) continue
     const media = lookup(mediaByPath, path)
@@ -459,13 +506,9 @@ function itemAudioChains(p: PlannedItem, n: number, inputs: Inputs): string[] {
       'asetpts=PTS-STARTPTS',
     )
   }
-  const fades = effectiveFades(item, p.lengthMs)
-  const fadeIn = Math.round((fades.inMs * AUDIO_SAMPLE_RATE) / 1000)
-  const fadeOut = Math.round((fades.outMs * AUDIO_SAMPLE_RATE) / 1000)
   parts.push(`apad=whole_len=${samples}`, `atrim=end_sample=${samples}`)
   if (Math.abs(item.volume - 1) > 1e-6) parts.push(`volume=${Number(item.volume.toFixed(3))}`)
-  if (fadeIn > 0) parts.push(`afade=t=in:ss=0:ns=${fadeIn}`)
-  if (fadeOut > 0) parts.push(`afade=t=out:ss=${samples - fadeOut}:ns=${fadeOut}`)
+  parts.push(...afadeFilters(item, samples))
   if (startSample > 0) parts.push(`adelay=delays=${startSample}S:all=1`)
   return [`[${input}:a:0]${parts.join(',')}[t${n}]`]
 }
@@ -535,6 +578,86 @@ export function effectRegions(planned: readonly PlannedItem[], project: Project,
 }
 
 /** Cadena de imagen de un efecto, ya escalado, colocado y desplazado a su instante dentro del tramo: deja [label]. */
+/**
+ * Esquinas redondeadas de un efecto con la forma del marco (el vídeo de un trozo): ya puesto encima en [over], en
+ * cada esquina se devuelve lo de debajo (de [{fx}bp{c}]) fuera del arco: un recorte de r × r de lo de debajo en el
+ * sitio de esa esquina en cada instante (crop con x e y por fotograma) con una máscara del arco calculada una sola
+ * vez (geq sobre r × r y loop), puesto otra vez encima en el mismo sitio. Cuatro recortes pequeños por fotograma:
+ * barato, y vale igual quieto que moviéndose. El radio es el mismo todo el rato (cornerRadius) y, a pantalla
+ * completa, no hay esquinas (enable). La frontera del arco es la de la máscara de la esquina de antes.
+ */
+function roundedCornerChains(
+  e: EffectRegion['effects'][number],
+  region: EffectRegion,
+  spec: OutputSpec,
+  fx: string,
+  over: string,
+  out: string,
+  r: number,
+  offsetMs: number,
+): string[] {
+  const look = e.p.item.look!
+  const W = spec.width
+  const H = spec.height
+  const F = spec.fps
+  const frames = region.endFrame - region.startFrame
+  const moving = hasMotion(look)
+  const ex = moving ? boxExprs(look, 't', offsetMs) : null
+  const still = moving ? null : effectRect(staticLook(look), W, H, W, H, true)
+  // Esquina de arriba a la izquierda del recuadro, su ancho y su alto (constantes si no se mueve).
+  const L = still ? String(still.left) : `(${W}*(${ex!.x})-${W}*(${ex!.scale})/2)`
+  const T = still ? String(still.top) : `(${H}*(${ex!.y})-${H}*(${ex!.scale})/2)`
+  const Wd = still ? String(still.width) : `(${W}*(${ex!.scale}))`
+  const Hd = still ? String(still.height) : `(${H}*(${ex!.scale}))`
+  const t0 = num(offsetMs / 1000)
+  const t1 = num((offsetMs + e.p.lengthMs) / 1000)
+  // Solo mientras se ve el efecto y, si se mueve, mientras no llena el marco.
+  const enable = moving ? `between(t,${t0},${t1})*lt(${ex!.scale},${FULL_FRAME_SCALE})` : `between(t,${t0},${t1})`
+  const chains: string[] = []
+  let cur = over
+  ;[0, 1, 2, 3].forEach((c) => {
+    const right = c === 1 || c === 3
+    const bottom = c >= 2
+    const xr = right ? `${L}+${Wd}-${r}` : L
+    const yr = bottom ? `${T}+${Hd}-${r}` : T
+    const X = `clip(floor(${xr}),0,${W - r})`
+    const Y = `clip(floor(${yr}),0,${H - r})`
+    const mx = right ? `(${r - 1}-X)` : 'X'
+    const my = bottom ? `(${r - 1}-Y)` : 'Y'
+    const mask = `255*gt(pow(max(0,${r}-0.5-${mx}),2)+pow(max(0,${r}-0.5-${my}),2),${r * r})`
+    const next = c === 3 ? out : `${fx}rc${c}`
+    chains.push(
+      `[${fx}bp${c}]crop=${r}:${r}:x='${X}':y='${Y}'[${fx}pc${c}]`,
+      `color=c=black:s=${r}x${r}:r=${F},trim=end_frame=1,format=gray,geq=lum='${mask}',loop=loop=-1:size=1,trim=end_frame=${frames},setpts=N/${F}/TB[${fx}mk${c}]`,
+      `[${fx}pc${c}][${fx}mk${c}]alphamerge[${fx}pa${c}]`,
+      `[${cur}][${fx}pa${c}]overlay=x='${X}':y='${Y}':eval=frame:format=gbrp:eof_action=pass:shortest=0:enable='${enable}'[${next}]`,
+    )
+    cur = next
+  })
+  return chains
+}
+
+/** El aspecto de un efecto que no se mueve: con una sola marca (o todas iguales), el de esa marca. */
+function staticLook(look: EffectLook): EffectLook {
+  return look.keyframes.length > 0 ? { ...look, box: look.keyframes[0]!.box } : look
+}
+
+/**
+ * Tamaño (expresiones de ancho y alto para scale con eval=frame) de un efecto que se mueve: el de su recuadro a
+ * tamaño 1 por el tamaño de cada instante (el mismo cálculo que effectRect, sin redondear a pares).
+ */
+function motionScale(look: EffectLook, media: MediaInfo, W: number, H: number): string {
+  const one = effectRect({ ...look, box: { x: 0.5, y: 0.5, scale: 1 } }, media.width, media.height, W, H)
+  const s = boxExprs(look).scale
+  return `scale=w='max(2,${num(one.width)}*(${s}))':h='max(2,${num(one.height)}*(${s}))':eval=frame:flags=bicubic`
+}
+
+/** x e y de overlay para que el centro del efecto caiga en (x, y) del marco en cada instante (`offsetMs`: su inicio). */
+function motionPosition(look: EffectLook, offsetMs: number): string {
+  const e = boxExprs(look, 't', offsetMs)
+  return `x='main_w*(${e.x})-overlay_w/2':y='main_h*(${e.y})-overlay_h/2':eval=frame`
+}
+
 function effectChains(
   e: EffectRegion['effects'][number],
   region: EffectRegion,
@@ -551,8 +674,11 @@ function effectChains(
   const frames = e.endFrame - e.startFrame
   const lengthMs = (frames * 1000) / F
   const pre: string[] = []
-  let input: number
-  if (item.still) {
+  let input: number | string
+  if (p.clipIndex !== undefined) {
+    // «El vídeo de este trozo»: ya viene hecho (cortes, velocidad, giro, recorte con la forma del marco).
+    input = `cv${p.clipIndex}`
+  } else if (item.still) {
     input = inputs.raw(p.path, ['-loop', '1', '-framerate', String(F), '-t', sec(lengthMs + 500)])
   } else if (item.repeat) {
     // Un efecto que se repite da vueltas al fichero entero (las vueltas no se guardan en memoria).
@@ -561,12 +687,45 @@ function effectChains(
   } else {
     input = inputs.add(p.path, item.inMs, Math.min(item.outMs - item.inMs, lengthMs) + 500, [...alphaDecoder(p.media), '-an'])
   }
-  const rect = effectRect(look, p.media.width, p.media.height, W, H, true)
-  const fades = effectiveFades(item, lengthMs)
+  // El vídeo de un trozo tiene la forma del marco (su recuadro a tamaño 1 es el marco entero).
+  const media = p.clipIndex !== undefined ? { ...p.media, width: W, height: H } : p.media
+  const src = typeof input === 'string' ? `[${input}]` : `[${input}:v:0]`
+  const rect = effectRect(staticLook(look), media.width, media.height, W, H, true)
+  const fades = effectiveFadeLengths(item, lengthMs)
+  const linear = linearFades(item)
   const offset = sec(((e.startFrame - region.startFrame) * 1000) / F)
   const timing = [...pre, 'setpts=PTS-STARTPTS', `fps=${F}`, `tpad=stop_mode=clone:stop=${frames}`, `trim=end_frame=${frames}`]
   const scale = `scale=${rect.width}:${rect.height}:flags=bicubic`
   const tail = [`setpts=PTS-STARTPTS+${offset}/TB`]
+  const moving = hasMotion(look)
+  if (look.mix === 'light' && moving) {
+    // «Como luz» que se mueve: escalado en cada fotograma (scale con eval=frame) y puesto con overlay sobre negro
+    // a pantalla completa en su sitio de cada instante (lo que se sale del marco, se corta), y luego blend=screen.
+    const parts = [...timing]
+    if (!linear) parts.push('format=yuv420p', fadeToBlackFilter(item, lengthMs)!)
+    parts.push('format=gbrp', motionScale(look, media, W, H))
+    if (linear && fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}`)
+    if (linear && fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}`)
+    return [
+      `${src}${parts.join(',')}[${label}src]`,
+      `color=c=black:s=${W}x${H}:r=${F},trim=end_frame=${frames},format=gbrp[${label}cv]`,
+      `[${label}cv][${label}src]overlay=${motionPosition(look, 0)}:format=gbrp:shortest=0:eof_action=pass,${tail.join(',')}[${label}]`,
+    ]
+  }
+  if (moving) {
+    // Normal que se mueve: a RGB con alfa, transparencia y suaves, y escalado en cada fotograma; el sitio lo pone
+    // overlay con x e y en función de t (effectLayerChains).
+    const parts = [...timing, 'format=gbrap']
+    if (linear) {
+      if (look.opacity < 1) parts.push(`colorchannelmixer=aa=${Number(look.opacity.toFixed(3))}`)
+      if (fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}:alpha=1`)
+      if (fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}:alpha=1`)
+    } else {
+      parts.push(...alphaCurveFilters(item, look.opacity, frames, F, label))
+    }
+    parts.push(motionScale(look, media, W, H))
+    return [`${src}${[...parts, ...tail].join(',')}[${label}]`]
+  }
   if (look.mix === 'light') {
     // «Como luz»: lo que se ve del recuadro, sobre negro a pantalla completa (el negro no cambia nada en
     // modo screen). La transparencia la pone blend (all_opacity); las suaves, fundiendo a negro.
@@ -578,17 +737,51 @@ function effectChains(
     const parts = [...timing, scale]
     if (cx > 0 || cy > 0 || cw < rect.width || ch < rect.height) parts.push(`crop=${cw}:${ch}:${cx}:${cy}`)
     if (cw < W || ch < H) parts.push(`pad=${W}:${H}:${Math.max(0, rect.left)}:${Math.max(0, rect.top)}:black`)
+    if (!linear) {
+      // Con curva: se oscurece en YUV con eq (por fotograma), antes de pasar a RGB; el negro sigue negro.
+      parts.push('format=yuv420p', fadeToBlackFilter(item, lengthMs)!)
+    }
     parts.push('format=gbrp')
-    if (fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}`)
-    if (fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}`)
-    return [`[${input}:v:0]${[...parts, ...tail].join(',')}[${label}]`]
+    if (linear && fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}`)
+    if (linear && fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}`)
+    return [`${src}${[...parts, ...tail].join(',')}[${label}]`]
   }
   // Normal: encima, con su transparencia; la del efecto y las suaves, en el canal alfa.
   const parts = [...timing, scale, 'format=gbrap']
-  if (look.opacity < 1) parts.push(`colorchannelmixer=aa=${Number(look.opacity.toFixed(3))}`)
-  if (fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}:alpha=1`)
-  if (fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}:alpha=1`)
-  return [`[${input}:v:0]${[...parts, ...tail].join(',')}[${label}]`]
+  if (linear) {
+    if (look.opacity < 1) parts.push(`colorchannelmixer=aa=${Number(look.opacity.toFixed(3))}`)
+    if (fades.inMs > 0) parts.push(`fade=t=in:st=0:d=${sec(fades.inMs)}:alpha=1`)
+    if (fades.outMs > 0) parts.push(`fade=t=out:st=${sec(lengthMs - fades.outMs)}:d=${sec(fades.outMs)}:alpha=1`)
+  } else {
+    parts.push(...alphaCurveFilters(item, look.opacity, frames, F, label))
+  }
+  return [`${src}${[...parts, ...tail].join(',')}[${label}]`]
+}
+
+/**
+ * Transparencia con curva en el canal alfa: ni `fade` (solo lineal) ni colorchannelmixer (un valor fijo) siguen
+ * una curva, así que sendcmd le cambia `aa` a colorchannelmixer en cada fotograma de la entrada y de la salida
+ * (el valor de la vista previa en ese fotograma) y lo deja en la transparencia del efecto el resto del tiempo.
+ * Barato: solo cambia un número por fotograma.
+ */
+export function alphaCurveFilters(f: Fades, opacity: number, frames: number, fps: number, name: string): string[] {
+  const lengthMs = (frames * 1000) / fps
+  const { inMs, outMs } = effectiveFadeLengths(f, lengthMs)
+  const target = `colorchannelmixer@${name}`
+  const value = (k: number) => num(Math.round(opacity * fadeGainAt(f, (k * 1000) / fps, lengthMs) * 1000) / 1000)
+  const cmds: string[] = []
+  let last: string | null = null
+  for (let k = 0; k < frames; k++) {
+    const ms = (k * 1000) / fps
+    // Solo los fotogramas de la entrada y de la salida (y el primero de después de la entrada).
+    if (!(ms < inMs + 1000 / fps || ms >= lengthMs - outMs - 1000 / fps)) continue
+    const v = value(k)
+    if (v === last) continue
+    cmds.push(`${num(ms / 1000)} ${target} aa ${v}`)
+    last = v
+  }
+  if (cmds.length <= 1 && value(0) === num(opacity)) return opacity < 1 ? [`colorchannelmixer=aa=${num(opacity)}`] : []
+  return [`sendcmd=c='${cmds.join(';')}'`, `${target}=aa=${value(0)}`]
 }
 
 /**
@@ -635,8 +828,21 @@ function effectLayerChains(planned: readonly PlannedItem[], project: Project, in
         const opacity = look.opacity < 1 ? `:all_opacity=${Number(look.opacity.toFixed(3))}` : ''
         chains.push(`[${base}][${fx}]blend=all_mode=screen${opacity}:eof_action=pass:shortest=0[${next}]`)
       } else {
-        const rect = effectRect(look, e.p.media.width, e.p.media.height, spec.width, spec.height, true)
-        chains.push(`[${base}][${fx}]overlay=x=${rect.left}:y=${rect.top}:format=gbrp:eof_action=pass:shortest=0[${next}]`)
+        const offsetMs = ((e.startFrame - piece.region!.startFrame) * 1000) / spec.fps
+        const radius = Math.round(cornerRadius(look, spec.width, spec.height))
+        const rounded = radius >= 2
+        // Con esquinas redondeadas, la imagen de debajo hace falta otra vez para devolverla a las esquinas.
+        const under = rounded ? `${base}r` : base
+        if (rounded) chains.push(`[${base}]split=5[${under}]${[0, 1, 2, 3].map((c) => `[${fx}bp${c}]`).join('')}`)
+        const over = rounded ? `${fx}ov` : next
+        if (hasMotion(look)) {
+          chains.push(`[${under}][${fx}]overlay=${motionPosition(look, offsetMs)}:format=gbrp:eof_action=pass:shortest=0[${over}]`)
+        } else {
+          const media = e.p.clipIndex !== undefined ? { width: spec.width, height: spec.height } : e.p.media
+          const rect = effectRect(staticLook(look), media.width, media.height, spec.width, spec.height, true)
+          chains.push(`[${under}][${fx}]overlay=x=${rect.left}:y=${rect.top}:format=gbrp:eof_action=pass:shortest=0[${over}]`)
+        }
+        if (rounded) chains.push(...roundedCornerChains(e, piece.region!, spec, fx, over, next, radius, offsetMs))
       }
       base = next
     })
@@ -668,6 +874,7 @@ export function buildExportCommand(
   const withTracks = planned.length > 0
   let totalFrames = 0
   let totalSamples = 0
+  const clipVideos = new Set(planned.flatMap((pl) => (pl.clipIndex !== undefined ? [pl.clipIndex] : [])))
 
   project.clips.forEach((clip, i) => {
     const media = lookup(mediaByPath, clip.sourcePath)
@@ -684,7 +891,20 @@ export function buildExportCommand(
       coverInput = inputs.add(clip.picture.sourcePath, coverSeekMs(clip.picture), (frames * 1000) / F + 1000)
     }
 
-    chains.push(...pictureChains(clip, i, mainInput, coverInput, media, coverMedia, spec, frames))
+    const picture = pictureChains(clip, i, mainInput, coverInput, media, coverMedia, spec, frames)
+    const fade = fadeToBlackFilter(clip, (frames * 1000) / F)
+    if (fade) {
+      // La imagen del trozo aparece desde negro y desaparece hacia negro (los efectos de encima, no).
+      const last = picture.length - 1
+      const tag = `[v${i}]`
+      if (!picture[last]!.endsWith(tag)) throw new Error('La imagen del trozo no acaba donde debe.')
+      picture[last] = `${picture[last]!.slice(0, -tag.length)}[v${i}nofade]`
+      picture.push(`[v${i}nofade]${fade},${BT709_SETPARAMS}[v${i}]`)
+    }
+    chains.push(...picture)
+    // Su propio vídeo encima, en una pista. Solo con otro vídeo de imagen (setPicture), así que su vídeo no se usa
+    // también como imagen del trozo: la entrada se lee una vez.
+    if (clipVideos.has(i)) chains.push(...clipVideoChains(clip, i, mainInput, media, spec, frames).chains)
     chains.push(...audioChains(clip, media, i, mainInput, samples, project.mainMuted))
     concatInputs.push(`[v${i}][a${i}]`)
     totalFrames += frames

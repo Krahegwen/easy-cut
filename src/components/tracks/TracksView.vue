@@ -19,6 +19,9 @@ import {
   snapMove,
   snapPoints,
   snapTime,
+  visibleMarks,
+  findClipVideoItem,
+  type BoxKeyframe,
   type Clip,
   type ResolvedItem,
   type Track,
@@ -182,10 +185,10 @@ function clipPicture(c: Clip): ClipPicture {
   if (c.picture.kind === 'cover') return store.coverMissing(c) ? 'cover-lost' : 'cover'
   return c.picture.kind === 'none' || !c.sourceHasVideo ? 'sound' : 'own'
 }
-type BadgeId = 'speed' | 'mute' | 'pauses' | 'cover' | 'sound' | 'attached'
+type BadgeId = 'speed' | 'mute' | 'pauses' | 'cover' | 'sound' | 'attached' | 'fades' | 'corner'
 interface Badge {
   id: BadgeId
-  icon: 'speed' | 'mute' | 'pauses' | 'cover-video' | 'wave' | 'tracks'
+  icon: 'speed' | 'mute' | 'pauses' | 'cover-video' | 'wave' | 'tracks' | 'fade-in' | 'corner' | 'motion'
   text: string
 }
 const attached = computed(() => attachedCounts(project.value))
@@ -198,6 +201,15 @@ function clipBadges(c: Clip): Badge[] {
   const pic = clipPicture(c)
   if (pic === 'cover') out.push({ id: 'cover', icon: 'cover-video', text: 'Vídeo encima' })
   if (pic === 'sound') out.push({ id: 'sound', icon: 'wave', text: 'Solo se oye' })
+  const own = findClipVideoItem(project.value, c.id)
+  if (own?.item.look) {
+    const moves = own.item.look.keyframes.length >= 2
+    out.push({ id: 'corner', icon: moves ? 'motion' : 'corner', text: moves ? 'Su vídeo va y viene de una esquina' : 'Su vídeo encima, en una pista' })
+  }
+  if (c.fadeInMs > 0 || c.fadeOutMs > 0) {
+    const text = c.fadeInMs > 0 && c.fadeOutMs > 0 ? 'Aparece y desaparece poco a poco' : c.fadeInMs > 0 ? 'Aparece poco a poco' : 'Desaparece poco a poco'
+    out.push({ id: 'fades', icon: 'fade-in', text })
+  }
   const a = attached.value.get(c.id)
   if (a) {
     const parts: string[] = []
@@ -343,6 +355,8 @@ function itemDown(r: ResolvedItem, mode: DragMode, e: PointerEvent) {
   if (e.button !== 0) return
   e.stopPropagation()
   tracks.select(r.item.id)
+  // «El vídeo de este trozo» va con su trozo: se elige, pero no se arrastra.
+  if (r.item.source.type === 'clip') return
   dragState.value = { id: r.item.id, mode, startX: e.clientX, startY: e.clientY, origStart: r.startMs, origEnd: r.endMs, trackId: r.track.id, active: false, fits: true }
   window.addEventListener('pointermove', itemMove)
   window.addEventListener('pointerup', itemUp)
@@ -403,6 +417,49 @@ function stopItemDrag() {
   window.removeEventListener('pointercancel', itemCancel)
 }
 
+// ------------------------------------------------------------------ marcas de tamaño y sitio
+
+/** Las marcas que se ven de un efecto (rombos sobre su bloque). */
+function marksOf(r: ResolvedItem): BoxKeyframe[] {
+  return r.item.look ? visibleMarks(r.item.look, r.shownEndMs - r.startMs) : []
+}
+function isPickedMark(r: ResolvedItem, k: BoxKeyframe): boolean {
+  const p = tracks.pickedMark.value
+  return !!p && p.itemId === r.item.id && p.atMs === k.atMs
+}
+
+const markDrag = ref<{ itemId: string; from: number; startX: number; startMs: number; lengthMs: number; to: number; active: boolean } | null>(null)
+
+/** Un rombo: pulsarlo lleva la línea a la marca (y la deja «a mano»); arrastrarlo la mueve en el tiempo. */
+function markDown(r: ResolvedItem, k: BoxKeyframe, e: PointerEvent) {
+  if (e.button !== 0) return
+  e.stopPropagation()
+  e.preventDefault()
+  tracks.select(r.item.id)
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  markDrag.value = { itemId: r.item.id, from: k.atMs, startX: e.clientX, startMs: r.startMs, lengthMs: r.shownEndMs - r.startMs, to: k.atMs, active: false }
+}
+function markMove(e: PointerEvent) {
+  const d = markDrag.value
+  if (!d) return
+  if (!d.active && Math.abs(e.clientX - d.startX) > 4) d.active = true
+  if (!d.active) return
+  d.to = Math.round(Math.min(d.lengthMs, Math.max(0, d.from + ms(e.clientX - d.startX))))
+  tracks.previewMoveMark(d.itemId, d.from, d.to)
+}
+function markUp() {
+  const d = markDrag.value
+  markDrag.value = null
+  if (!d) return
+  if (d.active) {
+    store.commitPreview()
+    tracks.pickedMark.value = { itemId: d.itemId, atMs: d.to }
+    return
+  }
+  tracks.pickedMark.value = { itemId: d.itemId, atMs: d.from }
+  emit('seek', d.startMs + d.from)
+}
+
 // ------------------------------------------------------------------ cómo se dibuja cada elemento
 
 function blockStyle(r: ResolvedItem) {
@@ -446,7 +503,17 @@ function waveStyle(r: ResolvedItem) {
   return { backgroundImage: `url("${url}")`, backgroundSize: `${full}px 100%`, backgroundPositionX: `${-x(item.inMs)}px`, backgroundRepeat: 'no-repeat' }
 }
 function effectThumbPath(r: ResolvedItem): string | null {
+  if (r.item.source.type === 'clip') {
+    const clipId = r.item.source.clipId
+    return project.value.clips.find((c) => c.id === clipId)?.sourcePath ?? null
+  }
   return library.itemPath(r.item)
+}
+/** El nombre de un elemento en su bloque: «Tu vídeo (trozo 2)» para el vídeo de un trozo. */
+function itemLabel(r: ResolvedItem): string {
+  if (r.item.source.type !== 'clip') return r.item.name
+  const clipId = r.item.source.clipId
+  return `Tu vídeo (trozo ${project.value.clips.findIndex((c) => c.id === clipId) + 1})`
 }
 
 const lostPaths = computed(() => new Set(store.missingItems.value.map((i) => i.id)))
@@ -527,13 +594,29 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
               </span>
               <span class="label">
                 <AppIcon v-if="r.item.repeat" name="repeat" :size="15" />
-                {{ r.item.name }}
+                {{ itemLabel(r) }}
               </span>
               <span v-if="r.item.fadeInMs" class="fade in" :style="{ width: fadeWidth(r.item.fadeInMs) }" />
               <span v-if="r.item.fadeOutMs" class="fade out" :style="{ width: fadeWidth(r.item.fadeOutMs) }" />
               <span v-if="overflowStyle(r)" class="overflow" :style="overflowStyle(r)!" title="Esto pasa del final del vídeo: se corta al guardar" />
-              <span class="handle start" data-testid="item-handle-start" @pointerdown="itemDown(r, 'start', $event)" />
-              <span class="handle end" data-testid="item-handle-end" @pointerdown="itemDown(r, 'end', $event)" />
+              <template v-if="r.item.source.type !== 'clip'">
+                <span class="handle start" data-testid="item-handle-start" @pointerdown="itemDown(r, 'start', $event)" />
+                <span class="handle end" data-testid="item-handle-end" @pointerdown="itemDown(r, 'end', $event)" />
+              </template>
+              <span
+                v-for="k in marksOf(r)"
+                :key="k.atMs"
+                class="mark"
+                :class="{ picked: isPickedMark(r, k) }"
+                :style="{ left: `${x(k.atMs)}px` }"
+                data-testid="item-mark"
+                :data-at-ms="k.atMs"
+                :title="`Marca de tamaño y sitio a los ${formatClock(r.startMs + k.atMs)}: pulsa para ir a ella, arrástrala para moverla`"
+                @pointerdown="markDown(r, k, $event)"
+                @pointermove="markMove"
+                @pointerup="markUp"
+                @pointercancel="markUp"
+              />
             </div>
           </div>
         </template>
@@ -995,6 +1078,31 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
   bottom: 0;
   background: repeating-linear-gradient(135deg, rgb(255 255 255 / 0.75) 0 6px, rgb(255 255 255 / 0.4) 6px 12px);
   pointer-events: auto;
+}
+.mark {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  transform: rotate(45deg);
+  border-radius: 2px;
+  background: #fff;
+  border: 2.5px solid #5b3d8a;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  cursor: ew-resize;
+  z-index: 3;
+  touch-action: none;
+}
+/* Zona para cogerlo más grande que el dibujo. */
+.mark::before {
+  content: '';
+  position: absolute;
+  inset: -7px;
+}
+.mark.picked {
+  background: #f2b632;
+  border-color: #1d2b36;
 }
 .handle {
   position: absolute;

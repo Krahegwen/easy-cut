@@ -575,7 +575,7 @@ try {
       const up = r('[data-testid=editor-upper]'), tv = r('[data-testid=tracks-view]'), side = r('[data-testid=editor-side]');
       return { overflow: document.documentElement.scrollWidth - innerWidth, tracksFull: Math.round(tv.left) === 0 && Math.round(tv.width) === innerWidth,
         sideAbove: !side || side.bottom <= tv.top + 1, upper: Math.round(up.height) }`)
-  for (const [w, h, name] of [[1920, 1080, '18-tu-video-1920x1080.png'], [2000, 1100, '18b-tu-video-2000x1100.png'], [1100, 700, '19-tu-video-1100x700.png']]) {
+  for (const [w, h, name] of [[1920, 1080, '18-tu-video-1920x1080.png'], [2000, 1100, '18b-tu-video-2000x1100.png'], [1700, 950, '18c-tu-video-1700x950.png'], [1500, 900, '18d-tu-video-1500x900.png'], [1800, 1000, '18e-tu-video-1800x1000.png'], [1350, 850, '18f-tu-video-1350x850.png'], [1100, 700, '19-tu-video-1100x700.png']]) {
     await app.setViewport(w, h)
     await shot(name)
     const l = await layout()

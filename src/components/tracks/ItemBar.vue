@@ -1,21 +1,44 @@
 <script setup lang="ts">
-// Lo que se puede hacer con el sonido o el efecto elegido: volumen, entrada y salida suaves, repetir, y en los
+// Lo que se puede hacer con el sonido o el efecto elegido: volumen, cómo aparece y desaparece, repetir, y en los
 // efectos «Tamaño y sitio», «Cómo se mezcla» y «Transparencia»; además mover a la línea, partir, duplicar y
 // quitar. Todo con botón y con su tecla dibujada (los arrastres de las pistas tienen siempre esta alternativa).
 // Siempre en una sola línea: cuando no hay sitio, los botones menos usados se quedan en icono y tecla (con su
 // nombre al pasar el ratón), para que la vista previa no se quede sin altura.
 import { computed, ref } from 'vue'
-import { MAX_ITEM_VOLUME, resolveTracks, type EffectMix } from '../../domain'
+import {
+  EASING_LABELS,
+  formatClock,
+  hasMotion,
+  markIndexAt,
+  MAX_ITEM_VOLUME,
+  MOTION_EASINGS,
+  resolveTracks,
+  segmentMarkIndex,
+  visibleMarks,
+  type Easing,
+  type EffectMix,
+  type MotionEasing,
+} from '../../domain'
+import CurveIcon from '../CurveIcon.vue'
 import { LAYER_PRIORITY } from '../../lib/shortcuts'
 import { useShortcuts } from '../../lib/use-shortcuts'
 import { store, tracks } from '../../store'
 import AppIcon from '../AppIcon.vue'
+import FadePicker from '../FadePicker.vue'
 import KeyHint from '../KeyHint.vue'
 
 const props = defineProps<{ playheadMs: number }>()
+const emit = defineEmits<{ seek: [ms: number] }>()
 
 const found = computed(() => tracks.selectedItem.value)
 const item = computed(() => found.value?.item ?? null)
+/** «El vídeo de este trozo»: va con su trozo (solo tamaño y sitio, a una esquina y quitarlo). */
+const ownClipId = computed(() => (item.value?.source.type === 'clip' ? item.value.source.clipId : null))
+const ownClipNumber = computed(() => (ownClipId.value ? store.project.value.clips.findIndex((c) => c.id === ownClipId.value) + 1 : 0))
+const cornerLabel = computed(() => (ownClipId.value && tracks.cornerMove(ownClipId.value) === 'to-full' ? 'Volver a pantalla completa aquí' : 'Llevar a una esquina aquí'))
+function corner() {
+  if (ownClipId.value) void tracks.cornerHere(ownClipId.value)
+}
 const isEffect = computed(() => found.value?.track.kind === 'effect')
 /** Ruta del fichero del elemento si no se encuentra (para «Buscarlo»). */
 const lostPath = computed(() => {
@@ -28,8 +51,8 @@ const playheadInside = computed(() => {
   return !!r && props.playheadMs > r.startMs + 300 && props.playheadMs < r.shownEndMs - 300
 })
 
-const open = ref<'volume' | 'mix' | 'opacity' | null>(null)
-function toggle(which: 'volume' | 'mix' | 'opacity') {
+const open = ref<'volume' | 'mix' | 'opacity' | 'fades' | 'travel' | null>(null)
+function toggle(which: 'volume' | 'mix' | 'opacity' | 'fades' | 'travel') {
   open.value = open.value === which ? null : which
 }
 
@@ -58,10 +81,20 @@ function setMix(mix: EffectMix) {
   open.value = null
 }
 
-function fade(which: 'in' | 'out') {
+function setFade(which: 'in' | 'out', fade: { ms: number; easing: Easing }) {
   const i = item.value
-  if (i) tracks.setFade(i.id, which, which === 'in' ? i.fadeInMs === 0 : i.fadeOutMs === 0)
+  if (i) tracks.setFade(i.id, which, fade)
 }
+/** Lo que se dice en el botón: «Aparece y desaparece» si hace las dos cosas poco a poco, si no, lo que haga. */
+const fadeSummary = computed(() => {
+  const i = item.value
+  if (!i) return ''
+  if (i.fadeInMs > 0 && i.fadeOutMs > 0) return 'Aparece y desaparece'
+  if (i.fadeInMs > 0) return 'Aparece poco a poco'
+  if (i.fadeOutMs > 0) return 'Desaparece poco a poco'
+  return 'De golpe'
+})
+const fadeSubject = computed(() => (!isEffect.value ? 'sound' : item.value?.look?.mix === 'light' ? 'light' : 'effect'))
 function repeat() {
   const i = item.value
   if (i && !i.still) tracks.setRepeat(i.id, !i.repeat)
@@ -83,8 +116,58 @@ function boxEdit() {
   tracks.boxEditing.value = !tracks.boxEditing.value
 }
 function fullScreen() {
-  if (item.value) tracks.setLook(item.value.id, { box: { x: 0.5, y: 0.5, scale: 1 } })
+  // En el instante de la línea (con marcas, en su marca).
+  if (item.value) tracks.setBoxHere(item.value.id, { x: 0.5, y: 0.5, scale: 1 })
 }
+
+// ------------------------------------------------------------------ marcas de tamaño y sitio
+
+/** Instante del elemento en la línea. */
+const local = computed(() => {
+  const r = resolved.value
+  return r ? Math.min(Math.max(0, props.playheadMs - r.startMs), r.shownEndMs - r.startMs) : 0
+})
+const marks = computed(() => (item.value?.look && resolved.value ? visibleMarks(item.value.look, resolved.value.shownEndMs - resolved.value.startMs) : []))
+const onMark = computed(() => !!item.value?.look && markIndexAt(item.value.look, local.value) >= 0)
+const moving = computed(() => !!item.value?.look && hasMotion(item.value.look))
+const prevMark = computed(() => marks.value.filter((k) => k.atMs < local.value - 60).pop() ?? null)
+const nextMark = computed(() => marks.value.find((k) => k.atMs > local.value + 60) ?? null)
+const canMovePicked = computed(() => {
+  const p = tracks.pickedMark.value
+  return !!p && p.itemId === item.value?.id && Math.abs(p.atMs - local.value) > 120 && marks.value.some((k) => k.atMs === p.atMs)
+})
+/** La curva del tramo de la línea. */
+const travelEasing = computed<MotionEasing | null>(() => {
+  const look = item.value?.look
+  if (!look || !moving.value) return null
+  const i = segmentMarkIndex(look, local.value)
+  return i >= 0 ? look.keyframes[i]!.easing : null
+})
+
+function toggleMark() {
+  if (item.value) tracks.toggleMarkHere(item.value.id)
+}
+function goMark(dir: -1 | 1) {
+  if (!item.value) return
+  const ms = tracks.neighbourMarkMs(item.value.id, dir)
+  if (ms !== null) emit('seek', ms)
+}
+function movePicked() {
+  if (item.value) tracks.movePickedMarkHere(item.value.id)
+}
+function clearMotion() {
+  if (item.value) tracks.clearMotion(item.value.id)
+}
+function setTravel(e: MotionEasing) {
+  if (item.value) tracks.setTravelEasing(item.value.id, e)
+  open.value = null
+}
+const boxHint = computed(() => {
+  const at = formatClock(props.playheadMs)
+  if (marks.value.length === 0) return 'Arrastra el recuadro para moverlo y tira de una esquina para el tamaño. Para que viaje: «Marcar aquí», lleva la línea a otro momento y cámbialo.'
+  const n = marks.value.length === 1 ? '1 marca' : `${marks.value.length} marcas`
+  return onMark.value ? `${n}. Lo que cambies se guarda en esta marca (${at}).` : `${n}. Si lo cambias, se pone una marca en la línea (${at}).`
+})
 
 // Los desplegables de volumen, mezcla y transparencia: Esc los cierra (antes que el Esc de la pantalla).
 useShortcuts({
@@ -128,7 +211,54 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
     <!-- «Tamaño y sitio»: la barra explica qué hacer en la vista previa y cómo acabar. -->
     <div v-if="tracks.boxEditing.value" class="item-bar box-mode" data-testid="box-hint">
       <AppIcon name="resize" :size="22" />
-      <span class="hint"><strong>Tamaño y sitio de «{{ item.name }}»:</strong> arrastra el recuadro en la vista previa para moverlo; tira de una esquina para cambiar el tamaño.</span>
+      <span class="hint" :title="boxHint"><strong>Tamaño y sitio de «{{ item.name }}»:</strong> <span data-testid="box-hint-text">{{ boxHint }}</span></span>
+      <button class="btn small" type="button" :title="onMark ? 'Quitar la marca de la línea' : 'Poner una marca en la línea'" :aria-label="onMark ? 'Quitar esta marca' : 'Marcar aquí'" data-testid="mark-toggle" @click="toggleMark">
+        <AppIcon :name="onMark ? 'mark-off' : 'mark'" />
+        <span class="txt">{{ onMark ? 'Quitar esta marca' : 'Marcar aquí' }}</span>
+        <KeyHint k="K" />
+      </button>
+      <button class="btn small" type="button" :disabled="!prevMark" title="Ir a la marca anterior" aria-label="Marca anterior" data-testid="mark-prev" @click="goMark(-1)">
+        <AppIcon name="step-back" />
+        <KeyHint k="J" />
+      </button>
+      <button class="btn small" type="button" :disabled="!nextMark" title="Ir a la marca siguiente" aria-label="Marca siguiente" data-testid="mark-next" @click="goMark(1)">
+        <AppIcon name="step-forward" />
+        <KeyHint k="L" />
+      </button>
+      <button v-if="canMovePicked" class="btn small" type="button" title="Llevar la marca elegida (en amarillo en su pista) a la línea" aria-label="Mover la marca aquí" data-testid="mark-move-here" @click="movePicked">
+        <AppIcon name="move-here" />
+        <span class="txt">Mover la marca aquí</span>
+        <KeyHint k="N" />
+      </button>
+      <div v-if="moving" class="pop-wrap">
+        <button class="btn small" type="button" :aria-expanded="open === 'travel'" title="Cómo viaja hasta la marca siguiente" aria-label="Cómo viaja" data-testid="mark-travel" @click="toggle('travel')">
+          <CurveIcon v-if="travelEasing" :easing="travelEasing" :size="28" />
+          <span class="txt">Cómo viaja</span>
+        </button>
+        <div v-if="open === 'travel'" class="popover card travel-pop" data-testid="travel-popover">
+          <h3>Cómo viaja hasta la marca</h3>
+          <p class="muted note">El tramo donde está la línea.</p>
+          <button
+            v-for="e in MOTION_EASINGS"
+            :key="e"
+            class="choice row"
+            :class="{ on: travelEasing === e }"
+            type="button"
+            :data-testid="`travel-${e}`"
+            @click="setTravel(e)"
+          >
+            <CurveIcon :easing="e" />
+            <span class="choice-text">
+              <strong>{{ EASING_LABELS[e].label }}</strong>
+              <span>{{ EASING_LABELS[e].hint }}</span>
+            </span>
+          </button>
+        </div>
+      </div>
+      <button v-if="marks.length" class="btn small" type="button" title="Quitar todas las marcas: se queda quieto como está en la línea" aria-label="Quitar el movimiento" data-testid="mark-clear" @click="clearMotion">
+        <AppIcon name="reset" />
+        <span class="txt">Quitar el movimiento</span>
+      </button>
       <button class="btn small" type="button" data-testid="box-fullscreen" @click="fullScreen">
         <AppIcon name="fullscreen" />
         <span class="txt">Pantalla completa</span>
@@ -159,16 +289,21 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
     <div v-else class="item-bar" :class="{ effect: isEffect }">
       <div class="title">
         <AppIcon :name="isEffect ? 'light' : 'sound'" :size="22" />
-        <span class="name" :title="`${item.name} (en «${found.track.name}»)`">{{ item.name }}</span>
+        <span class="name" :title="`${item.name} (en «${found.track.name}»)`">{{ ownClipId ? `Tu vídeo (trozo ${ownClipNumber})` : item.name }}</span>
         <span class="where muted">en «{{ found.track.name }}»</span>
       </div>
 
       <template v-if="isEffect">
-        <button class="btn small" type="button" data-testid="item-box" title="Tamaño y sitio" aria-label="Tamaño y sitio" @click="boxEdit">
-          <AppIcon name="resize" />
+        <button class="btn small" type="button" data-testid="item-box" :title="moving ? 'Tamaño y sitio (se mueve con marcas)' : 'Tamaño y sitio'" aria-label="Tamaño y sitio" @click="boxEdit">
+          <AppIcon :name="moving ? 'motion' : 'resize'" />
           <span class="txt">Tamaño y sitio</span>
         </button>
-        <div class="pop-wrap">
+        <button v-if="ownClipId" class="btn small" type="button" :aria-label="cornerLabel" :title="cornerLabel" data-testid="item-corner" @click="corner">
+          <AppIcon :name="cornerLabel.startsWith('Volver') ? 'fullscreen' : 'corner'" />
+          <span class="txt">{{ cornerLabel.startsWith('Volver') ? 'Pantalla completa' : 'A una esquina' }}</span>
+          <KeyHint k="Q" />
+        </button>
+        <div v-if="!ownClipId" class="pop-wrap">
           <button class="btn small" type="button" data-testid="item-mix" :aria-expanded="open === 'mix'" title="Cómo se mezcla" @click="toggle('mix')">
             <AppIcon name="blend" />
             {{ item.look?.mix === 'light' ? 'Como luz' : 'Normal' }}
@@ -185,7 +320,7 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
             </button>
           </div>
         </div>
-        <div class="pop-wrap">
+        <div v-if="!ownClipId" class="pop-wrap">
           <button class="btn small" type="button" data-testid="item-opacity" :aria-expanded="open === 'opacity'" title="Transparencia" aria-label="Transparencia" @click="toggle('opacity')">
             <AppIcon name="eye" />
             {{ opacityPercent }} %
@@ -218,21 +353,34 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
         </div>
       </div>
 
-      <button class="btn small toggle" :class="{ selected: item.fadeInMs > 0 }" type="button" :aria-pressed="item.fadeInMs > 0" title="Entrada suave" aria-label="Entrada suave" data-testid="item-fade-in" @click="fade('in')">
-        <AppIcon name="fade-in" />
-        <span class="txt fade-txt">Entrada suave</span>
-      </button>
-      <button class="btn small toggle" :class="{ selected: item.fadeOutMs > 0 }" type="button" :aria-pressed="item.fadeOutMs > 0" title="Salida suave" aria-label="Salida suave" data-testid="item-fade-out" @click="fade('out')">
-        <AppIcon name="fade-out" />
-        <span class="txt fade-txt">Salida suave</span>
-      </button>
-      <button v-if="!item.still" class="btn small toggle" :class="{ selected: item.repeat }" type="button" :aria-pressed="item.repeat" title="Repetir" aria-label="Repetir" data-testid="item-repeat" @click="repeat">
+      <div v-if="!ownClipId" class="pop-wrap">
+        <button
+          class="btn small toggle"
+          :class="{ selected: item.fadeInMs > 0 || item.fadeOutMs > 0 }"
+          type="button"
+          :aria-expanded="open === 'fades'"
+          :title="`Aparecer y desaparecer (ahora: ${fadeSummary})`"
+          aria-label="Aparecer y desaparecer"
+          data-testid="item-fades"
+          :data-summary="fadeSummary"
+          @click="toggle('fades')"
+        >
+          <AppIcon name="fade-in" />
+          <span class="txt fade-txt">Aparecer</span>
+        </button>
+        <div v-if="open === 'fades'" class="popover card fades-pop" data-testid="fades-popover">
+          <FadePicker :fades="item" :subject="fadeSubject" @change="setFade" />
+        </div>
+      </div>
+      <button v-if="!item.still && !ownClipId" class="btn small toggle" :class="{ selected: item.repeat }" type="button" :aria-pressed="item.repeat" title="Repetir" aria-label="Repetir" data-testid="item-repeat" @click="repeat">
         <AppIcon name="repeat" />
         <span class="txt">Repetir</span>
         <KeyHint k="R" />
       </button>
 
       <span class="spacer" />
+      <p v-if="ownClipId" class="own-note muted" data-testid="item-own-note">Va con su trozo: se recorta, se parte y se mueve con él.</p>
+      <template v-if="!ownClipId">
       <button class="btn small" type="button" data-testid="item-move-here" title="Que empiece donde está la línea" aria-label="A la línea" @click="moveHere">
         <AppIcon name="move-here" />
         <span class="txt action-txt">A la línea</span>
@@ -248,6 +396,7 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
         <span class="txt action-txt">Duplicar</span>
         <KeyHint k="D" />
       </button>
+      </template>
       <button class="btn small danger" type="button" data-testid="item-remove" title="Quitar" aria-label="Quitar" @click="remove">
         <AppIcon name="trash" />
         <span class="txt">Quitar</span>
@@ -359,6 +508,37 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
 .mix-pop {
   width: 380px;
 }
+.travel-pop {
+  width: 340px;
+  gap: 6px;
+  left: auto;
+  right: 0;
+}
+.choice.row {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+}
+.choice-text {
+  display: flex;
+  flex-direction: column;
+}
+.choice .choice-text span {
+  font-size: 13px;
+}
+.own-note {
+  font-size: 14px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fades-pop {
+  width: min(600px, calc(100vw - 48px));
+  max-height: calc(100vh - 140px);
+  overflow: auto;
+}
 .choice {
   display: flex;
   flex-direction: column;
@@ -403,6 +583,14 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
   min-width: 0;
   font-size: 15px;
   line-height: 1.25;
+  /* Dos líneas como mucho: la barra no crece (el texto entero sale al pasar el ratón). */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.box-mode .btn.small {
+  padding: 0 10px;
 }
 /* Cuanto menos ancho, más botones se quedan en icono y tecla (el nombre sale al pasar el ratón). */
 @container (max-width: 1480px) {
@@ -410,6 +598,12 @@ defineExpose({ moveHere, split, duplicate, remove, repeat })
     display: none;
   }
   .fade-txt {
+    display: none;
+  }
+}
+@container (max-width: 1560px) {
+  /* En «Tamaño y sitio», los botones de las marcas en icono y tecla: el texto de arriba explica qué hacer. */
+  .box-mode .txt {
     display: none;
   }
 }

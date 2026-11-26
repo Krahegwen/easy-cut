@@ -607,8 +607,12 @@ try {
     await app.evaluate('const s = document.querySelector("[data-testid=volume-slider]"); s.value = "50"; s.dispatchEvent(new Event("input")); s.dispatchEvent(new Event("change")); return true')
     check('Volumen al 50 %', (await items()).find((i) => i.id === musicId).item.volume === 0.5)
     await app.key('Escape')
-    await app.click('[data-testid=item-fade-in]')
-    check('«Entrada suave»: un segundo', (await items()).find((i) => i.id === musicId).item.fadeInMs === 1000)
+    // «Aparecer y desaparecer»: al elegir una forma estando «De golpe», la duración del medio (1 s).
+    await app.click('[data-testid=item-fades]')
+    await app.click('[data-testid=fade-in-linear]')
+    const faded = (await items()).find((i) => i.id === musicId).item
+    check('«Aparecer»: «Al mismo ritmo», un segundo (lo de la antigua «entrada suave»)', faded.fadeInMs === 1000 && faded.fadeInEasing === 'linear', `${faded.fadeInMs} ms ${faded.fadeInEasing}`)
+    await app.key('Escape')
     await app.click('[data-testid=item-repeat]')
     const rep = (await items()).find((i) => i.id === musicId)
     check('«Repetir»: hasta el final del vídeo', rep.item.repeat && rep.item.durationMs === null && rep.end === (await S('return store.durationMs.value')), `${rep.start}–${rep.end}`)

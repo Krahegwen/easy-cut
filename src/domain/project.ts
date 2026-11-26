@@ -1,6 +1,8 @@
 // Modelo del proyecto y operaciones inmutables sobre él.
 // Todos los tiempos son milisegundos enteros. Nada de DOM ni de Node aquí.
 
+import { isEasing, isMotionEasing, type Easing, type MotionEasing } from './motion'
+
 export interface TimeRange {
   startMs: number
   endMs: number
@@ -63,12 +65,17 @@ export interface MediaInfo {
   hasAlpha?: boolean
 }
 
+/**
+ * Hasta la versión 4, el vídeo del propio trozo podía verse en pequeño en una esquina (`picture.inset`). Desde la
+ * 5 eso vive en las pistas (un elemento «el vídeo de este trozo», ver ItemSource) y estos tipos solo sirven para
+ * leer y convertir los proyectos de antes.
+ */
 export type InsetCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 export const INSET_CORNERS: readonly InsetCorner[] = ['top-left', 'top-right', 'bottom-left', 'bottom-right']
 export type InsetSize = 'small' | 'medium'
 export const INSET_SIZES: readonly InsetSize[] = ['small', 'medium']
 
-/** El vídeo del propio trozo, en pequeño en una esquina (encima del vídeo de encima). */
+/** La esquina de un proyecto de antes de la versión 5. */
 export interface Inset {
   corner: InsetCorner
   size: InsetSize
@@ -84,8 +91,6 @@ export interface CoverPicture {
   startMs: number
   framing: Framing
   quarterTurns: QuarterTurns
-  /** Solo si el trozo tiene imagen propia. */
-  inset: Inset | null
 }
 
 /**
@@ -109,6 +114,14 @@ export interface Clip {
   quarterTurns: QuarterTurns
   framing: Framing
   picture: Picture
+  /**
+   * Cómo aparece y desaparece el trozo (imagen desde/hacia negro y sonido a la vez): duración (ms; 0 = de
+   * golpe, lo de siempre) y curva. Ver motion.ts.
+   */
+  fadeInMs: number
+  fadeOutMs: number
+  fadeInEasing: Easing
+  fadeOutEasing: Easing
 }
 
 // ---------------------------------------------------------------------------
@@ -130,8 +143,14 @@ export interface ItemAnchor {
   offsetMs: number
 }
 
-/** De dónde sale el elemento: un fichero del ordenador o un elemento de la biblioteca. */
-export type ItemSource = { type: 'file'; path: string } | { type: 'library'; assetId: string }
+/**
+ * De dónde sale el elemento: un fichero del ordenador, un elemento de la biblioteca o, en una pista de efectos,
+ * «el vídeo de este trozo» (`clip`): la imagen del propio trozo, pegada a él, que sigue sus cortes, su velocidad
+ * y su duración (manda el trozo que se oye: el sonido sigue saliendo del trozo). Así un trozo con otro vídeo de
+ * fondo puede llevar su propio vídeo encima, encogerlo hasta una esquina y volver a pantalla completa con las
+ * mismas marcas de sitio y tamaño que una pegatina.
+ */
+export type ItemSource = { type: 'file'; path: string } | { type: 'library'; assetId: string } | { type: 'clip'; clipId: string }
 
 /** normal: se pone encima (con su transparencia, si la trae) · light: «como luz», el negro desaparece. */
 export type EffectMix = 'normal' | 'light'
@@ -149,12 +168,31 @@ export interface EffectBox {
   scale: number
 }
 
+/**
+ * Una marca de sitio y tamaño: en `atMs` (tiempo del elemento, desde su principio; puede caer fuera de su tramo
+ * tras recortarlo o partirlo, y sigue dando forma al camino) el efecto está en `box`. Llega a ella desde la marca
+ * anterior con la curva `easing` («De golpe»: se queda quieto y salta al llegar).
+ */
+export interface BoxKeyframe {
+  atMs: number
+  box: EffectBox
+  easing: MotionEasing
+}
+
 export interface EffectLook {
   mix: EffectMix
   /** 0 (no se ve) a 1. */
   opacity: number
+  /** Tamaño y sitio sin marcas (todo el rato el mismo). */
   box: EffectBox
   fit: EffectFit
+  /**
+   * Marcas de sitio y tamaño (ordenadas por tiempo, sin dos en el mismo instante). Vacía: `box` todo el rato.
+   * Con marcas, el efecto viaja de una a otra (ver keyframes.ts).
+   */
+  keyframes: BoxKeyframe[]
+  /** Esquinas redondeadas cuando no llena el marco (el vídeo de un trozo en una esquina). Ver cornerRadius. */
+  rounded: boolean
 }
 
 /** Un sonido o un efecto colocado en el tiempo en una pista. */
@@ -184,9 +222,11 @@ export interface TrackItem {
   durationMs: number | null
   /** 0 a 1,5 (1 = como viene). En los efectos, el sonido que traigan; por defecto 0. */
   volume: number
-  /** Entrada y salida suaves (ms; 0 = no). */
+  /** Cómo aparece y desaparece (ms; 0 = de golpe) y con qué curva (ver motion.ts). */
   fadeInMs: number
   fadeOutMs: number
+  fadeInEasing: Easing
+  fadeOutEasing: Easing
   /** Solo en los efectos: cómo se ve. */
   look: EffectLook | null
 }
@@ -236,10 +276,12 @@ export interface MediaEntry {
 }
 
 /**
- * Versión 4: el proyecto lleva `media` (la lista de sus ficheros, con sus datos). La 3 (con `mainMuted` y
- * `tracks`), la 2 (trozos con `picture` y `sourceHasVideo`) y la 1 se migran al leerlas.
+ * Versión 5: aparecer y desaparecer con curva (en trozos, sonidos y efectos). La 4 (con `media`, la lista de
+ * sus ficheros), la 3 (con `mainMuted` y `tracks`), la 2 (trozos con `picture` y `sourceHasVideo`) y la 1 se
+ * migran al leerlas: lo que tenía «entrada/salida suave» pasa a la curva «Al mismo ritmo» con la misma
+ * duración (se ve y se oye igual).
  */
-export const PROJECT_VERSION = 4 as const
+export const PROJECT_VERSION = 5 as const
 
 export interface Project {
   version: typeof PROJECT_VERSION
@@ -293,6 +335,10 @@ export function createClip(media: MediaInfo, id: string = defaultIdFactory()): C
     quarterTurns: 0,
     framing: { ...DEFAULT_FRAMING },
     picture: defaultPicture(hasVideo),
+    fadeInMs: 0,
+    fadeOutMs: 0,
+    fadeInEasing: 'linear',
+    fadeOutEasing: 'linear',
   }
 }
 
@@ -448,7 +494,7 @@ export function itemsAnchoredTo(project: Project, clipId: string): { sounds: num
   let effects = 0
   for (const track of project.tracks) {
     for (const item of track.items) {
-      if (item.anchor.clipId !== clipId) continue
+      if (item.anchor.clipId !== clipId || item.source.type === 'clip') continue
       if (track.kind === 'sound') sounds++
       else effects++
     }
@@ -535,7 +581,9 @@ export function removeClip(project: Project, clipId: string): Project {
   if (!project.clips.some((c) => c.id === clipId)) return project
   const before = clipStartTimes(project)
   const lengths = project.clips.map(clipOutputMs)
-  const next: Project = { ...project, clips: project.clips.filter((c) => c.id !== clipId) }
+  // «El vídeo de este trozo» se va con el trozo.
+  const kept: Project = { ...project, clips: project.clips.filter((c) => c.id !== clipId), tracks: project.tracks.map((t) => (t.items.some((i) => i.source.type === 'clip' && i.source.clipId === clipId) ? { ...t, items: t.items.filter((i) => !(i.source.type === 'clip' && i.source.clipId === clipId)) } : t)) }
+  const next = kept
   const after = clipStartTimes(next)
   return mapTrackItems(next, (item) => {
     if (item.anchor.clipId !== clipId) return item
@@ -601,9 +649,12 @@ export function setInOut(
   if (shift === 0) return changed
   // Lo pegado al trozo sigue a su imagen: si se recorta el principio, se adelanta lo mismo (y si su momento
   // queda fuera, se sujeta al principio del trozo con el offset negativo guardado: al alargarlo, vuelve).
-  return mapTrackItems(changed, (item) =>
-    item.anchor.clipId === clipId ? { ...item, anchor: { clipId, offsetMs: item.anchor.offsetMs - shift } } : item,
-  )
+  return mapTrackItems(changed, (item) => {
+    if (item.anchor.clipId !== clipId) return item
+    // «El vídeo de este trozo» empieza siempre con el trozo; sus marcas siguen a su imagen.
+    if (item.source.type === 'clip') return item.look && item.look.keyframes.length ? { ...item, look: { ...item.look, keyframes: item.look.keyframes.map((k) => ({ ...k, atMs: k.atMs - shift })) } } : item
+    return { ...item, anchor: { clipId, offsetMs: item.anchor.offsetMs - shift } }
+  })
 }
 
 /**
@@ -686,10 +737,12 @@ export function splitClip(
   right.push(...clip.segments.slice(segmentIndex + 1).map((s) => ({ ...s })))
   if (left.length === 0 || right.length === 0) return project
 
-  const first: Clip = { ...clip, segments: left }
+  // Cada parte se queda con su borde: la primera aparece como antes y la segunda desaparece como antes.
+  const first: Clip = { ...clip, segments: left, fadeOutMs: 0 }
   // El vídeo de encima corre en tiempo de salida: la segunda parte sigue donde iba.
   const second: Clip = {
     ...clip,
+    fadeInMs: 0,
     id: newId,
     segments: right,
     framing: { ...clip.framing },
@@ -699,11 +752,42 @@ export function splitClip(
   clips.splice(index, 1, first, second)
   // Lo pegado al trozo se queda con la parte donde cae su inicio.
   const firstMs = clipOutputMs(first)
-  return mapTrackItems({ ...project, clips }, (item) =>
-    item.anchor.clipId === clipId && item.anchor.offsetMs >= firstMs
+  const moved = mapTrackItems({ ...project, clips }, (item) =>
+    item.source.type !== 'clip' && item.anchor.clipId === clipId && item.anchor.offsetMs >= firstMs
       ? { ...item, anchor: { clipId: newId, offsetMs: item.anchor.offsetMs - firstMs } }
       : item,
   )
+  // «El vídeo de este trozo»: uno para cada parte, cada uno con sus marcas (como al partir un elemento).
+  return splitClipVideoItem(moved, clipId, newId, firstMs)
+}
+
+function splitClipVideoItem(project: Project, clipId: string, newClipId: string, cutMs: number): Project {
+  const found = findClipVideoItem(project, clipId)
+  if (!found || !found.item.look) return project
+  const look = found.item.look
+  const kfs = look.keyframes
+  const after = kfs.findIndex((k) => k.atMs > cutMs)
+  const firstMarks = (after < 0 ? kfs : kfs.slice(0, after + 1)).map((k) => ({ ...k, box: { ...k.box } }))
+  const lastBefore = after < 0 ? kfs.length - 1 : after - 1
+  const secondMarks = kfs.slice(Math.max(0, lastBefore)).map((k) => ({ ...k, box: { ...k.box }, atMs: k.atMs - cutMs }))
+  const firstItem: TrackItem = { ...found.item, look: { ...look, box: { ...look.box }, keyframes: firstMarks } }
+  const secondItem: TrackItem = {
+    ...found.item,
+    id: `${found.item.id}~${newClipId}`,
+    source: { type: 'clip', clipId: newClipId },
+    anchor: { clipId: newClipId, offsetMs: 0 },
+    look: { ...look, box: { ...look.box }, keyframes: kfs.length ? secondMarks : [] },
+  }
+  return {
+    ...project,
+    tracks: project.tracks.map((t) => {
+      if (t.id !== found.track.id) return t
+      const items = t.items.slice()
+      const i = items.findIndex((x) => x.id === found.item.id)
+      items.splice(i, 1, firstItem, secondItem)
+      return { ...t, items }
+    }),
+  }
 }
 
 export function setSpeed(project: Project, clipId: string, speed: Speed): Project {
@@ -713,6 +797,22 @@ export function setSpeed(project: Project, clipId: string, speed: Speed): Projec
 
 export function setMuted(project: Project, clipId: string, muted: boolean): Project {
   return updateClip(project, clipId, (clip) => (clip.muted === muted ? clip : { ...clip, muted }))
+}
+
+/** Cómo aparece o desaparece algo: duración (ms; 0 = de golpe) y curva. */
+export interface FadeChoice {
+  ms: number
+  easing: Easing
+}
+
+/** Cómo aparece (desde negro y desde silencio) o desaparece el trozo. */
+export function setClipFade(project: Project, clipId: string, which: 'in' | 'out', fade: FadeChoice): Project {
+  const ms = Math.max(0, Math.round(Number.isFinite(fade.ms) ? fade.ms : 0))
+  const easing = isEasing(fade.easing) ? fade.easing : 'linear'
+  return updateClip(project, clipId, (clip) => {
+    if (which === 'in') return clip.fadeInMs === ms && clip.fadeInEasing === easing ? clip : { ...clip, fadeInMs: ms, fadeInEasing: easing }
+    return clip.fadeOutMs === ms && clip.fadeOutEasing === easing ? clip : { ...clip, fadeOutMs: ms, fadeOutEasing: easing }
+  })
 }
 
 /** Gira el trozo 90° (1 = horario, -1 = antihorario). */
@@ -784,7 +884,6 @@ function shiftPicture(picture: Picture, deltaMs: number): Picture {
   return {
     ...picture,
     framing: { ...picture.framing },
-    inset: picture.inset ? { ...picture.inset } : null,
     startMs: Math.min(picture.sourceDurationMs, Math.max(0, Math.round(picture.startMs + deltaMs))),
   }
 }
@@ -799,10 +898,6 @@ export function normalizePicture(picture: Picture, sourceHasVideo: boolean): Pic
   if (picture.kind === 'own') return sourceHasVideo ? { kind: 'own' } : { kind: 'none' }
   if (picture.kind === 'none') return { kind: 'none' }
   const duration = Math.max(0, Math.round(picture.sourceDurationMs))
-  const inset =
-    sourceHasVideo && picture.inset && INSET_CORNERS.includes(picture.inset.corner) && INSET_SIZES.includes(picture.inset.size)
-      ? { corner: picture.inset.corner, size: picture.inset.size }
-      : null
   return {
     kind: 'cover',
     sourcePath: picture.sourcePath,
@@ -810,7 +905,6 @@ export function normalizePicture(picture: Picture, sourceHasVideo: boolean): Pic
     startMs: Math.min(duration, Math.max(0, Math.round(Number.isFinite(picture.startMs) ? picture.startMs : 0))),
     framing: clampFraming(picture.framing),
     quarterTurns: ((((Math.round(picture.quarterTurns ?? 0) % 4) + 4) % 4) as QuarterTurns),
-    inset,
   }
 }
 
@@ -820,15 +914,27 @@ function samePicture(a: Picture, b: Picture): boolean {
 
 /** Cambia lo que se ve. Se normaliza: «su vídeo» no vale si el original no tiene imagen. */
 export function setPicture(project: Project, clipId: string, picture: Picture): Project {
-  return updateClip(project, clipId, (clip) => {
+  const changed = updateClip(project, clipId, (clip) => {
     const next = normalizePicture(picture, clip.sourceHasVideo)
     return samePicture(next, clip.picture) ? clip : { ...clip, picture: next }
   })
+  // «El vídeo de este trozo» solo tiene sentido encima de otro vídeo: con su propio vídeo o «Solo se oye» de
+  // imagen, se quita en el mismo paso (si no, al guardar se vería su vídeo dos veces, uno encima del otro).
+  const clip = findClip(changed, clipId)
+  if (!clip || clip.picture.kind === 'cover' || !findClipVideoItem(changed, clipId)) return changed
+  return withoutClipVideo(changed, clipId)
+}
+
+/** Quita «el vídeo de este trozo» de un trozo (si lo tiene). */
+export function withoutClipVideo(project: Project, clipId: string): Project {
+  const has = (i: TrackItem) => i.source.type === 'clip' && i.source.clipId === clipId
+  if (!project.tracks.some((t) => t.items.some(has))) return project
+  return { ...project, tracks: project.tracks.map((t) => (t.items.some(has) ? { ...t, items: t.items.filter((i) => !has(i)) } : t)) }
 }
 
 /**
- * Pone otro vídeo encima (o lo cambia por otro). Si ya había uno, conserva la esquina;
- * el encuadre vuelve al de serie y empieza desde `startMs` (por defecto, el principio).
+ * Pone otro vídeo encima (o lo cambia por otro). El encuadre vuelve al de serie y empieza desde `startMs` (por
+ * defecto, el principio).
  */
 export function setCover(
   project: Project,
@@ -838,7 +944,6 @@ export function setCover(
 ): Project {
   const clip = findClip(project, clipId)
   if (!clip) return project
-  const inset = clip.picture.kind === 'cover' ? clip.picture.inset : null
   return setPicture(project, clipId, {
     kind: 'cover',
     sourcePath: cover.path,
@@ -846,7 +951,6 @@ export function setCover(
     startMs: Math.min(startMs, maxCoverStartMs(cover.durationMs)),
     framing: { ...DEFAULT_FRAMING },
     quarterTurns: 0,
-    inset,
   })
 }
 
@@ -875,14 +979,23 @@ export function setCoverFraming(project: Project, clipId: string, change: Partia
   return updateCover(project, clipId, (c) => ({ ...c, framing: clampFraming({ ...c.framing, ...change }) }))
 }
 
-/** «Verme en una esquina» (null = no). Solo vale si el trozo tiene imagen propia. */
-export function setInset(project: Project, clipId: string, inset: Inset | null): Project {
-  return updateCover(project, clipId, (c) => ({ ...c, inset }))
+/** ¿Se ve la imagen del propio trozo como imagen del trozo? (encima, en una pista: clipVideoItem en tracks.ts). */
+export function clipShowsOwnVideo(clip: Clip): boolean {
+  return clip.sourceHasVideo && clip.picture.kind === 'own'
 }
 
-/** ¿Se ve la imagen del propio trozo (entera o en la esquina)? */
-export function clipShowsOwnVideo(clip: Clip): boolean {
-  return clip.sourceHasVideo && (clip.picture.kind === 'own' || (clip.picture.kind === 'cover' && clip.picture.inset !== null))
+/** ¿Es «el vídeo de este trozo» (un elemento de una pista de efectos con la imagen del propio trozo)? */
+export function isClipVideoItem(item: Pick<TrackItem, 'source'>): item is TrackItem & { source: { type: 'clip'; clipId: string } } {
+  return item.source.type === 'clip'
+}
+
+/** El elemento «vídeo de este trozo» de un trozo, si lo tiene (como mucho hay uno por trozo). */
+export function findClipVideoItem(project: Project, clipId: string): { track: Track; item: TrackItem } | null {
+  for (const track of project.tracks) {
+    if (track.kind !== 'effect') continue
+    for (const item of track.items) if (item.source.type === 'clip' && item.source.clipId === clipId) return { track, item }
+  }
+  return null
 }
 
 /** ¿El trozo enseña alguna imagen? (con «Solo se oye», no). */
@@ -1150,15 +1263,99 @@ export function parseProject(json: string): Project {
   const aspect = ASPECT_RATIOS.includes(p.aspect as AspectRatio) ? (p.aspect as AspectRatio) : '16:9'
   if (!Array.isArray(p.clips)) throw new ProjectFormatError('El proyecto no tiene la lista de trozos.')
   const version = data.version
-  const clips = p.clips.map((c, i) => parseClip(c, i, version))
+  const parsedClips = p.clips.map((c, i) => parseClip(c, i, version))
+  const clips = parsedClips.map((c) => c.clip)
   const target = typeof p.targetDurationMs === 'number' && p.targetDurationMs > 0 ? Math.round(p.targetDurationMs) : null
   // Migración 1/2 → 3: sin pistas y con el sonido de la fila principal puesto.
-  const tracks = version < 3 || !Array.isArray(p.tracks) ? [] : parseTracks(p.tracks)
+  const parsedTracks = version < 3 || !Array.isArray(p.tracks) ? [] : parseTracks(p.tracks)
+  // «El vídeo de este trozo» solo vale pegado a un trozo que existe y que tiene imagen, y uno por trozo.
+  const tracks = keepValidClipVideos(parsedTracks, clips)
   // Migración 1/2/3 → 4: la lista de ficheros sale de lo que usa el proyecto (sin medir: se mide al abrirlo).
   // En la 4, la guardada, y lo que falte en ella (un fichero a mano en el JSON) se añade igual.
   const media = version >= 4 && Array.isArray(p.media) ? parseMediaPool(p.media) : []
-  const project: Project = { version: PROJECT_VERSION, aspect, clips, targetDurationMs: target, mainMuted: version >= 3 && p.mainMuted === true, tracks, media }
+  let project: Project = { version: PROJECT_VERSION, aspect, clips, targetDurationMs: target, mainMuted: version >= 3 && p.mainMuted === true, tracks, media }
+  // Migración 4 → 5: la esquina de cada trozo pasa a las pistas, con el mismo sitio y tamaño.
+  const insets = parsedClips.flatMap((c) => (c.inset ? [{ clipId: c.clip.id, inset: c.inset }] : []))
+  if (insets.length) project = migrateInsets(project, insets)
   return syncMediaPool(project)
+}
+
+/** Id de la pista de efectos a la que van las esquinas de los proyectos de antes. */
+export const MIGRATED_CORNER_TRACK_ID = 'esquinas-de-antes'
+/** Tamaño de la esquina de antes, respecto al marco (ancho y alto). */
+export const LEGACY_INSET_SCALE: Record<InsetSize, number> = { small: 0.28, medium: 0.4 }
+/** Margen de la esquina de antes, como fracción del lado corto del marco. */
+export const LEGACY_INSET_MARGIN = 0.04
+const LEGACY_ASPECT_VALUES: Record<AspectRatio, number> = { '16:9': 16 / 9, '9:16': 9 / 16, '1:1': 1 }
+
+/**
+ * Centro y tamaño (relativos al marco) de la esquina de antes: un recuadro con la forma del marco, `size` de su
+ * ancho y alto, a `margin` del lado corto de los bordes.
+ */
+export function legacyInsetBox(inset: Inset, aspect: AspectRatio): EffectBox {
+  const scale = LEGACY_INSET_SCALE[inset.size]
+  const r = LEGACY_ASPECT_VALUES[aspect]
+  // Marco de ancho r y alto 1: el margen es una fracción de su lado corto.
+  const margin = LEGACY_INSET_MARGIN * Math.min(r, 1)
+  const half = scale / 2
+  const x = inset.corner.endsWith('left') ? (margin + r * half) / r : 1 - (margin + r * half) / r
+  const y = inset.corner.startsWith('top') ? margin + half : 1 - margin - half
+  return { x, y, scale }
+}
+
+/**
+ * Convierte las esquinas de los proyectos de antes en elementos «el vídeo de este trozo» con el mismo sitio y
+ * tamaño, esquinas redondeadas y sin moverse, en una pista de efectos debajo de las demás (la esquina de antes
+ * iba debajo de todos los efectos).
+ */
+function migrateInsets(project: Project, insets: { clipId: string; inset: Inset }[]): Project {
+  const items: TrackItem[] = insets.map(({ clipId, inset }) => {
+    const clip = project.clips.find((c) => c.id === clipId)!
+    return {
+      id: `esquina-${clipId}`,
+      source: { type: 'clip', clipId },
+      name: 'Tu vídeo',
+      sourceDurationMs: clip.sourceDurationMs,
+      still: false,
+      hasAudio: false,
+      anchor: { clipId, offsetMs: 0 },
+      inMs: 0,
+      outMs: clip.sourceDurationMs,
+      phaseMs: 0,
+      repeat: false,
+      durationMs: null,
+      volume: 0,
+      fadeInMs: 0,
+      fadeOutMs: 0,
+      fadeInEasing: 'linear',
+      fadeOutEasing: 'linear',
+      look: { mix: 'normal', opacity: 1, box: legacyInsetBox(inset, project.aspect), fit: 'cover', keyframes: [], rounded: true },
+    }
+  })
+  let id = MIGRATED_CORNER_TRACK_ID
+  for (let n = 2; project.tracks.some((t) => t.id === id); n++) id = `${MIGRATED_CORNER_TRACK_ID}-${n}`
+  const track: Track = { id, kind: 'effect', name: 'Tu vídeo en la esquina', muted: false, hidden: false, items }
+  // Debajo de todas las de efectos (la última de efectos es la de abajo).
+  const lastEffect = project.tracks.map((t) => t.kind).lastIndexOf('effect')
+  const tracks = project.tracks.slice()
+  tracks.splice(lastEffect + 1, 0, track)
+  return { ...project, tracks }
+}
+
+/** Quita los «vídeo de este trozo» que no valen (sin trozo, sin imagen o repetidos). */
+function keepValidClipVideos(tracks: Track[], clips: readonly Clip[]): Track[] {
+  const seen = new Set<string>()
+  return tracks.map((t) => {
+    if (!t.items.some((i) => i.source.type === 'clip')) return t
+    const items = t.items.filter((i) => {
+      if (i.source.type !== 'clip') return true
+      const clip = clips.find((c) => c.id === (i.source as { clipId: string }).clipId)
+      if (!clip || !clip.sourceHasVideo || clip.picture.kind !== 'cover' || seen.has(clip.id) || t.kind !== 'effect') return false
+      seen.add(clip.id)
+      return true
+    })
+    return { ...t, items }
+  })
 }
 
 function parseMediaPool(raw: unknown[]): MediaEntry[] {
@@ -1204,17 +1401,36 @@ function clampNumber(v: number, lo: number, hi: number): number {
 /** Deja un aspecto de efecto en valores válidos. */
 export function normalizeLook(raw: unknown): EffectLook {
   const l = isObject(raw) ? raw : {}
-  const box = isObject(l.box) ? l.box : {}
   return {
     mix: l.mix === 'light' ? 'light' : 'normal',
     opacity: clampNumber(finiteOr(l.opacity, 1), 0, 1),
-    box: {
-      x: clampNumber(finiteOr(box.x, 0.5), 0, 1),
-      y: clampNumber(finiteOr(box.y, 0.5), 0, 1),
-      scale: clampNumber(finiteOr(box.scale, 1), MIN_EFFECT_SCALE, MAX_EFFECT_SCALE),
-    },
+    box: normalizeBox(l.box),
     fit: l.fit === 'contain' ? 'contain' : 'cover',
+    keyframes: normalizeKeyframes(l.keyframes),
+    rounded: l.rounded === true,
   }
+}
+
+/** Un tamaño y sitio en valores válidos (centro dentro del marco y tamaño entre los límites). */
+export function normalizeBox(raw: unknown): EffectBox {
+  const box = isObject(raw) ? raw : {}
+  return {
+    x: clampNumber(finiteOr(box.x, 0.5), 0, 1),
+    y: clampNumber(finiteOr(box.y, 0.5), 0, 1),
+    scale: clampNumber(finiteOr(box.scale, 1), MIN_EFFECT_SCALE, MAX_EFFECT_SCALE),
+  }
+}
+
+/** Marcas en orden y válidas: sin dos en el mismo milisegundo (gana la última), curvas conocidas. */
+function normalizeKeyframes(raw: unknown): BoxKeyframe[] {
+  if (!Array.isArray(raw)) return []
+  const byTime = new Map<number, BoxKeyframe>()
+  for (const k of raw) {
+    if (!isObject(k) || typeof k.atMs !== 'number' || !Number.isFinite(k.atMs)) continue
+    const atMs = Math.round(k.atMs)
+    byTime.set(atMs, { atMs, box: normalizeBox(k.box), easing: isMotionEasing(k.easing) ? k.easing : 'smooth' })
+  }
+  return [...byTime.values()].sort((a, b) => a.atMs - b.atMs)
 }
 
 /**
@@ -1246,6 +1462,7 @@ function parseTrackItem(raw: unknown, kind: TrackKind): TrackItem[] {
   let source: ItemSource
   if (isObject(s) && s.type === 'file' && typeof s.path === 'string' && s.path !== '') source = { type: 'file', path: s.path }
   else if (isObject(s) && s.type === 'library' && typeof s.assetId === 'string' && s.assetId !== '') source = { type: 'library', assetId: s.assetId }
+  else if (isObject(s) && s.type === 'clip' && typeof s.clipId === 'string' && s.clipId !== '' && kind === 'effect') return parseClipVideoItem(raw, s.clipId)
   else return []
   const still = kind === 'effect' && raw.still === true
   const sourceDurationMs = still ? 0 : Math.round(finiteOr(raw.sourceDurationMs, 0))
@@ -1280,7 +1497,38 @@ function parseTrackItem(raw: unknown, kind: TrackKind): TrackItem[] {
       volume: clampNumber(finiteOr(raw.volume, kind === 'sound' ? 1 : 0), 0, MAX_ITEM_VOLUME),
       fadeInMs: Math.max(0, Math.round(finiteOr(raw.fadeInMs, 0))),
       fadeOutMs: Math.max(0, Math.round(finiteOr(raw.fadeOutMs, 0))),
+      // Antes de la 5 eran lineales (el interruptor «suave»).
+      fadeInEasing: isEasing(raw.fadeInEasing) ? raw.fadeInEasing : 'linear',
+      fadeOutEasing: isEasing(raw.fadeOutEasing) ? raw.fadeOutEasing : 'linear',
       look: kind === 'effect' ? normalizeLook(raw.look) : null,
+    },
+  ]
+}
+
+/** «El vídeo de este trozo»: pegado al principio de su trozo, sin sonido propio, sin repetir. */
+function parseClipVideoItem(raw: Record<string, unknown>, clipId: string): TrackItem[] {
+  if (typeof raw.id !== 'string' || raw.id === '') return []
+  const sourceDurationMs = Math.max(1, Math.round(finiteOr(raw.sourceDurationMs, 1)))
+  return [
+    {
+      id: raw.id,
+      source: { type: 'clip', clipId },
+      name: typeof raw.name === 'string' && raw.name !== '' ? raw.name.slice(0, 80) : 'Tu vídeo',
+      sourceDurationMs,
+      still: false,
+      hasAudio: false,
+      anchor: { clipId, offsetMs: 0 },
+      inMs: 0,
+      outMs: sourceDurationMs,
+      phaseMs: 0,
+      repeat: false,
+      durationMs: null,
+      volume: 0,
+      fadeInMs: 0,
+      fadeOutMs: 0,
+      fadeInEasing: 'linear',
+      fadeOutEasing: 'linear',
+      look: normalizeLook(raw.look),
     },
   ]
 }
@@ -1295,13 +1543,20 @@ function parseFraming(raw: unknown): Framing {
   })
 }
 
-/** Imagen guardada (versión 2). Lo que no se entienda vuelve a lo de serie, sin perder el trozo. */
-function parsePicture(raw: unknown, sourceHasVideo: boolean): Picture {
-  if (!isObject(raw)) return defaultPicture(sourceHasVideo)
-  if (raw.kind === 'none') return { kind: 'none' }
+/**
+ * Imagen guardada (versión 2). Lo que no se entienda vuelve a lo de serie, sin perder el trozo. La esquina de
+ * antes de la versión 5 (`inset`) se devuelve aparte para convertirla en un elemento de las pistas.
+ */
+function parsePicture(raw: unknown, sourceHasVideo: boolean): { picture: Picture; inset: Inset | null } {
+  if (!isObject(raw)) return { picture: defaultPicture(sourceHasVideo), inset: null }
+  if (raw.kind === 'none') return { picture: { kind: 'none' }, inset: null }
   if (raw.kind === 'cover' && typeof raw.sourcePath === 'string' && raw.sourcePath !== '' && typeof raw.sourceDurationMs === 'number' && raw.sourceDurationMs > 0) {
-    const inset = isObject(raw.inset) ? { corner: raw.inset.corner as InsetCorner, size: raw.inset.size as InsetSize } : null
-    return normalizePicture(
+    const r = isObject(raw.inset) ? raw.inset : null
+    const inset =
+      sourceHasVideo && r && INSET_CORNERS.includes(r.corner as InsetCorner) && INSET_SIZES.includes(r.size as InsetSize)
+        ? { corner: r.corner as InsetCorner, size: r.size as InsetSize }
+        : null
+    const picture = normalizePicture(
       {
         kind: 'cover',
         sourcePath: raw.sourcePath,
@@ -1309,15 +1564,15 @@ function parsePicture(raw: unknown, sourceHasVideo: boolean): Picture {
         startMs: typeof raw.startMs === 'number' ? raw.startMs : 0,
         framing: parseFraming(raw.framing),
         quarterTurns: (typeof raw.quarterTurns === 'number' ? raw.quarterTurns : 0) as QuarterTurns,
-        inset,
       },
       sourceHasVideo,
     )
+    return { picture, inset }
   }
-  return defaultPicture(sourceHasVideo)
+  return { picture: defaultPicture(sourceHasVideo), inset: null }
 }
 
-function parseClip(raw: unknown, index: number, version: number): Clip {
+function parseClip(raw: unknown, index: number, version: number): { clip: Clip; inset: Inset | null } {
   const fail = (what: string): never => {
     throw new ProjectFormatError(`El trozo ${index + 1} está dañado (${what}).`)
   }
@@ -1341,8 +1596,9 @@ function parseClip(raw: unknown, index: number, version: number): Clip {
   const framing = parseFraming(raw.framing)
   // Migración 1 → 2: en la versión 1 todos los trozos eran vídeos con su imagen.
   const sourceHasVideo = version < 2 ? true : raw.sourceHasVideo !== false
-  const picture = version < 2 ? defaultPicture(true) : parsePicture(raw.picture, sourceHasVideo)
-  return {
+  const parsed = version < 2 ? { picture: defaultPicture(true), inset: null } : parsePicture(raw.picture, sourceHasVideo)
+  const picture = parsed.picture
+  const clip: Clip = {
     id: raw.id as string,
     sourcePath: raw.sourcePath as string,
     sourceDurationMs,
@@ -1353,7 +1609,14 @@ function parseClip(raw: unknown, index: number, version: number): Clip {
     quarterTurns: turns,
     framing,
     picture,
+    // Antes de la 5 los trozos no aparecían ni desaparecían.
+    fadeInMs: version >= 5 ? Math.max(0, Math.round(finiteOr(raw.fadeInMs, 0))) : 0,
+    fadeOutMs: version >= 5 ? Math.max(0, Math.round(finiteOr(raw.fadeOutMs, 0))) : 0,
+    fadeInEasing: isEasing(raw.fadeInEasing) ? raw.fadeInEasing : 'linear',
+    fadeOutEasing: isEasing(raw.fadeOutEasing) ? raw.fadeOutEasing : 'linear',
   }
+  // La esquina solo existía con otro vídeo encima (y nunca pasó de la versión 4).
+  return { clip, inset: version < 5 && picture.kind === 'cover' ? parsed.inset : null }
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {

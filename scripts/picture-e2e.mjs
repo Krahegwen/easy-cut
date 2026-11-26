@@ -1,7 +1,8 @@
 // Prueba de extremo a extremo de «Imagen» (qué se ve mientras suena un trozo) y «Solo el sonido», en la app
 // Tauri real por CDP y con los botones de verdad: añadir un fichero de sonido, la pestaña «Imagen» con sus tres
-// opciones, elegir el vídeo de encima (por el gancho de desarrollo en vez del diálogo), «Empieza en…», esquina
-// y tamaño, partir un trozo con vídeo encima, deshacer/rehacer, reproducir la vista previa midiendo que el vídeo
+// opciones, elegir el vídeo de encima (por el gancho de desarrollo en vez del diálogo), «Empieza en…», que la
+// esquina ya no está aquí (vive en las pistas: «Llevar a una esquina aquí», ver motion-e2e), partir un trozo con
+// vídeo encima, deshacer/rehacer, reproducir la vista previa midiendo que el vídeo
 // de encima va sincronizado, guardar «Para WhatsApp» y «Solo el sonido» y comprobarlos con ffprobe, un vídeo de
 // encima que desaparece y la barra de duración a 1100 px. Capturas pic-*.png en test-output/screenshots/.
 //
@@ -260,19 +261,15 @@ try {
     check('Un vídeo de encima más largo no avisa', !(await app.text('[data-testid=cover-short]')))
     await app.click('[data-testid=cover-start-forward]')
     await app.click('[data-testid=cover-fill]')
-    await app.click('[data-testid=inset-toggle]')
-    check('«Verme en una esquina» (abajo a la derecha, pequeño, por defecto)', JSON.stringify((await selected()).picture.inset) === '{"corner":"bottom-right","size":"small"}')
-    await app.click('[data-testid=inset-top-left]')
-    await app.click('[data-testid=inset-medium]')
     const pic = (await selected()).picture
-    check('Esquina arriba a la izquierda y mediano; llena la pantalla', pic.inset.corner === 'top-left' && pic.inset.size === 'medium' && pic.framing.mode === 'fill' && pic.startMs === 1000, JSON.stringify(pic))
+    check('Encima, llenando la pantalla y desde el segundo 1', pic.kind === 'cover' && pic.framing.mode === 'fill' && pic.startMs === 1000 && !('inset' in pic), JSON.stringify(pic))
+    // La esquina ya no está en «Imagen»: vive en las pistas y aquí se dice dónde.
+    const tip = await app.text('[data-testid=corner-tip]')
+    check('«Imagen» ya no ofrece la esquina y explica dónde está («Llevar a una esquina aquí»)', !(await app.evaluate('return !!document.querySelector("[data-testid=inset-toggle]")')) && tip.includes('Llevar a una esquina aquí'), tip)
     await sleep(800)
-    const inset = await app.evaluate(`const f = document.querySelector('[data-testid=preview-frame]').getBoundingClientRect();
-      const v = [...document.querySelectorAll('[data-testid=player] video.inset')].find((e) => !e.classList.contains('hidden'));
-      if (!v) return null; const r = v.getBoundingClientRect();
-      return { left: (r.left - f.left) / f.width, top: (r.top - f.top) / f.height, width: r.width / f.width, playing: v.videoWidth > 0 }`)
-    check('En la vista previa me veo arriba a la izquierda, a un 40 % del ancho', !!inset && inset.left < 0.06 && inset.top < 0.1 && Math.abs(inset.width - 0.4) < 0.02 && inset.playing, JSON.stringify(inset))
-    await shot('pic-08-encima-y-esquina.png')
+    const own = await app.evaluate(`return [...document.querySelectorAll('[data-testid=player] video.video:not(.cover)')].filter((e) => !e.classList.contains('hidden')).length`)
+    check('Con otro vídeo encima, su propio vídeo no se ve (y sigue sonando, escondido)', own === 0, `${own} visibles`)
+    await shot('pic-08-encima.png')
     await app.setViewport(1280, 800)
 
     // Partir a los 4 s: la segunda parte sigue el vídeo de encima donde iba.
@@ -281,7 +278,7 @@ try {
     await app.click('[data-testid=split-here]')
     const list = await clips()
     const [a, b] = [list[0].picture, list[1].picture]
-    check('Partir un trozo con vídeo encima: la segunda parte sigue donde iba', list.length === 4 && b.kind === 'cover' && b.startMs - a.startMs >= 3800 && b.startMs - a.startMs <= 4200 && b.inset?.corner === 'top-left', `${a.startMs} → ${b.startMs}`)
+    check('Partir un trozo con vídeo encima: la segunda parte sigue donde iba', list.length === 4 && b.kind === 'cover' && b.startMs - a.startMs >= 3800 && b.startMs - a.startMs <= 4200, `${a.startMs} → ${b.startMs}`)
     await app.click('[data-testid=undo]')
     check('Deshacer el partido', (await clips()).length === 3)
     await app.click('[data-testid=redo]')

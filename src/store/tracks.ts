@@ -4,6 +4,25 @@
 
 import { computed, ref, shallowRef, watch } from 'vue'
 import {
+  clipStartTimes as clipStarts,
+  cornerMoveAt,
+  findClipVideoItem,
+  moveToCornerAt,
+  setCover,
+  type CornerMove,
+  addMark,
+  boxAt,
+  clearMotion as clearMotionOfLook,
+  itemLocalMs,
+  markIndexAt,
+  moveMark as moveMarkOfLook,
+  neighbourMark,
+  removeMark,
+  setBoxAt,
+  setSegmentEasing,
+  updateEffectLook,
+  type EffectBox,
+  type MotionEasing,
   addTrack as addTrackToProject,
   assetDefaults,
   baseName,
@@ -40,6 +59,7 @@ import {
   tracksOfKind,
   trimItemEnd,
   trimItemStart,
+  type Easing,
   type EffectLook,
   type LibraryAsset,
   type MediaInfo,
@@ -66,6 +86,11 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
   const adding = ref<string | null>(null)
   /** Dónde está la línea (el cabezal de la vista previa): «Poner aquí», partir, soltar ficheros… */
   const playheadMs = ref(0)
+  /**
+   * La marca de sitio y tamaño «a mano» (la última a la que se ha ido con ← marca / marca →, o que se ha pulsado
+   * en su pista): «Mover la marca aquí» la lleva a la línea.
+   */
+  const pickedMark = ref<{ itemId: string; atMs: number } | null>(null)
 
   const project = editor.project
   const hasTracks = computed(() => project.value.tracks.length > 0)
@@ -86,6 +111,7 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
   function select(itemId: string | null) {
     selectedItemId.value = itemId
     if (!itemId) boxEditing.value = false
+    if (pickedMark.value && pickedMark.value.itemId !== itemId) pickedMark.value = null
   }
 
   /** Lo que se hace con un proyecto nuevo que no cabe o no hay vídeo. */
@@ -328,8 +354,9 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     editor.apply((p) => setItemVolume(p, itemId, volume))
   }
 
-  function setFade(itemId: string, which: 'in' | 'out', on: boolean) {
-    editor.apply((p) => setItemFade(p, itemId, which, on))
+  /** Cómo aparece o desaparece: duración (0 = de golpe) y curva (o el interruptor de antes, con true/false). */
+  function setFade(itemId: string, which: 'in' | 'out', fade: boolean | { ms: number; easing: Easing }) {
+    editor.apply((p) => setItemFade(p, itemId, which, fade))
   }
 
   function setRepeat(itemId: string, on: boolean) {
@@ -338,6 +365,151 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
 
   function setLook(itemId: string, change: Partial<Omit<EffectLook, 'box'>> & { box?: Partial<EffectLook['box']> }) {
     editor.apply((p) => setEffectLook(p, itemId, change))
+  }
+
+  // ---------------------------------------------------------------- tamaño y sitio con marcas
+
+  /** El instante del elemento que corresponde a la línea (sujeto a su tramo). */
+  function localAtLine(itemId: string): number {
+    return itemLocalMs(editor.history.value.present, itemId, playheadMs.value) ?? 0
+  }
+
+  /** Lo que se ve del efecto en la línea (con marcas, el valor de ese instante). */
+  function boxAtLine(itemId: string): EffectBox | null {
+    const found = findItem(editor.project.value, itemId)
+    if (!found?.item.look) return null
+    return boxAt(found.item.look, itemLocalMs(editor.project.value, itemId, playheadMs.value) ?? 0)
+  }
+
+  /** Mientras se arrastra en «Tamaño y sitio»: el valor de ese instante (crea o actualiza su marca si las hay). */
+  function previewBoxAt(itemId: string, localMs: number, change: Partial<EffectBox>) {
+    editor.preview((p) => updateEffectLook(p, itemId, (l) => setBoxAt(l, localMs, change)))
+  }
+
+  /** Lo mismo con botón o tecla (un paso de deshacer): p. ej. «Pantalla completa». */
+  function setBoxHere(itemId: string, change: Partial<EffectBox>) {
+    const local = localAtLine(itemId)
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => setBoxAt(l, local, change)))
+  }
+
+  /** ¿Hay una marca en la línea? */
+  function markAtLine(itemId: string): boolean {
+    const found = findItem(editor.project.value, itemId)
+    return !!found?.item.look && markIndexAt(found.item.look, itemLocalMs(editor.project.value, itemId, playheadMs.value) ?? 0) >= 0
+  }
+
+  /** «Marcar aquí» o, si ya hay una marca en la línea, «Quitar esta marca». */
+  function toggleMarkHere(itemId: string) {
+    const local = localAtLine(itemId)
+    const found = findItem(editor.history.value.present, itemId)
+    if (!found?.item.look) return
+    const on = markIndexAt(found.item.look, local) >= 0
+    const first = found.item.look.keyframes.length === 0
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => (on ? removeMark(l, local) : addMark(l, local))))
+    pickedMark.value = on ? null : { itemId, atMs: local }
+    if (on) editor.showToast('Marca quitada.', { label: 'Deshacer', run: editor.undo })
+    else if (first) editor.showToast('Marcado. Ahora lleva la línea a otro momento y mueve o cambia el tamaño: viajará de una marca a otra.')
+  }
+
+  /** «Quitar el movimiento»: sin marcas, quieto como está en la línea. */
+  function clearMotion(itemId: string) {
+    const local = localAtLine(itemId)
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => clearMotionOfLook(l, local)))
+    pickedMark.value = null
+    editor.showToast('Ya no se mueve: se queda como estaba en la línea.', { label: 'Deshacer', run: editor.undo })
+  }
+
+  /** Instante del vídeo de la marca anterior o siguiente (y la deja «a mano»); null si no hay. */
+  function neighbourMarkMs(itemId: string, dir: -1 | 1): number | null {
+    const p = editor.history.value.present
+    const r = resolveTracks(p).find((x) => x.item.id === itemId)
+    if (!r?.item.look) return null
+    const k = neighbourMark(r.item.look, playheadMs.value - r.startMs, dir, r.shownEndMs - r.startMs)
+    if (!k) return null
+    pickedMark.value = { itemId, atMs: k.atMs }
+    return r.startMs + k.atMs
+  }
+
+  /** «Mover la marca aquí»: la marca «a mano» pasa a la línea. */
+  function movePickedMarkHere(itemId: string): boolean {
+    const picked = pickedMark.value
+    if (!picked || picked.itemId !== itemId) return false
+    const local = localAtLine(itemId)
+    const before = editor.history.value.present
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => moveMarkOfLook(l, picked.atMs, local)))
+    if (editor.history.value.present === before) {
+      editor.showToast('Ahí no puede ir: hay otra marca muy cerca.')
+      return false
+    }
+    pickedMark.value = { itemId, atMs: local }
+    return true
+  }
+
+  /** Mientras se arrastra una marca en su pista; entra en el historial al soltar (commitPreview). */
+  function previewMoveMark(itemId: string, fromMs: number, toMs: number) {
+    editor.preview((p) => updateEffectLook(p, itemId, (l) => moveMarkOfLook(l, fromMs, toMs)))
+  }
+
+  // ---------------------------------------------------------------- el vídeo del trozo, a una esquina y de vuelta
+
+  /** El instante del trozo (su tiempo de salida) que está en la línea, sujeto a su tramo. */
+  function clipLocalAtLine(clipId: string): number {
+    const p = editor.project.value
+    const i = p.clips.findIndex((c) => c.id === clipId)
+    if (i < 0) return 0
+    return Math.max(0, Math.min(clipOutputMs(p.clips[i]!), playheadMs.value - clipStarts(p)[i]!))
+  }
+
+  /** Qué hará «Llevar a una esquina aquí» con la línea donde está: ir a la esquina o volver a pantalla completa. */
+  function cornerMove(clipId: string): CornerMove {
+    return cornerMoveAt(editor.project.value, clipId, clipLocalAtLine(clipId))
+  }
+
+  /**
+   * «Llevar a una esquina aquí» / «Volver a pantalla completa aquí»: el vídeo del trozo se encoge hasta la esquina
+   * (o vuelve) desde la línea, en menos de un segundo. Si el trozo aún no tiene nada detrás (otro vídeo de fondo),
+   * primero se elige ese vídeo. Un solo paso de deshacer.
+   */
+  async function cornerHere(clipId: string): Promise<boolean> {
+    let p = editor.history.value.present
+    const clip = p.clips.find((c) => c.id === clipId)
+    if (!clip) return false
+    if (!clip.sourceHasVideo) {
+      editor.showToast('Este trozo es un sonido: no tiene imagen que llevar a una esquina.')
+      return false
+    }
+    const local = clipLocalAtLine(clipId)
+    if (clip.picture.kind !== 'cover') {
+      editor.showToast('Elige qué vídeo se verá detrás cuando te vayas a la esquina.')
+      const info = await editor.chooseCoverVideo()
+      if (!info) return false
+      p = setCover(editor.history.value.present, clipId, info)
+    }
+    const res = moveToCornerAt(p, clipId, local, { itemId: newId('item'), trackId: newId('track'), trackName: 'Tu vídeo encima' })
+    if (!res) {
+      editor.showToast('Este trozo es demasiado corto para eso.')
+      return false
+    }
+    editor.commit(res.project)
+    selectedItemId.value = null
+    editor.showToast(
+      res.move === 'to-corner'
+        ? 'Hecho: en ese momento te vas a la esquina. Para volver a pantalla completa, lleva la línea más adelante y pulsa otra vez.'
+        : 'Hecho: en ese momento vuelves a pantalla completa.',
+      { label: 'Deshacer', run: editor.undo },
+    )
+    return true
+  }
+
+  /** El elemento «vídeo de este trozo» de un trozo (si lo tiene). */
+  function clipVideoItemId(clipId: string): string | null {
+    return findClipVideoItem(editor.project.value, clipId)?.item.id ?? null
+  }
+
+  /** «Cómo viaja»: la curva del tramo de la línea. */
+  function setTravelEasing(itemId: string, easing: MotionEasing) {
+    const local = localAtLine(itemId)
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => setSegmentEasing(l, local, easing)))
   }
 
   // ---------------------------------------------------------------- pistas
@@ -497,6 +669,21 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     setFade,
     setRepeat,
     setLook,
+    pickedMark,
+    localAtLine,
+    boxAtLine,
+    previewBoxAt,
+    setBoxHere,
+    markAtLine,
+    toggleMarkHere,
+    clearMotion,
+    neighbourMarkMs,
+    movePickedMarkHere,
+    previewMoveMark,
+    setTravelEasing,
+    cornerMove,
+    cornerHere,
+    clipVideoItemId,
     setTrackMuted,
     setTrackHidden,
     setMainMuted,

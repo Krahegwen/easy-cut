@@ -167,6 +167,8 @@ export function createLibraryStore(bridge: NativeBridge, setMedia: (info: MediaI
   /** Ruta del fichero de un elemento de las pistas (o null si es de la biblioteca y no está descargado). */
   function itemPath(item: TrackItem): string | null {
     if (item.source.type === 'file') return item.source.path
+    // «El vídeo de este trozo» no es un fichero de las pistas: lo enseña y lo guarda el propio trozo.
+    if (item.source.type !== 'library') return null
     const a = asset(item.source.assetId)
     return a ? paths.value[a.file] ?? null : null
   }
