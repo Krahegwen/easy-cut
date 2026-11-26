@@ -679,7 +679,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
               @pointerdown="itemDown(r, 'move', $event)"
             >
               <span v-if="r.item.collage" class="thumb collage-thumb">
-                <LayoutIcon :layout-id="r.item.collage.layoutId" :aspect="frameAspect" :width="56" numbers />
+                <LayoutIcon :layout-id="r.item.collage.layoutId" :aspect="frameAspect" :width="36" />
               </span>
               <span v-else class="thumb">
                 <img v-if="r.item.still && effectThumbPath(r)" :src="store.mediaSrc(effectThumbPath(r)!)" alt="" draggable="false" />
