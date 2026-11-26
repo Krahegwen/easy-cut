@@ -31,6 +31,7 @@ import {
   putClipVideo,
   resolveTracks,
   setCover,
+  setSpeed,
   setTransition,
   type MediaInfo,
   type NewItem,
@@ -348,6 +349,31 @@ describe.sequential('transiciones (ffmpeg real)', () => {
     report.push({ caso: 'tu vídeo en el paso', before, mid, want })
     expect(near(before, GREEN, 6)).toBe(true)
     expect(near(mid, want, 10)).toBe(true)
+  })
+
+  it('un fundido hacia un trozo a 2×: fotogramas exactos y la media a mitad del paso', async () => {
+    let p = threeClips('dissolve', 1000)
+    p = setSpeed(p, 'b', 2)
+    const { out, expectedMs } = await exportVideo('fundido-2x', p)
+    const m = await countFrames(out)
+    // Rojo 120, azul a 2× 60, verde 120, menos el paso de 30.
+    expect(m.frames).toBe(120 + 60 + 120 - 30)
+    expect(Math.abs(m.durationMs - expectedMs)).toBeLessThanOrEqual(1000 / F)
+    const mid = await colorAtFrame(out, 90 + 15, W / 2, H / 2)
+    report.push({ caso: 'fundido a 2×', frames: m.frames, mid })
+    expect(near(mid, mix(RED, BLUE, 0.5), 6)).toBe(true)
+  })
+
+  it('un fundido hacia un trozo con otro vídeo encima: a mitad del paso, la media con el de encima', async () => {
+    let p = threeClips('dissolve', 1000)
+    // El azul suena, pero se ve el verde (otro vídeo encima).
+    p = setCover(p, 'b', media.get(f.green)!)
+    const { out } = await exportVideo('fundido-encima', p)
+    const mid = await colorAtFrame(out, 90 + 15, W / 2, H / 2)
+    const after = await colorAtFrame(out, 150, W / 2, H / 2)
+    report.push({ caso: 'fundido con vídeo encima', mid, after })
+    expect(near(after, GREEN, 4)).toBe(true)
+    expect(near(mid, mix(RED, GREEN, 0.5), 6)).toBe(true)
   })
 
   it('deja el informe', () => {

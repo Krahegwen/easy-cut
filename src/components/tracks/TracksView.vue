@@ -358,7 +358,7 @@ const joinsView = computed(() =>
     const zone = j ? (j.overlap ? { from: start, to: start + j.overlapUnits } : { from: start - j.tail, to: start + j.head }) : null
     const centerMs = j?.overlap ? start + j.overlapUnits / 2 : start
     const label = `Cómo se pasa al trozo ${i + 1}: ${describeEntry(c.entry && j ? c.entry : null, j?.duration).toLowerCase()}`
-    return { clip: c, i, join: j, zone, centerMs, label }
+    return { clip: c, prev: project.value.clips[i - 1]!, i, join: j, zone, centerMs, label }
   }),
 )
 
@@ -762,6 +762,15 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
                 title="Tira para montar más o menos"
                 :data-testid="`join-edge-${jv.i + 1}`"
                 @pointerdown="joinEdgeDown(jv.clip, $event)"
+              />
+              <!-- El asa del final del trozo que sale, que con solape queda debajo del que entra: se dibuja encima. -->
+              <span
+                v-if="jv.join?.overlap"
+                class="join-out-handle"
+                title="Tira para que el trozo de antes termine antes o después"
+                :data-testid="`join-out-handle-${jv.i + 1}`"
+                :data-clip-id="jv.prev.id"
+                @pointerdown="clipHandleDown(jv.prev, 'end', $event)"
               />
             </span>
             <button
@@ -1446,6 +1455,27 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
   width: 4px;
   border-radius: 2px;
   background: #fff;
+}
+/* Abajo del borde derecho del paso (el final del que sale); arriba del izquierdo, el agarre del paso. */
+.join-out-handle {
+  position: absolute;
+  right: -6px;
+  top: 52%;
+  bottom: 0;
+  width: 12px;
+  cursor: ew-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+.join-out-handle::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 2px;
+  bottom: 6px;
+  width: 4px;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.85);
 }
 .join-btn {
   /* Pequeño y arriba del todo: debajo quedan las asas de los dos trozos para recortarlos. */

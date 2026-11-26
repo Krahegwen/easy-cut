@@ -136,6 +136,12 @@ const mountedClips = computed(() => {
   const list = [clips[a]!]
   const next = a + 1 < clips.length ? a + 1 : props.loop && clips.length > 1 ? 0 : -1
   if (next >= 0 && next !== a) list.push(clips[next]!)
+  // Si el siguiente empieza su propio paso enseguida (un trozo corto montado entre dos transiciones), el de después
+  // también, cargado de antemano: si no, al acabar el activo entraría tarde (medido: hasta medio segundo).
+  if (next === a + 1 && next + 1 < clips.length) {
+    const starts = clipStartTimes(props.project)
+    if (starts[next + 1]! - starts[next]! < 1500) list.push(clips[next + 1]!)
+  }
   return list
 })
 const mountedCovers = computed(() => mountedClips.value.filter((c) => c.picture.kind === 'cover'))
@@ -447,7 +453,6 @@ function prepareElements() {
 const incomingActualMs = ref<number | null>(null)
 const incomingExpectedMs = ref<number | null>(null)
 
-/** ¿Es este trozo el que entra en un paso con solape que ya ha empezado? */
 /**
  * Lo que se adelanta el arranque del que entra (ms del montaje, a 1×): un <video> parado tarda en empezar a avanzar
  * después de play(), y sin esto entraba siempre por detrás. Antes del paso no se ve ni se oye.
@@ -459,6 +464,7 @@ function incomingFromMs(startMs: number): number {
   return playing.value ? startMs - INCOMING_PREROLL_MS * normalizeReviewRate(reviewRate.value) : startMs
 }
 
+/** ¿Es este trozo el que entra en un paso con solape que ya ha empezado (o está a punto, reproduciendo)? */
 function isIncomingNow(clip: Clip): boolean {
   const ex = exitJoin.value
   return !!ex && props.project.clips[ex.clipIndex]?.id === clip.id && currentMs.value >= incomingFromMs(ex.startMs)
