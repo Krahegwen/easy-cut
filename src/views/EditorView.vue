@@ -278,6 +278,8 @@ useShortcuts({
       ...itemKeys,
       ...clipKeys,
       { id: 'back', keys: ['Escape'], label: 'Esc', description: 'volver a Inicio (tu vídeo no se pierde)', run: () => store.go('home') },
+      // Pantalla completa de la vista previa (en «Tamaño y sitio» la F es suya: esa capa va antes).
+      { id: 'fullscreen', keys: ['f'], label: 'F', description: 'ver la vista previa a pantalla completa', run: () => p?.toggleFullscreen(), enabled: has },
       { id: 'library', keys: ['b'], label: 'B', description: 'añadir sonidos y efectos (biblioteca)', run: openLibrary, enabled: has },
       { id: 'zoom-in', keys: ['+'], label: '+', description: 'acercar las pistas', run: () => tv?.zoomBy(1), enabled: has, repeat: true },
       { id: 'zoom-out', keys: ['-'], label: '-', description: 'alejar las pistas', run: () => tv?.zoomBy(-1), enabled: has, repeat: true },
@@ -342,7 +344,7 @@ onBeforeUnmount(() => {
     <div ref="work" class="work" :data-top-px="topPx" data-testid="editor-work">
       <div class="upper" :class="{ 'with-library': tracks.libraryOpen.value }" :style="{ height: `${topPx}px` }" data-testid="editor-upper">
         <section class="preview">
-          <PreviewPlayer ref="player" :project="store.playableProject.value" tracks @time="onTime">
+          <PreviewPlayer ref="player" :project="store.playableProject.value" tracks fullscreenable reviewable @time="onTime">
             <template #overlay>
               <div v-if="missingCount > 0" class="missing-banner">
                 <AppIcon name="warning" />

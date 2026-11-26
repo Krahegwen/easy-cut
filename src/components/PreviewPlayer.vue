@@ -8,6 +8,16 @@
 // sonando, escondido; también reproduce sin problema un fichero de solo sonido); u otro vídeo encima en un
 // segundo <video> silenciado que sigue el tiempo de salida del trozo (se recoloca si se separa más de
 // 150 ms y se queda en su última imagen si se acaba), con el vídeo del trozo en pequeño en una esquina.
+//
+// Pantalla completa (`fullscreenable`): la Fullscreen API sobre la raíz del propio reproductor. Así no se
+// vuelve a montar nada (los <video>, el vídeo de encima y las pistas siguen siendo los mismos elementos, en el
+// mismo instante) y la capa superior del navegador se salta el `container-type` de «Tu vídeo», que con una
+// capa `position: fixed` la dejaría encerrada en su columna. En WebView2 ocupa al menos toda la ventana.
+//
+// «Repasar más rápido» (`reviewable`): un factor que solo vive aquí (se pierde al salir de la pantalla, así
+// que vuelve solo a 1× al guardar o al reabrir) y multiplica el playbackRate de todo lo que suena: el trozo
+// (por su velocidad), el vídeo de encima y las pistas. El reloj del montaje sale del <video> del trozo, así
+// que avanza a ese ritmo sin más; la lógica está en `src/domain/playback.ts`.
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
@@ -22,17 +32,25 @@ import {
   firstSpanOfClip,
   fitAspect,
   formatClock,
+  formatReviewRate,
   hasReachedSpanEnd,
   insetRect,
   locatePlayback,
+  mediaRate,
+  normalizeReviewRate,
   PLAIN_BACKGROUND_CSS,
   playbackTimeAt,
+  REVIEW_RATES,
+  reviewNotice,
   type Clip,
   type CoverPicture,
   type FramingLayout,
   type Project,
+  type ReviewRate,
 } from '../domain'
-import { store } from '../store'
+import { LAYER_PRIORITY } from '../lib/shortcuts'
+import { isLayerCovered, openKeysPanel, useShortcuts } from '../lib/use-shortcuts'
+import { store, tracks as tracksStore } from '../store'
 import AppIcon from './AppIcon.vue'
 import KeyHint from './KeyHint.vue'
 import type { PanEvent, PlayerTime } from './player-types'
@@ -51,8 +69,20 @@ const props = withDefaults(
     anchor?: 'project' | 'source'
     /** Con las pistas de sonidos y efectos (y la fila principal silenciada si lo está): «Tu vídeo». */
     tracks?: boolean
+    /** Con el botón de pantalla completa (y sus teclas mientras dura): «Tu vídeo». */
+    fullscreenable?: boolean
+    /** Con «Repasar más rápido» (1×, 1,5×, 2×; solo la vista previa): «Tu vídeo». */
+    reviewable?: boolean
   }>(),
-  { loop: false, pannable: false, clockLabel: 'Posición en el vídeo', anchor: 'project', tracks: false },
+  {
+    loop: false,
+    pannable: false,
+    clockLabel: 'Posición en el vídeo',
+    anchor: 'project',
+    tracks: false,
+    fullscreenable: false,
+    reviewable: false,
+  },
 )
 
 const emit = defineEmits<{ time: [t: PlayerTime]; pan: [e: PanEvent] }>()
@@ -61,6 +91,8 @@ const plan = computed(() => buildPlaybackPlan(props.project))
 const spanIndex = ref(0)
 const currentMs = ref(0)
 const playing = ref(false)
+/** «Repasar más rápido»: solo la vista previa, no se guarda en ningún sitio (al volver a montarse, 1×). */
+const reviewRate = ref<ReviewRate>(1)
 /** Instante del original que se enseña fuera de lo conservado (al mover el cabezal en «Cortar»). */
 const freeSourceMs = ref<number | null>(null)
 const sourceMs = ref(0)
@@ -192,8 +224,10 @@ function registerCover(clipId: string, el: unknown) {
 }
 
 function configure(el: HTMLVideoElement, clip: Clip, active: boolean) {
-  el.defaultPlaybackRate = clip.speed
-  if (el.playbackRate !== clip.speed) el.playbackRate = clip.speed
+  // La velocidad del trozo por la de repaso (si se está repasando más rápido).
+  const rate = mediaRate(clip.speed, reviewRate.value)
+  el.defaultPlaybackRate = rate
+  if (el.playbackRate !== rate) el.playbackRate = rate
   el.preservesPitch = true
   el.muted = !active || isMutedClip(clip)
 }
@@ -275,7 +309,12 @@ function syncCover(play: boolean, exact = false) {
     if (!el.seeking && el.currentTime * 1000 < endMs - 120) el.currentTime = Math.max(0, endMs / 1000 - 0.03)
     return
   }
-  if (el.playbackRate !== 1) el.playbackRate = 1
+  // A velocidad normal dentro del montaje: solo le afecta el repaso.
+  const rate = mediaRate(1, reviewRate.value)
+  if (el.playbackRate !== rate) {
+    el.defaultPlaybackRate = rate
+    el.playbackRate = rate
+  }
   if (play) {
     if (el.paused && el.readyState >= 2) void el.play().catch(() => {})
   } else if (!el.paused) {
@@ -327,7 +366,7 @@ function tick() {
     if (src < span.sourceStartMs - 300 || src > span.sourceEndMs + 300) {
       // Se ha desviado (p. ej. tras un salto): se recoloca en el tramo.
       el.currentTime = Math.min(Math.max(sourceMs.value, span.sourceStartMs), span.sourceEndMs) / 1000
-    } else if (hasReachedSpanEnd(span, src) || el.ended) {
+    } else if (hasReachedSpanEnd(span, src, mediaRate(span.speed, reviewRate.value)) || el.ended) {
       advance()
     } else {
       sourceMs.value = src
@@ -617,6 +656,97 @@ function panUp(e: PointerEvent) {
   panStart = null
 }
 
+// ------------------------------------------------------------------ repasar más rápido
+
+const notice = computed(() => (props.reviewable ? reviewNotice(reviewRate.value) : null))
+
+function setReviewRate(rate: number) {
+  if (!props.reviewable) return
+  reviewRate.value = normalizeReviewRate(rate)
+}
+
+// Cambiar el factor se nota al momento: el trozo que suena, el siguiente y el vídeo de encima.
+watch(reviewRate, () => {
+  for (const clip of mountedClips.value) {
+    const el = elements.get(clip.id)
+    if (el) configure(el, clip, clip.id === activeClip.value?.id)
+  }
+  syncCover(playing.value)
+})
+
+// ------------------------------------------------------------------ pantalla completa
+
+const root = ref<HTMLDivElement | null>(null)
+const fullscreen = ref(false)
+/** Cuándo se salió de la pantalla completa (para que el mismo Esc no haga además lo de la pantalla). */
+let exitedAt = Number.NEGATIVE_INFINITY
+const FULLSCREEN_LAYER = 'preview-fullscreen'
+const ESC_GRACE_MS = 400
+
+function onFullscreenChange() {
+  const now = !!root.value && document.fullscreenElement === root.value
+  if (fullscreen.value && !now) exitedAt = performance.now()
+  fullscreen.value = now
+}
+
+async function enterFullscreen() {
+  const el = root.value
+  if (!props.fullscreenable || !el || fullscreen.value) return
+  try {
+    await el.requestFullscreen({ navigationUI: 'hide' })
+  } catch (err) {
+    console.warn('[easy-cut] no se ha podido poner la vista previa a pantalla completa', err)
+    store.showToast('No se ha podido poner la vista previa a pantalla completa.')
+  }
+}
+
+function exitFullscreen() {
+  if (root.value && document.fullscreenElement === root.value) void document.exitFullscreen().catch(() => {})
+}
+
+function toggleFullscreen() {
+  if (fullscreen.value) exitFullscreen()
+  else void enterFullscreen()
+}
+
+if (props.fullscreenable) {
+  const has = () => props.project.clips.length > 0
+  // Mientras dura, solo valen estas (modal): lo de la pantalla de debajo no se ve. Esc sale y nada más.
+  useShortcuts({
+    id: FULLSCREEN_LAYER,
+    title: 'Pantalla completa',
+    priority: LAYER_PRIORITY.fullscreen,
+    modal: true,
+    active: () => fullscreen.value,
+    shortcuts: () => [
+      { id: 'fullscreen-exit', keys: ['Escape', 'f'], label: 'Esc', description: 'salir de la pantalla completa (también F)', run: exitFullscreen },
+      { id: 'fullscreen-play', keys: ['Space'], label: 'Espacio', description: 'reproducir o parar', run: toggle, enabled: has() },
+      { id: 'fullscreen-start', keys: ['Home'], label: 'Inicio', description: 'ir al principio', run: () => seek(0), enabled: has() },
+      { id: 'fullscreen-end', keys: ['End'], label: 'Fin', description: 'ir al final', run: () => seek(durationMs.value), enabled: has() },
+      { id: 'fullscreen-back', keys: ['ArrowLeft'], label: '←', description: '1 segundo atrás', run: () => seek(currentMs.value - 1000), enabled: has(), repeat: true },
+      { id: 'fullscreen-forward', keys: ['ArrowRight'], label: '→', description: '1 segundo adelante', run: () => seek(currentMs.value + 1000), enabled: has(), repeat: true },
+      // F1 abre la lista; como la tapa, se sale de la pantalla completa (ver abajo) y se ve.
+      { id: 'fullscreen-keys', keys: ['F1'], label: 'F1', description: 'ver la lista de teclas (sale de la pantalla completa)', run: openKeysPanel, inText: true },
+    ],
+  })
+  // Justo después de salir, un Esc que llegue tarde (el navegador también sale con Esc) no hace nada más.
+  useShortcuts({
+    id: `${FULLSCREEN_LAYER}-grace`,
+    title: 'Pantalla completa',
+    priority: LAYER_PRIORITY.fullscreen,
+    active: () => !fullscreen.value && performance.now() - exitedAt < ESC_GRACE_MS,
+    shortcuts: () => [{ id: 'fullscreen-esc-grace', keys: ['Escape'], label: 'Esc', description: 'nada (acabas de salir)', run: () => {}, hidden: true }],
+  })
+}
+
+// Un diálogo, un error o la lista de teclas quedarían tapados por la pantalla completa: se sale para verlos.
+const covered = computed(() => fullscreen.value && isLayerCovered(FULLSCREEN_LAYER))
+watch(covered, (v) => {
+  if (v) exitFullscreen()
+})
+// Al cambiar de tamaño, el marco se recalcula solo (ResizeObserver); el fondo desenfocado, a pintarlo.
+watch(fullscreen, () => void nextTick(paintBackground))
+
 // ------------------------------------------------------------------ montaje
 
 let observer: ResizeObserver | null = null
@@ -626,10 +756,13 @@ onMounted(() => {
     if (el) stageSize.value = { width: el.clientWidth, height: el.clientHeight }
   })
   if (stage.value) observer.observe(stage.value)
+  document.addEventListener('fullscreenchange', onFullscreenChange)
   locateAt(0)
   void activate(false)
 })
 onBeforeUnmount(() => {
+  document.removeEventListener('fullscreenchange', onFullscreenChange)
+  exitFullscreen()
   observer?.disconnect()
   cancelAnimationFrame(raf)
   for (const el of [...elements.values(), ...coverElements.values()]) {
@@ -641,13 +774,33 @@ onBeforeUnmount(() => {
 
 const durationMs = computed(() => plan.value.durationMs)
 
-defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durationMs, sourceMs })
+defineExpose({
+  play,
+  pause,
+  toggle,
+  seek,
+  showSource,
+  playing,
+  currentMs,
+  durationMs,
+  sourceMs,
+  fullscreen,
+  enterFullscreen,
+  exitFullscreen,
+  toggleFullscreen,
+  reviewRate,
+  setReviewRate,
+})
 </script>
 
 <template>
   <div
+    ref="root"
     class="player"
+    :class="{ 'is-fullscreen': fullscreen }"
     data-testid="player"
+    :data-fullscreen="fullscreen ? '1' : '0'"
+    :data-review-rate="reviewRate"
     :data-current-ms="Math.round(currentMs)"
     :data-duration-ms="durationMs"
     :data-playing="playing ? '1' : '0'"
@@ -727,8 +880,13 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
           :playing="playing"
           :frame-width="frame.width"
           :frame-height="frame.height"
+          :rate="reviewRate"
         />
         <div v-if="project.clips.length === 0" class="empty">Aquí verás tu vídeo</div>
+        <div v-if="notice" class="review-notice" role="status" data-testid="review-notice">
+          <AppIcon name="speed" :size="20" />
+          {{ notice }}
+        </div>
         <div v-if="preparingPreview" class="notice">
           <span class="spinner" />
           Preparando la vista previa…
@@ -757,6 +915,46 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
         :label="clockLabel"
         @seek="seek"
       />
+      <div
+        v-if="reviewable"
+        class="review"
+        role="group"
+        aria-label="Repasar más rápido: solo cambia cómo lo ves ahora, no el vídeo que se guarda"
+        data-testid="review-rate"
+      >
+        <span class="review-label" aria-hidden="true">Repasar más rápido</span>
+        <button
+          v-for="r in REVIEW_RATES"
+          :key="r"
+          class="review-btn"
+          :class="{ on: reviewRate === r }"
+          type="button"
+          :aria-pressed="reviewRate === r"
+          :aria-label="r === 1 ? 'Ver a velocidad normal' : `Repasar a ${formatReviewRate(r)}`"
+          :data-testid="`review-rate-${r}`"
+          @click="setReviewRate(r)"
+        >
+          {{ formatReviewRate(r) }}
+        </button>
+      </div>
+      <button
+        v-if="fullscreenable && !fullscreen"
+        class="fs-btn"
+        type="button"
+        aria-label="Ver a pantalla completa"
+        :disabled="project.clips.length === 0"
+        data-testid="fullscreen-enter"
+        @click="enterFullscreen"
+      >
+        <AppIcon name="fullscreen" :size="24" />
+        <!-- En «Tamaño y sitio» la F es otra cosa (el efecto a pantalla completa): ahí no se dibuja. -->
+        <KeyHint v-if="!tracksStore.boxEditing.value" k="F" />
+      </button>
+      <button v-if="fullscreen" class="fs-btn exit" type="button" data-testid="fullscreen-exit" @click="exitFullscreen">
+        <AppIcon name="close" :size="22" />
+        <span>Salir</span>
+        <KeyHint k="Esc" />
+      </button>
     </div>
   </div>
 </template>
@@ -906,6 +1104,109 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
   white-space: nowrap;
   min-width: 110px;
   color: rgb(255 255 255 / 0.85);
+}
+/* Pantalla completa: sin bordes redondeados y la imagen con algo más de aire. */
+.player.is-fullscreen {
+  border-radius: 0;
+  width: 100%;
+  height: 100%;
+}
+.player.is-fullscreen .stage {
+  margin: 20px 24px 0;
+}
+.player.is-fullscreen .controls {
+  padding: 12px 24px 18px;
+}
+/* «Repasar más rápido»: aviso visible mientras dura, para no confundirlo con la velocidad de un trozo. */
+.review-notice {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 0.72);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.review {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.review-label {
+  margin-right: 4px;
+  font-size: 15px;
+  color: rgb(255 255 255 / 0.85);
+  white-space: nowrap;
+}
+.review-btn {
+  min-width: 48px;
+  min-height: 40px;
+  padding: 0 8px;
+  border: 2px solid rgb(255 255 255 / 0.35);
+  border-radius: 10px;
+  background: transparent;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.review-btn:hover {
+  border-color: rgb(255 255 255 / 0.7);
+}
+.review-btn.on {
+  border-color: #fff;
+  background: #fff;
+  color: var(--stage);
+}
+.fs-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 2px solid rgb(255 255 255 / 0.35);
+  border-radius: 12px;
+  background: transparent;
+  color: #fff;
+  font-size: 17px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.fs-btn:hover:not(:disabled) {
+  border-color: rgb(255 255 255 / 0.7);
+}
+.fs-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.fs-btn.exit {
+  border-color: #fff;
+  background: #fff;
+  color: var(--stage);
+}
+/* Con poco ancho, «Repasar más rápido» se queda en los tres botones (el aviso sigue diciendo qué es). */
+@container preview (max-width: 820px) {
+  .review-label {
+    display: none;
+  }
+}
+/* A pantalla completa hay sitio (las consultas de contenedor siguen mirando la columna de «Tu vídeo»). */
+.player.is-fullscreen .review-label {
+  display: inline;
 }
 /* En «Tu vídeo» la vista previa se puede encoger (divisor): baja, los controles ocupan menos alto. */
 @container preview (max-height: 340px) {

@@ -4,7 +4,8 @@
 // aplicados en vivo; solo se montan los que suenan o van a sonar en los próximos segundos (como mucho 8). Los
 // efectos son <video>/<img> colocados sobre el marco (mix-blend-mode: screen para «Como luz»), con su
 // transparencia y sus suaves. Silenciar u ocultar una pista se nota al momento. Con «Tamaño y sitio», el efecto
-// elegido se mueve y se cambia de tamaño arrastrando sobre la vista previa.
+// elegido se mueve y se cambia de tamaño arrastrando sobre la vista previa. Con «Repasar más rápido» (`rate`),
+// todo suena y se mueve a ese factor (playbackRate), como el reloj del montaje.
 
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
@@ -15,6 +16,7 @@ import {
   itemLengthMs,
   itemSourceTimeAt,
   MAX_EFFECT_SCALE,
+  mediaRate,
   MIN_EFFECT_SCALE,
   moveEffectBox,
   projectTiming,
@@ -26,13 +28,22 @@ import {
 } from '../domain'
 import { library, store, tracks } from '../store'
 
-const props = defineProps<{
-  project: Project
-  currentMs: number
-  playing: boolean
-  frameWidth: number
-  frameHeight: number
-}>()
+const props = withDefaults(
+  defineProps<{
+    project: Project
+    currentMs: number
+    playing: boolean
+    frameWidth: number
+    frameHeight: number
+    /**
+     * «Repasar más rápido» (1 = normal): los sonidos y efectos suenan a ese ritmo para seguir al reloj del
+     * montaje; como van a velocidad normal dentro de él, su tiempo y el del montaje avanzan igual y la
+     * recolocación (150 ms) sigue midiendo lo mismo.
+     */
+    rate?: number
+  }>(),
+  { rate: 1 },
+)
 
 /** Sonidos montados a la vez, como mucho. */
 const SOUND_POOL = 8
@@ -129,6 +140,11 @@ function syncOne(r: ResolvedItem, exact: boolean) {
   const record = { expected: Math.round(expected), actual: el && el.readyState >= 1 ? Math.round(el.currentTime * 1000) : null, active }
   sync.value[r.item.id] = record
   if (!el || el.readyState < 1 || r.item.still) return
+  const rate = mediaRate(1, props.rate)
+  if (el.playbackRate !== rate) {
+    el.defaultPlaybackRate = rate
+    el.playbackRate = rate
+  }
   const sounding = r.track.kind === 'sound' || (r.item.volume > 0 && r.item.hasAudio)
   // El navegador no pasa de 1: lo que esté por encima del 100 % solo se oye más fuerte al guardar.
   el.volume = sounding && active ? Math.min(1, Math.max(0, r.item.volume * itemFadeAt(r.item, local, length))) : 0
@@ -166,6 +182,11 @@ watch(() => props.currentMs, () => syncAll(false))
 watch(
   () => props.playing,
   () => syncAll(true),
+)
+// Cambiar el ritmo de repaso: todo lo montado, al nuevo ritmo y en su sitio.
+watch(
+  () => props.rate,
+  () => syncAll(false),
 )
 // Silenciar u ocultar una pista, cambiar el volumen…: al momento.
 watch([sounds, effects, () => props.project], () => void nextTick(() => syncAll(true)))
