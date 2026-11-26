@@ -116,14 +116,14 @@ export interface Clip {
 
 export type TrackKind = 'sound' | 'effect'
 export const TRACK_KINDS: readonly TrackKind[] = ['sound', 'effect']
-/** Hasta cuántas pistas de cada tipo (más no se entiende en la pantalla). */
-export const MAX_TRACKS: Record<TrackKind, number> = { sound: 4, effect: 3 }
 
 /**
  * Dónde está pegado un elemento: a un trozo (`offsetMs` en tiempo de salida de ese trozo) o, con
  * `clipId: null`, al principio del vídeo. El tiempo absoluto se calcula con la fila de trozos: si se
  * reordena un trozo, lo que lleva pegado va con él; si a uno anterior se le quitan pausas, lo de después
- * sigue en su sitio respecto a su trozo.
+ * sigue en su sitio respecto a su trozo. `offsetMs` puede pasar del final del trozo (se sujeta a su final) o
+ * ser negativo (se recortó el principio por delante de su momento: se sujeta al principio); en los dos
+ * casos se guarda tal cual, para que al alargar el trozo vuelva a su sitio.
  */
 export interface ItemAnchor {
   clipId: string | null
@@ -535,13 +535,14 @@ export function setTargetDuration(project: Project, targetDurationMs: number | n
  * Cambia la entrada y/o la salida del trozo (en tiempo del original).
  * La entrada mueve el inicio del primer rango y la salida el final del último;
  * los rangos que queden fuera se descartan. Si el resultado sería demasiado corto, no cambia nada.
+ * Lo pegado al trozo sigue a su imagen: al recortar (o alargar) el principio, se corre lo mismo.
  */
 export function setInOut(
   project: Project,
   clipId: string,
   change: { inMs?: number; outMs?: number },
 ): Project {
-  return updateClip(project, clipId, (clip) => {
+  const changed = updateClip(project, clipId, (clip) => {
     const current = clipInOut(clip)
     const inMs = Math.round(Math.min(Math.max(0, change.inMs ?? current.startMs), clip.sourceDurationMs))
     const outMs = Math.round(Math.min(Math.max(0, change.outMs ?? current.endMs), clip.sourceDurationMs))
@@ -561,6 +562,69 @@ export function setInOut(
     if (sameSegments(segments, clip.segments)) return clip
     return next
   })
+  if (changed === project) return project
+  const before = findClip(project, clipId)!
+  const shift = startShiftMs(before, findClip(changed, clipId)!)
+  if (shift === 0) return changed
+  // Lo pegado al trozo sigue a su imagen: si se recorta el principio, se adelanta lo mismo (y si su momento
+  // queda fuera, se sujeta al principio del trozo con el offset negativo guardado: al alargarlo, vuelve).
+  return mapTrackItems(changed, (item) =>
+    item.anchor.clipId === clipId ? { ...item, anchor: { clipId, offsetMs: item.anchor.offsetMs - shift } } : item,
+  )
+}
+
+/**
+ * Cuánto se ha corrido hacia delante (ms de salida) la imagen del trozo al cambiar su entrada: lo que se ha
+ * quitado por delante (positivo) o lo que se ha añadido (negativo). Con pausas quitadas, solo cuenta lo
+ * conservado; con otra velocidad, en tiempo de salida.
+ */
+function startShiftMs(before: Clip, after: Clip): number {
+  const oldIn = clipInOut(before).startMs
+  const newIn = clipInOut(after).startMs
+  if (newIn === oldIn) return 0
+  if (newIn < oldIn) return -Math.round((oldIn - newIn) / before.speed)
+  const removed = before.segments.reduce((sum, s) => sum + Math.max(0, Math.min(s.endMs, newIn) - s.startMs), 0)
+  return Math.round(removed / before.speed)
+}
+
+/**
+ * Recorta o alarga un trozo por un extremo (desde las pistas): `deltaMs` en tiempo de salida, positivo hacia
+ * la derecha. Por el principio, positivo acorta; por el final, positivo alarga. Alarga hasta donde dé el
+ * original y nunca deja el trozo más corto que MIN_PIECE_MS. Con pausas quitadas, recortar se salta lo
+ * quitado (cuenta lo que se ve) y alargar estira el primer o el último rango; con otra velocidad, el
+ * original se mueve `deltaMs × velocidad`. Los trozos siguientes se recolocan solos (no hay huecos).
+ */
+export function trimClip(project: Project, clipId: string, edge: 'start' | 'end', deltaMs: number): Project {
+  const clip = findClip(project, clipId)
+  if (!clip) return project
+  const len = clipOutputMs(clip)
+  const io = clipInOut(clip)
+  const d = Math.round(deltaMs)
+  if (d === 0) return project
+  if (edge === 'start') {
+    if (d < 0) return setInOut(project, clipId, { inMs: Math.max(0, Math.round(io.startMs + d * clip.speed)) })
+    const at = Math.min(d, len - MIN_PIECE_MS)
+    if (at <= 0) return project
+    return setInOut(project, clipId, { inMs: outputToSource(clip, at).sourceMs })
+  }
+  if (d > 0) return setInOut(project, clipId, { outMs: Math.min(clip.sourceDurationMs, Math.round(io.endMs + d * clip.speed)) })
+  const at = Math.max(len + d, MIN_PIECE_MS)
+  if (at >= len) return project
+  return setInOut(project, clipId, { outMs: outputToSourceEnd(clip, at) })
+}
+
+/**
+ * Como outputToSource, pero en la frontera exacta entre dos rangos devuelve el final del anterior (para
+ * poner ahí una salida sin estirar ese rango por encima de lo quitado).
+ */
+function outputToSourceEnd(clip: Clip, outputMs: number): number {
+  let remaining = Math.max(0, outputMs * clip.speed)
+  for (const seg of clip.segments) {
+    const len = seg.endMs - seg.startMs
+    if (remaining <= len) return Math.round(seg.startMs + remaining)
+    remaining -= len
+  }
+  return clipInOut(clip).endMs
 }
 
 /**
@@ -916,12 +980,10 @@ export function normalizeLook(raw: unknown): EffectLook {
  */
 function parseTracks(raw: unknown[]): Track[] {
   const tracks: Track[] = []
-  const count: Record<TrackKind, number> = { sound: 0, effect: 0 }
   for (const t of raw) {
     if (!isObject(t) || typeof t.id !== 'string' || t.id === '') continue
     const kind: TrackKind | null = t.kind === 'sound' || t.kind === 'effect' ? t.kind : null
-    if (!kind || count[kind] >= MAX_TRACKS[kind]) continue
-    count[kind]++
+    if (!kind) continue
     const items = Array.isArray(t.items) ? t.items.flatMap((i) => parseTrackItem(i, kind)) : []
     tracks.push({
       id: t.id,
@@ -948,7 +1010,8 @@ function parseTrackItem(raw: unknown, kind: TrackKind): TrackItem[] {
   const a = isObject(raw.anchor) ? raw.anchor : {}
   const anchor: ItemAnchor = {
     clipId: typeof a.clipId === 'string' && a.clipId !== '' ? a.clipId : null,
-    offsetMs: Math.max(0, Math.round(finiteOr(a.offsetMs, 0))),
+    // Puede ser negativo: lo pegado a un momento que se ha recortado por delante (ver setInOut).
+    offsetMs: Math.round(finiteOr(a.offsetMs, 0)),
   }
   const inMs = still ? 0 : Math.round(clampNumber(finiteOr(raw.inMs, 0), 0, sourceDurationMs))
   const outMs = still ? 0 : Math.round(clampNumber(finiteOr(raw.outMs, sourceDurationMs), 0, sourceDurationMs))

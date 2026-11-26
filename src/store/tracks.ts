@@ -1,12 +1,17 @@
-// Pistas de sonidos y efectos en la interfaz: qué está elegido, la vista (tarjetas o pistas), la biblioteca
-// abierta, y todas las acciones sobre los elementos. Cada acción es un paso de deshacer; los arrastres se ven
+// Pistas de sonidos y efectos en la interfaz: qué está elegido, la biblioteca abierta, crear pistas, y todas
+// las acciones sobre los elementos (y recortar o partir un trozo desde la fila «Vídeo»). Cada acción es un paso de deshacer; los arrastres se ven
 // al momento (preview) y entran en el historial al soltar (commitPreview), como el resto de la app.
 
 import { computed, ref, shallowRef, watch } from 'vue'
 import {
+  addTrack as addTrackToProject,
   assetDefaults,
   baseName,
+  clipOutputMs,
+  clipStartTimes,
   createItem,
+  createTrack,
+  defaultTrackName,
   libraryFetchMessage,
   defaultIdFactory,
   displayName,
@@ -28,7 +33,10 @@ import {
   setMainMuted as setMainMutedInProject,
   setTrackHidden as setTrackHiddenInProject,
   setTrackMuted as setTrackMutedInProject,
+  splitClip,
   splitItem,
+  toggleSoloSound,
+  trimClip,
   tracksOfKind,
   trimItemEnd,
   trimItemStart,
@@ -37,17 +45,16 @@ import {
   type MediaInfo,
   type Project,
   type TrackItem,
+  type SoundRow,
   type TrackKind,
 } from '../domain'
 import { askConfirm } from '../lib/confirm'
 import type { EditorStore } from './editor'
 import type { LibraryStore } from './library'
 
-export type BottomView = 'cards' | 'tracks'
 export type LibraryTab = 'sound' | 'effect' | 'computer'
 
 export function createTracksStore(editor: EditorStore, library: LibraryStore) {
-  const view = ref<BottomView>('cards')
   const selectedItemId = ref<string | null>(null)
   const libraryOpen = ref(false)
   const libraryTab = ref<LibraryTab>('sound')
@@ -64,14 +71,6 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
   const hasTracks = computed(() => project.value.tracks.length > 0)
   const selectedItem = computed(() => (selectedItemId.value ? findItem(project.value, selectedItemId.value) : null))
 
-  // Al añadir la primera pista, la parte de abajo pasa a la vista de pistas; sin pistas, la de siempre.
-  watch(
-    () => project.value.tracks.length,
-    (n, old) => {
-      if (n > 0 && (old ?? 0) === 0) view.value = 'tracks'
-      if (n === 0) view.value = 'cards'
-    },
-  )
   // Lo elegido que deja de existir (deshacer, quitar la pista…) deja de estar elegido.
   watch(project, (p) => {
     if (selectedItemId.value && !findItem(p, selectedItemId.value)) {
@@ -89,13 +88,9 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     if (!itemId) boxEditing.value = false
   }
 
-  function setView(v: BottomView) {
-    view.value = v
-  }
-
   /** Lo que se hace con un proyecto nuevo que no cabe o no hay vídeo. */
   function reportInsertFailure(reason: 'no-room' | 'empty-video') {
-    editor.showToast(reason === 'empty-video' ? 'Primero añade algún vídeo o sonido al montaje.' : 'No queda sitio: ya hay cuatro pistas llenas en ese momento. Mueve o quita algo antes.')
+    editor.showToast(reason === 'empty-video' ? 'Primero añade algún vídeo o sonido al montaje.' : 'Ahí no cabe: esa pista está llena en ese momento. Mueve o quita algo antes.')
   }
 
   /** «2 · Sonidos 2, a los 0:12». */
@@ -139,7 +134,6 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     }
     editor.commit(res.project)
     selectedItemId.value = item.id
-    view.value = 'tracks'
     const where = describePlace(res.trackId, res.startMs, res.project)
     editor.showToast(res.shifted ? `Puesto en ${where} (justo después de lo que había).` : `Puesto en ${where}.`, { label: 'Deshacer', run: editor.undo })
     return item.id
@@ -205,7 +199,6 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     if (added > 0) {
       editor.commit(p)
       selectedItemId.value = lastId
-      view.value = 'tracks'
       const msg = added === 1 ? 'Puesto en las pistas.' : `${added} puestos en las pistas.`
       editor.showToast(failed.length ? `${msg} No he podido leer: ${failed.join(', ')}.` : msg, { label: 'Deshacer', run: editor.undo })
     } else if (failed.length) {
@@ -340,6 +333,27 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     editor.apply((p) => renameTrackInProject(p, trackId, name))
   }
 
+  /** «Escuchar solo esta» (la fila «Vídeo» o una pista de sonido); otra vez, vuelve a sonar todo. */
+  function toggleSolo(row: SoundRow) {
+    editor.apply((p) => toggleSoloSound(p, row))
+  }
+
+  /**
+   * «Pista de sonido» / «Pista de efectos»: una pista vacía (la de efectos, encima de las demás; la de sonido,
+   * debajo). No hay límite. Devuelve su id.
+   */
+  function addTrack(kind: TrackKind): string {
+    const id = newId('track')
+    const p = editor.history.value.present
+    const name = defaultTrackName(p, kind)
+    editor.commit(addTrackToProject(p, createTrack(kind, id, name)))
+    editor.showToast(
+      kind === 'sound' ? `Pista «${name}» añadida. Arrastra a ella un sonido de otra pista, o pon uno nuevo.` : `Pista «${name}» añadida: lo que pongas en ella se verá por encima.`,
+      { label: 'Deshacer', run: editor.undo },
+    )
+    return id
+  }
+
   /** «Quitar pista»: si tiene cosas, pregunta antes. Deshacer la recupera entera. */
   async function removeTrack(trackId: string): Promise<boolean> {
     const t = editor.history.value.present.tracks.find((x) => x.id === trackId)
@@ -358,6 +372,46 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     editor.apply((p) => removeTrackFromProject(p, trackId))
     editor.showToast(`Pista «${t.name}» quitada.`, { label: 'Deshacer', run: editor.undo })
     return true
+  }
+
+  // ---------------------------------------------------------------- trozos desde la fila «Vídeo»
+
+  /** Mientras se tira del asa de un trozo: se ve al momento; entra en el historial al soltar. */
+  function previewClipTrim(clipId: string, edge: 'start' | 'end', deltaMs: number, wrap: (p: Project) => Project = (p) => p) {
+    editor.preview((p) => wrap(trimClip(p, clipId, edge, deltaMs)))
+  }
+
+  /** E / T con el trozo elegido: que empiece o termine en la línea (tiempo del vídeo). */
+  function trimClipAt(clipId: string, edge: 'start' | 'end', atMs: number, wrap: (p: Project) => Project = (p) => p): boolean {
+    const p = editor.history.value.present
+    const i = p.clips.findIndex((c) => c.id === clipId)
+    if (i < 0) return false
+    const local = atMs - clipStartTimes(p)[i]!
+    const len = clipOutputMs(p.clips[i]!)
+    const inside = local > 0 && local < len
+    const next = inside ? wrap(trimClip(p, clipId, edge, edge === 'start' ? local : local - len)) : p
+    if (next === p) {
+      editor.showToast(edge === 'start' ? 'Aquí no puede empezar: pon la línea dentro del trozo.' : 'Aquí no puede terminar: pon la línea dentro del trozo.')
+      return false
+    }
+    editor.commit(next)
+    return true
+  }
+
+  /** P con el trozo elegido: lo parte donde está la línea (lo pegado se queda con la parte donde cae). */
+  function splitClipAt(clipId: string, atMs: number): string | null {
+    const p = editor.history.value.present
+    const i = p.clips.findIndex((c) => c.id === clipId)
+    if (i < 0) return null
+    const id = defaultIdFactory()
+    const next = splitClip(p, clipId, atMs - clipStartTimes(p)[i]!, id)
+    if (next === p) {
+      editor.showToast('Pon la línea dentro del trozo (no en su principio ni en su final) para partirlo.')
+      return null
+    }
+    editor.commit(next)
+    editor.showToast('Trozo partido en dos.', { label: 'Deshacer', run: editor.undo })
+    return id
   }
 
   // ---------------------------------------------------------------- biblioteca
@@ -389,7 +443,6 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
   }
 
   return {
-    view,
     selectedItemId,
     selectedItem,
     hasTracks,
@@ -400,7 +453,6 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     adding,
     playheadMs,
     select,
-    setView,
     addAsset,
     addFiles,
     pickFiles,
@@ -423,6 +475,11 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     setMainMuted,
     renameTrack,
     removeTrack,
+    addTrack,
+    toggleSolo,
+    previewClipTrim,
+    trimClipAt,
+    splitClipAt,
     openLibrary,
     closeLibrary,
     tryEffect,
