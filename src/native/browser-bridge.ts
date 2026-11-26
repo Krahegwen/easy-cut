@@ -40,6 +40,9 @@ export function createBrowserBridge(): NativeBridge {
     listFileNames: () => Promise.resolve([]),
     joinPath: (...parts) => joinWindowsPath(...parts),
     deletePartialOutput: () => Promise.resolve(),
+    outputFileSize: () => Promise.resolve(null),
+    // En el navegador no se guarda nada, así que tampoco hay registro.
+    appendSaveLog: () => Promise.resolve(),
     openFile: () => unavailable('Abrir el vídeo'),
     revealInFolder: () => unavailable('Mostrar en la carpeta'),
     copyFileToClipboard: () => unavailable('Copiar al portapapeles'),

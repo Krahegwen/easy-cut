@@ -307,6 +307,8 @@ export function createTauriBridge(): NativeBridge {
     joinPath: (...parts) => joinWindowsPath(...parts),
 
     deletePartialOutput: (path) => invoke<void>('delete_partial_output', { path }),
+    outputFileSize: (path) => invoke<number | null>('output_file_size', { path }),
+    appendSaveLog: (line) => invoke<void>('append_save_log', { line }),
 
     openFile: (path) => invoke<void>('open_file', { path }),
     revealInFolder: (path) => invoke<void>('reveal_in_folder', { path }),

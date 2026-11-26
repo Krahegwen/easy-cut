@@ -30,7 +30,7 @@ export type { PreparingItem, Screen } from './editor'
 export const store = createEditorStore(appBridge)
 export const library = createLibraryStore(appBridge, store.setMedia)
 export const tracks = createTracksStore(store, library)
-export const saveFlow = createSaveFlow(store, library)
+export const saveFlow = createSaveFlow(store, library, { appVersion: __APP_VERSION__ })
 
 /** ¿Se actualiza sola? Solo la app instalada (compilación release); ni `tauri dev` ni el navegador. */
 export const updaterEnabled = isDesktop && !import.meta.env.DEV

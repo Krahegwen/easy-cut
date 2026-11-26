@@ -15,6 +15,8 @@ const COMMANDS: &[&str] = &[
     "list_file_names",
     "path_exists",
     "delete_partial_output",
+    "output_file_size",
+    "append_save_log",
     "open_file",
     "reveal_in_folder",
     "copy_file_to_clipboard",

@@ -62,6 +62,8 @@ pub fn run() {
             commands::list_file_names,
             commands::path_exists,
             commands::delete_partial_output,
+            commands::output_file_size,
+            commands::append_save_log,
             commands::open_file,
             commands::reveal_in_folder,
             commands::copy_file_to_clipboard,
