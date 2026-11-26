@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-write-project-history"
+description = "Enables the write_project_history command without any pre-configured scope."
+commands.allow = ["write_project_history"]
+
+[[permission]]
+identifier = "deny-write-project-history"
+description = "Denies the write_project_history command without any pre-configured scope."
+commands.deny = ["write_project_history"]

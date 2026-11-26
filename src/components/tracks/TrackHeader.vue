@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // Cabecera de una fila de la vista de pistas (columna fija a la izquierda): su nombre (se cambia pulsándolo),
-// «Silenciar» (sonido y fila «Vídeo») u «Ocultar» (efectos), con el estado bien visible, y «Quitar pista».
+// «Silenciar» (sonido y fila «Vídeo») u «Ocultar» (efectos), con el estado bien visible, «Escuchar solo esta»
+// (las de sonido y la fila «Vídeo») y «Quitar pista». Todo cabe en el alto de su fila (lo comprueban las e2e).
 import { computed, nextTick, ref } from 'vue'
-import type { Track } from '../../domain'
+import { isSoloSound, type Track } from '../../domain'
 import { store, tracks } from '../../store'
 import AppIcon from '../AppIcon.vue'
 
@@ -14,6 +15,13 @@ const toggleLabel = computed(() => (isSound.value ? (off.value ? 'Silenciada' : 
 const toggleTitle = computed(() =>
   isSound.value ? (off.value ? 'No se oye: pulsa para que vuelva a sonar' : 'Que no se oiga esta fila') : off.value ? 'No se ve: pulsa para que vuelva a verse' : 'Que no se vea esta fila',
 )
+
+/** La fila de sonido a la que se refiere (la fila «Vídeo» o una pista de sonido). */
+const soundRow = computed(() => (props.main ? 'main' : props.track?.kind === 'sound' ? props.track.id : null))
+/** «Solo esta» tiene sentido si hay alguna otra fila que suene (o pueda sonar). */
+const canSolo = computed(() => soundRow.value !== null && (!props.main || store.project.value.tracks.some((t) => t.kind === 'sound')))
+const solo = computed(() => soundRow.value !== null && isSoloSound(store.project.value, soundRow.value))
+const soloTitle = computed(() => (solo.value ? 'Solo se oye esta fila: pulsa para que vuelva a sonar todo' : 'Escuchar solo esta fila (silencia las demás)'))
 
 function toggle() {
   if (props.main) tracks.setMainMuted(!store.project.value.mainMuted)
@@ -65,11 +73,25 @@ function finishRename(save: boolean) {
         type="button"
         :aria-pressed="off"
         :title="toggleTitle"
+        :aria-label="toggleLabel"
         :data-testid="main ? 'main-mute' : 'track-toggle'"
         @click="toggle"
       >
         <AppIcon :name="isSound ? (off ? 'mute' : 'sound') : off ? 'eye-off' : 'eye'" :size="18" />
-        {{ toggleLabel }}
+        <span class="txt">{{ toggleLabel }}</span>
+      </button>
+      <button
+        v-if="soundRow !== null && canSolo"
+        class="mini solo"
+        :class="{ on: solo }"
+        type="button"
+        :aria-pressed="solo"
+        aria-label="Escuchar solo esta"
+        :title="soloTitle"
+        :data-testid="main ? 'main-solo' : 'track-solo'"
+        @click="tracks.toggleSolo(soundRow!)"
+      >
+        <AppIcon name="headphones" :size="18" />
       </button>
       <button v-if="track" class="mini remove" type="button" aria-label="Quitar pista" title="Quitar pista" data-testid="track-remove" @click="tracks.removeTrack(track.id)">
         <AppIcon name="trash" :size="18" />
@@ -83,16 +105,20 @@ function finishRename(save: boolean) {
   position: sticky;
   left: 0;
   z-index: 6;
+  box-sizing: border-box;
   height: var(--row);
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 2px;
+  gap: 1px;
   padding: 2px 8px 2px 10px;
   background: var(--surface);
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   min-width: 0;
+  /* Por si acaso: nada se sale de su fila (se dibuja encima de la siguiente). */
+  overflow: hidden;
+  container-type: inline-size;
 }
 .track-header.main {
   height: var(--video-row);
@@ -106,6 +132,7 @@ function finishRename(save: boolean) {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  height: 19px;
   color: #3c8f9b;
 }
 .effect .name-line {
@@ -117,6 +144,7 @@ function finishRename(save: boolean) {
 .name {
   font-weight: 650;
   font-size: 15px;
+  line-height: 19px;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
@@ -136,9 +164,10 @@ function finishRename(save: boolean) {
 .rename {
   flex: 1;
   min-width: 0;
+  height: 19px;
   font: inherit;
-  font-size: 15px;
-  padding: 1px 6px;
+  font-size: 14px;
+  padding: 0 6px;
   border: 1.5px solid var(--accent);
   border-radius: 6px;
 }
@@ -149,17 +178,21 @@ function finishRename(save: boolean) {
   background: #ece3f7;
   color: #6b3fa0;
   font-size: 12px;
+  line-height: 17px;
   font-weight: 650;
 }
 .actions {
   display: flex;
   gap: 4px;
+  min-width: 0;
 }
 .mini {
+  flex: none;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 26px;
+  box-sizing: border-box;
+  height: 24px;
   padding: 0 8px;
   border-radius: 7px;
   border: 1px solid var(--border-strong);
@@ -177,25 +210,46 @@ function finishRename(save: boolean) {
   border-color: var(--warn);
   color: var(--warn);
 }
+.mini.solo {
+  padding: 0 5px;
+  color: var(--text-muted);
+}
+.mini.solo.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
 .mini.remove {
   margin-left: auto;
-  padding: 0 6px;
+  padding: 0 5px;
   color: var(--text-muted);
 }
 .mini.remove:hover {
   color: var(--bad);
   border-color: var(--bad);
 }
+/* Cabecera estrecha: el botón de silenciar u ocultar se queda en icono (el estado sigue en su color). */
+@container (max-width: 170px) {
+  .mini .txt {
+    display: none;
+  }
+}
 @media (max-height: 860px) {
   .track-header {
     gap: 0;
   }
+  .name-line {
+    height: 17px;
+  }
+  .name {
+    font-size: 14px;
+    line-height: 17px;
+  }
+  .rename {
+    height: 17px;
+  }
   .mini {
     height: 22px;
-  }
-  .name,
-  .rename {
-    font-size: 14px;
   }
 }
 </style>

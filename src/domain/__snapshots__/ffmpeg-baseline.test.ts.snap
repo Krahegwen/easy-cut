@@ -1,0 +1,355 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`sin collages, ffmpeg recibe lo mismo que antes > con sonidos, un efecto «como luz» y una pegatina que se mueve 1`] = `
+[
+  "-hide_banner",
+  "-y",
+  "-nostats",
+  "-loglevel",
+  "error",
+  "-progress",
+  "pipe:1",
+  "-ss",
+  "0",
+  "-t",
+  "10",
+  "-i",
+  "C:\\v\\a.mp4",
+  "-ss",
+  "0",
+  "-t",
+  "8",
+  "-i",
+  "C:\\v\\b.mp4",
+  "-an",
+  "-ss",
+  "0",
+  "-t",
+  "6.5",
+  "-i",
+  "C:\\fx\\chispas.mp4",
+  "-loop",
+  "1",
+  "-framerate",
+  "30",
+  "-t",
+  "4.5",
+  "-i",
+  "C:\\fx\\logo.png",
+  "-vn",
+  "-stream_loop",
+  "-1",
+  "-t",
+  "18.5",
+  "-i",
+  "C:\\s\\musica.mp3",
+  "-filter_complex",
+  "[0:v:0]setpts=PTS-STARTPTS[v0seg];
+[v0seg]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=30,trim=end_frame=300,scale=1920:1080:flags=bicubic:out_color_matrix=bt709:out_range=tv,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[v0];
+[0:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=9.97:d=0.03[a0seg];
+[a0seg]apad=whole_len=480000,atrim=end_sample=480000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a0];
+[1:v:0]setpts=PTS-STARTPTS[v1seg];
+[v1seg]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=30,trim=end_frame=240,scale=1920:1080:flags=bicubic:out_color_matrix=bt709:out_range=tv,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[v1];
+[1:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=7.97:d=0.03[a1seg];
+[a1seg]apad=whole_len=384000,atrim=end_sample=384000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a1];
+[v0][a0][v1][a1]concat=n=2:v=1:a=1[vmain][amain];
+[vmain]split=3[fxs0][fxs1][fxs2];
+[fxs0]trim=start_frame=0:end_frame=60,setpts=PTS-STARTPTS[fxp0];
+[fxs1]trim=start_frame=60:end_frame=240,setpts=PTS-STARTPTS,scale=in_color_matrix=bt709:in_range=tv:flags=bicubic,format=gbrp[fxb1_0];
+[2:v:0]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=180,trim=end_frame=180,scale=1920:1080:flags=bicubic,format=gbrp,setpts=PTS-STARTPTS+0/TB[fxe1_0];
+[fxb1_0][fxe1_0]blend=all_mode=screen:eof_action=pass:shortest=0[fxb1_1];
+[3:v:0]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=120,trim=end_frame=120,format=gbrap,scale=w='max(2,1920*(0.3))':h='max(2,960*(0.3))':eval=frame:flags=bicubic,setpts=PTS-STARTPTS+1/TB[fxe1_1];
+[fxb1_1][fxe1_1]overlay=x='main_w*(if(lt(t,1),0.8,if(lt(t,3),0.8+(-0.6)*((1-cos(PI*clip((t-1)/2,0,1)))/2),0.2)))-overlay_w/2':y='main_h*(0.2)-overlay_h/2':eval=frame:format=gbrp:eof_action=pass:shortest=0[fxb1_2];
+[fxb1_2]scale=out_color_matrix=bt709:out_range=tv:flags=bicubic,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[fxp1];
+[fxs2]trim=start_frame=240:end_frame=540,setpts=PTS-STARTPTS[fxp2];
+[fxp0][fxp1][fxp2]concat=n=3:v=1:a=0[vout];
+[4:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,atrim=start=0,asetpts=PTS-STARTPTS,apad=whole_len=864000,atrim=end_sample=864000,volume=0.5,afade=t=in:ss=0:ns=48000[t0];
+[amain][t0]amix=inputs=2:normalize=0:duration=first:dropout_transition=0,alimiter=limit=0.97:level=0:latency=1,apad=whole_len=864000,atrim=end_sample=864000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[aout]",
+  "-map",
+  "[vout]",
+  "-map",
+  "[aout]",
+  "-c:v",
+  "h264_nvenc",
+  "-preset",
+  "p5",
+  "-tune",
+  "hq",
+  "-rc",
+  "vbr",
+  "-cq",
+  "21",
+  "-b:v",
+  "8000k",
+  "-maxrate",
+  "12000k",
+  "-bufsize",
+  "24000k",
+  "-profile:v",
+  "high",
+  "-bf",
+  "2",
+  "-b_ref_mode",
+  "disabled",
+  "-spatial-aq",
+  "1",
+  "-pix_fmt",
+  "yuv420p",
+  "-g",
+  "60",
+  "-fps_mode",
+  "cfr",
+  "-r",
+  "30",
+  "-color_primaries",
+  "bt709",
+  "-color_trc",
+  "bt709",
+  "-colorspace",
+  "bt709",
+  "-color_range",
+  "tv",
+  "-c:a",
+  "aac",
+  "-b:a",
+  "384k",
+  "-ar",
+  "48000",
+  "-ac",
+  "2",
+  "-map_metadata",
+  "-1",
+  "-map_chapters",
+  "-1",
+  "-movflags",
+  "+faststart",
+  "o.mp4",
+]
+`;
+
+exports[`sin collages, ffmpeg recibe lo mismo que antes > con sonidos, un efecto «como luz» y una pegatina que se mueve 2`] = `
+"[0:v:0]setpts=PTS-STARTPTS[v0seg];
+[v0seg]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=30,trim=end_frame=300,scale=1920:1080:flags=bicubic:out_color_matrix=bt709:out_range=tv,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[v0];
+[0:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=9.97:d=0.03[a0seg];
+[a0seg]apad=whole_len=480000,atrim=end_sample=480000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a0];
+[1:v:0]setpts=PTS-STARTPTS[v1seg];
+[v1seg]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=30,trim=end_frame=240,scale=1920:1080:flags=bicubic:out_color_matrix=bt709:out_range=tv,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[v1];
+[1:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=7.97:d=0.03[a1seg];
+[a1seg]apad=whole_len=384000,atrim=end_sample=384000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a1];
+[v0][a0][v1][a1]concat=n=2:v=1:a=1[vmain][amain];
+[vmain]split=3[fxs0][fxs1][fxs2];
+[fxs0]trim=start_frame=0:end_frame=60,setpts=PTS-STARTPTS[fxp0];
+[fxs1]trim=start_frame=60:end_frame=240,setpts=PTS-STARTPTS,scale=in_color_matrix=bt709:in_range=tv:flags=bicubic,format=gbrp[fxb1_0];
+[2:v:0]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=180,trim=end_frame=180,scale=1920:1080:flags=bicubic,format=gbrp,setpts=PTS-STARTPTS+0/TB[fxe1_0];
+[fxb1_0][fxe1_0]blend=all_mode=screen:eof_action=pass:shortest=0[fxb1_1];
+[3:v:0]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=120,trim=end_frame=120,format=gbrap,scale=w='max(2,1920*(0.3))':h='max(2,960*(0.3))':eval=frame:flags=bicubic,setpts=PTS-STARTPTS+1/TB[fxe1_1];
+[fxb1_1][fxe1_1]overlay=x='main_w*(if(lt(t,1),0.8,if(lt(t,3),0.8+(-0.6)*((1-cos(PI*clip((t-1)/2,0,1)))/2),0.2)))-overlay_w/2':y='main_h*(0.2)-overlay_h/2':eval=frame:format=gbrp:eof_action=pass:shortest=0[fxb1_2];
+[fxb1_2]scale=out_color_matrix=bt709:out_range=tv:flags=bicubic,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[fxp1];
+[fxs2]trim=start_frame=240:end_frame=540,setpts=PTS-STARTPTS[fxp2];
+[fxp0][fxp1][fxp2]concat=n=3:v=1:a=0[vout];
+[4:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,atrim=start=0,asetpts=PTS-STARTPTS,apad=whole_len=864000,atrim=end_sample=864000,volume=0.5,afade=t=in:ss=0:ns=48000[t0];
+[amain][t0]amix=inputs=2:normalize=0:duration=first:dropout_transition=0,alimiter=limit=0.97:level=0:latency=1,apad=whole_len=864000,atrim=end_sample=864000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[aout]"
+`;
+
+exports[`sin collages, ffmpeg recibe lo mismo que antes > con un fundido entre los trozos 1`] = `
+"[0:v:0]setpts=PTS-STARTPTS[v0seg];
+[v0seg]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=30,trim=end_frame=300,scale=1920:1080:flags=bicubic:out_color_matrix=bt709:out_range=tv,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[v0];
+[0:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=9.97:d=0.03[a0seg];
+[a0seg]apad=whole_len=480000,atrim=end_sample=480000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a0];
+[1:v:0]setpts=PTS-STARTPTS[v1seg];
+[v1seg]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=30,trim=end_frame=240,scale=1920:1080:flags=bicubic:out_color_matrix=bt709:out_range=tv,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[v1];
+[1:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=7.97:d=0.03[a1seg];
+[a1seg]apad=whole_len=384000,atrim=end_sample=384000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a1];
+[v0]split=2[vb0s][vt0s];
+[vb0s]trim=start_frame=0:end_frame=270,setpts=PTS-STARTPTS,settb=1/30[vb0];
+[vt0s]trim=start_frame=270:end_frame=300,setpts=PTS-STARTPTS,settb=1/30[vt0];
+[v1]split=2[vh1s][vb1s];
+[vh1s]trim=start_frame=0:end_frame=30,setpts=PTS-STARTPTS,settb=1/30[vh1];
+[vb1s]trim=start_frame=30:end_frame=240,setpts=PTS-STARTPTS,settb=1/30[vb1];
+[vt0][vh1]xfade=transition=fade:duration=1:offset=0[vx1];
+[vb0][vx1][vb1]concat=n=3:v=1:a=0,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[vmain];
+[a0]asplit=2[ab0s][at0s];
+[ab0s]atrim=start_sample=0:end_sample=432000,asetpts=PTS-STARTPTS[ab0];
+[at0s]atrim=start_sample=432000:end_sample=480000,asetpts=PTS-STARTPTS[at0];
+[a1]asplit=2[ah1s][ab1s];
+[ah1s]atrim=start_sample=0:end_sample=48000,asetpts=PTS-STARTPTS[ah1];
+[ab1s]atrim=start_sample=48000:end_sample=384000,asetpts=PTS-STARTPTS[ab1];
+[at0]afade=t=out:ss=0:ns=48000[axa1];
+[ah1]afade=t=in:ss=0:ns=48000[axb1];
+[axa1][axb1]amix=inputs=2:normalize=0:duration=longest:dropout_transition=0,atrim=end_sample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[ax1];
+[ab0][ax1][ab1]concat=n=3:v=0:a=1[amain];
+[vmain]split=3[fxs0][fxs1][fxs2];
+[fxs0]trim=start_frame=0:end_frame=60,setpts=PTS-STARTPTS[fxp0];
+[fxs1]trim=start_frame=60:end_frame=240,setpts=PTS-STARTPTS,scale=in_color_matrix=bt709:in_range=tv:flags=bicubic,format=gbrp[fxb1_0];
+[2:v:0]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=180,trim=end_frame=180,scale=1920:1080:flags=bicubic,format=gbrp,setpts=PTS-STARTPTS+0/TB[fxe1_0];
+[fxb1_0][fxe1_0]blend=all_mode=screen:eof_action=pass:shortest=0[fxb1_1];
+[3:v:0]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=120,trim=end_frame=120,format=gbrap,scale=w='max(2,1920*(0.3))':h='max(2,960*(0.3))':eval=frame:flags=bicubic,setpts=PTS-STARTPTS+1/TB[fxe1_1];
+[fxb1_1][fxe1_1]overlay=x='main_w*(if(lt(t,1),0.8,if(lt(t,3),0.8+(-0.6)*((1-cos(PI*clip((t-1)/2,0,1)))/2),0.2)))-overlay_w/2':y='main_h*(0.2)-overlay_h/2':eval=frame:format=gbrp:eof_action=pass:shortest=0[fxb1_2];
+[fxb1_2]scale=out_color_matrix=bt709:out_range=tv:flags=bicubic,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[fxp1];
+[fxs2]trim=start_frame=240:end_frame=510,setpts=PTS-STARTPTS[fxp2];
+[fxp0][fxp1][fxp2]concat=n=3:v=1:a=0[vout];
+[4:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,atrim=start=0,asetpts=PTS-STARTPTS,apad=whole_len=816000,atrim=end_sample=816000,volume=0.5,afade=t=in:ss=0:ns=48000[t0];
+[amain][t0]amix=inputs=2:normalize=0:duration=first:dropout_transition=0,alimiter=limit=0.97:level=0:latency=1,apad=whole_len=816000,atrim=end_sample=816000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[aout]"
+`;
+
+exports[`sin collages, ffmpeg recibe lo mismo que antes > dos trozos 1`] = `
+[
+  "-hide_banner",
+  "-y",
+  "-nostats",
+  "-loglevel",
+  "error",
+  "-progress",
+  "pipe:1",
+  "-ss",
+  "0",
+  "-t",
+  "10",
+  "-i",
+  "C:\\v\\a.mp4",
+  "-ss",
+  "0",
+  "-t",
+  "8",
+  "-i",
+  "C:\\v\\b.mp4",
+  "-filter_complex",
+  "[0:v:0]setpts=PTS-STARTPTS[v0seg];
+[v0seg]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=30,trim=end_frame=300,scale=1280:720:flags=bicubic:out_color_matrix=bt709:out_range=tv,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[v0];
+[0:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=9.97:d=0.03[a0seg];
+[a0seg]apad=whole_len=480000,atrim=end_sample=480000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a0];
+[1:v:0]setpts=PTS-STARTPTS[v1seg];
+[v1seg]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=30,trim=end_frame=240,scale=1280:720:flags=bicubic:out_color_matrix=bt709:out_range=tv,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[v1];
+[1:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=7.97:d=0.03[a1seg];
+[a1seg]apad=whole_len=384000,atrim=end_sample=384000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a1];
+[v0][a0][v1][a1]concat=n=2:v=1:a=1[vout][aout]",
+  "-map",
+  "[vout]",
+  "-map",
+  "[aout]",
+  "-c:v",
+  "libx264",
+  "-preset",
+  "medium",
+  "-crf",
+  "24",
+  "-maxrate",
+  "2500k",
+  "-bufsize",
+  "5000k",
+  "-profile:v",
+  "high",
+  "-pix_fmt",
+  "yuv420p",
+  "-g",
+  "60",
+  "-fps_mode",
+  "cfr",
+  "-r",
+  "30",
+  "-color_primaries",
+  "bt709",
+  "-color_trc",
+  "bt709",
+  "-colorspace",
+  "bt709",
+  "-color_range",
+  "tv",
+  "-c:a",
+  "aac",
+  "-b:a",
+  "128k",
+  "-ar",
+  "48000",
+  "-ac",
+  "2",
+  "-map_metadata",
+  "-1",
+  "-map_chapters",
+  "-1",
+  "-movflags",
+  "+faststart",
+  "o.mp4",
+]
+`;
+
+exports[`sin collages, ffmpeg recibe lo mismo que antes > dos trozos 2`] = `
+"[0:v:0]setpts=PTS-STARTPTS[v0seg];
+[v0seg]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=30,trim=end_frame=300,scale=1280:720:flags=bicubic:out_color_matrix=bt709:out_range=tv,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[v0];
+[0:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=9.97:d=0.03[a0seg];
+[a0seg]apad=whole_len=480000,atrim=end_sample=480000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a0];
+[1:v:0]setpts=PTS-STARTPTS[v1seg];
+[v1seg]setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=30,trim=end_frame=240,scale=1280:720:flags=bicubic:out_color_matrix=bt709:out_range=tv,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[v1];
+[1:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=7.97:d=0.03[a1seg];
+[a1seg]apad=whole_len=384000,atrim=end_sample=384000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a1];
+[v0][a0][v1][a1]concat=n=2:v=1:a=1[vout][aout]"
+`;
+
+exports[`sin collages, ffmpeg recibe lo mismo que antes > «Solo el sonido» 1`] = `
+[
+  "-hide_banner",
+  "-y",
+  "-nostats",
+  "-loglevel",
+  "error",
+  "-progress",
+  "pipe:1",
+  "-vn",
+  "-ss",
+  "0",
+  "-t",
+  "10",
+  "-i",
+  "C:\\v\\a.mp4",
+  "-vn",
+  "-ss",
+  "0",
+  "-t",
+  "8",
+  "-i",
+  "C:\\v\\b.mp4",
+  "-vn",
+  "-stream_loop",
+  "-1",
+  "-t",
+  "18.5",
+  "-i",
+  "C:\\s\\musica.mp3",
+  "-filter_complex",
+  "[0:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=9.97:d=0.03[a0seg];
+[a0seg]apad=whole_len=480000,atrim=end_sample=480000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a0];
+[1:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=7.97:d=0.03[a1seg];
+[a1seg]apad=whole_len=384000,atrim=end_sample=384000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a1];
+[a0][a1]concat=n=2:v=0:a=1[amain];
+[2:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,atrim=start=0,asetpts=PTS-STARTPTS,apad=whole_len=864000,atrim=end_sample=864000,volume=0.5,afade=t=in:ss=0:ns=48000[t0];
+[amain][t0]amix=inputs=2:normalize=0:duration=first:dropout_transition=0,alimiter=limit=0.97:level=0:latency=1,apad=whole_len=864000,atrim=end_sample=864000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[aout]",
+  "-map",
+  "[aout]",
+  "-vn",
+  "-c:a",
+  "aac",
+  "-b:a",
+  "192k",
+  "-ar",
+  "48000",
+  "-ac",
+  "2",
+  "-map_metadata",
+  "-1",
+  "-map_chapters",
+  "-1",
+  "-movflags",
+  "+faststart",
+  "o.m4a",
+]
+`;
+
+exports[`sin collages, ffmpeg recibe lo mismo que antes > «Solo el sonido» 2`] = `
+"[0:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=9.97:d=0.03[a0seg];
+[a0seg]apad=whole_len=480000,atrim=end_sample=480000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a0];
+[1:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st=7.97:d=0.03[a1seg];
+[a1seg]apad=whole_len=384000,atrim=end_sample=384000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a1];
+[a0][a1]concat=n=2:v=0:a=1[amain];
+[2:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,atrim=start=0,asetpts=PTS-STARTPTS,apad=whole_len=864000,atrim=end_sample=864000,volume=0.5,afade=t=in:ss=0:ns=48000[t0];
+[amain][t0]amix=inputs=2:normalize=0:duration=first:dropout_transition=0,alimiter=limit=0.97:level=0:latency=1,apad=whole_len=864000,atrim=end_sample=864000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[aout]"
+`;

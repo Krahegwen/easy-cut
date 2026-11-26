@@ -373,6 +373,34 @@ describe.sequential('pistas con ffmpeg real', () => {
     report.push({ export: 'solo-el-sonido', expectedMs: Math.round(cmd.expectedDurationMs), formatMs: Math.round(Number(raw.format.duration) * 1000), wallMs: res.ms })
   })
 
+  it('muchas pistas (ya sin límite): 10 de sonido, 6 de efectos y 2 vacías, cada «ding» en su sitio', async () => {
+    let p: Project = { ...project, tracks: [] }
+    // Un «ding» por pista, cada 700 ms desde el 500, y seis efectos «como luz» apilados a la vez.
+    const dings: number[] = []
+    for (let k = 0; k < 10; k++) {
+      dings.push(500 + k * 700)
+      p = place(p, item(`d${k}`, 'sound', f.ding), 'sound', dings[k]!, `Sonidos ${k + 1}`)
+    }
+    for (let k = 0; k < 6; k++) p = place(p, item(`l${k}`, 'effect', f.light, { defaults: { look: { mix: 'light', opacity: 0.4 } } }), 'effect', starts.col! + 3000, `Luz ${k + 1}`)
+    p = addTrack(addTrack(p, createTrack('sound', 'vacia-1', 'Vacía')), createTrack('effect', 'vacia-2', 'Vacía 2'))
+    expect(p.tracks).toHaveLength(18)
+    const out = await exportVideo('muchas-pistas', p, 'libx264')
+    const high = await decode(out, 'highpass=f=2000,highpass=f=2000')
+    const measured = dings.map((at) => onsetMs(high, at - 200, at + 250, -35))
+    console.log('Muchas pistas, arranques:', measured, 'esperados:', dings)
+    measured.forEach((m, k) => {
+      expect(m).not.toBeNull()
+      expect(Math.abs(m! - dings[k]!)).toBeLessThanOrEqual(40)
+    })
+    // Seis «como luz» al 40 % apilados: el centro, casi blanco; antes, el color del trozo.
+    const c = starts.col!
+    const centerIn = await averageColor(out, c + 3600, 640, 360)
+    const centerBefore = await averageColor(out, c + 2500, 640, 360)
+    console.log('Muchas pistas, colores:', { centerIn, centerBefore })
+    expect(centerIn.every((v) => v >= 200)).toBe(true)
+    expect(near(centerBefore, [0x30, 0x50, 0x70], 12)).toBe(true)
+  })
+
   it('resumen', () => {
     writeFileSync(join(OUT, 'report.json'), JSON.stringify({ silKeep, frames: project.clips.map((c) => clipFrameCount(c, 30)), exports: report }, null, 2))
     console.table(report)

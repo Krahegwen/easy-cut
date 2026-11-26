@@ -43,7 +43,8 @@ for (const [file, want] of expected) {
 
 const distCatalog = join(DIST, 'catalog.json')
 if (!existsSync(distCatalog)) problems.push('falta dist/catalog.json')
-else if (readFileSync(distCatalog, 'utf8') !== catalogText) problems.push('dist/catalog.json no es igual que library/catalog.json')
+// Sin contar los finales de línea: git puede dejar el del repo con CRLF en Windows (autocrlf).
+else if (readFileSync(distCatalog, 'utf8').replaceAll('\r\n', '\n') !== catalogText.replaceAll('\r\n', '\n')) problems.push('dist/catalog.json no es igual que library/catalog.json')
 const credits = join(DIST, 'CREDITS.md')
 if (!existsSync(credits)) problems.push('falta dist/CREDITS.md')
 else {

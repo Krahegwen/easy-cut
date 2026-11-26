@@ -32,6 +32,27 @@ export interface PickVideosOptions {
   sounds?: boolean
   /** Para las pistas: sonidos, vídeos e imágenes (PNG, JPG, WebP), con su propio título. */
   forTracks?: boolean
+  /** Título de la ventana (si no, el de serie según lo que se elige). */
+  title?: string
+}
+
+/** Lo que ha hecho la limpieza de la caché. */
+export interface CacheCleanupReport {
+  /** false si no tocaba (se hizo hace menos de un día). */
+  ran: boolean
+  deleted: number
+  freedBytes: number
+  keptBytes: number
+}
+
+/** Un vídeo en marcha tal como está guardado. */
+export interface StoredProject {
+  id: string
+  json: string
+  /** Cuándo se cambió por última vez (ms desde 1970). */
+  modifiedMs: number
+  /** ¿Tiene copia anterior? */
+  hasBackup: boolean
 }
 
 /** Un fichero de la biblioteca: nombre (seguro), SHA-256 y tamaño, tal como vienen en el catálogo. */
@@ -99,11 +120,17 @@ export interface RecordingWriter {
   discard(): Promise<void>
 }
 
+/** Punto de la ventana en píxeles CSS (los de getBoundingClientRect). */
+export interface DropPoint {
+  x: number
+  y: number
+}
+
 export interface FileDropHandlers {
-  /** Rutas soltadas en la ventana (ficheros de cualquier tipo: filtrar en la interfaz). */
-  onDrop(paths: string[]): void
-  /** true al entrar arrastrando ficheros sobre la ventana, false al salir o soltar. */
-  onHover?(hovering: boolean): void
+  /** Rutas soltadas en la ventana (ficheros de cualquier tipo: filtrar en la interfaz) y dónde. */
+  onDrop(paths: string[], at?: DropPoint): void
+  /** true al entrar arrastrando ficheros sobre la ventana (y al moverse, con el punto), false al salir o soltar. */
+  onHover?(hovering: boolean, at?: DropPoint): void
 }
 
 export interface NativeBridge {
@@ -115,6 +142,12 @@ export interface NativeBridge {
    * imagen fija (PNG, JPG, WebP) para una pista de efectos: no hace falta que dure.
    */
   probe(path: string, options?: { still?: boolean }): Promise<MediaInfo>
+
+  /**
+   * Fotogramas clave (ms, ordenados) de la primera pista de vídeo cerca de `aroundMs` (unos 30 s antes y un poco
+   * después; ver domain/trim.ts). Solo lee paquetes con ffprobe: no decodifica. Con `fromStart`, desde el 0.
+   */
+  keyframes(path: string, aroundMs: number, fromStart?: boolean): Promise<number[]>
 
   /** ¿Sigue existiendo el fichero? (para avisar de originales movidos o borrados). */
   exists(path: string): Promise<boolean>
@@ -175,6 +208,18 @@ export interface NativeBridge {
    */
   deletePartialOutput(path: string): Promise<void>
 
+  /**
+   * Peso en bytes de un fichero guardado (para el registro de guardados). Solo dentro de la carpeta de
+   * getOutputFolder(); null si no está, no existe o es de otra carpeta.
+   */
+  outputFileSize(path: string): Promise<number | null>
+
+  /**
+   * Añade una entrada (una línea JSON, ver domain/save-log.ts) al registro de guardados, en la carpeta de
+   * datos de la app. Se quedan las últimas entradas (el tope lo pone la shell).
+   */
+  appendSaveLog(line: string): Promise<void>
+
   /** Abre el fichero con la aplicación predeterminada. */
   openFile(path: string): Promise<void>
   /** Abre el Explorador con el fichero seleccionado (o la carpeta, si se da una carpeta). */
@@ -189,13 +234,49 @@ export interface NativeBridge {
   /** Ficheros copiados en el Explorador (rutas completas) y la secuencia del portapapeles en ese momento. */
   clipboardFiles(): Promise<{ sequence: number; paths: string[] }>
 
-  /** Autoguardado del proyecto en curso (uno solo), en la carpeta de datos de la app. */
+  /**
+   * Pone la ventana de la app a pantalla completa del sistema o la deja como estaba (para la vista previa a
+   * pantalla completa). Devuelve si ha cambiado algo: en el modo de pruebas (ventana detrás, sin foco) y en el
+   * navegador no se toca la ventana y devuelve false.
+   */
+  setWindowFullscreen(on: boolean): Promise<boolean>
+
+  /**
+   * Autoguardado de antes (un solo vídeo a medias, `autosave.json`). Ya no se escribe: al arrancar se pasa a
+   * la lista de vídeos en marcha y se borra. Se queda para esa migración (y para las pruebas).
+   */
   saveAutosave(json: string): Promise<void>
   loadAutosave(): Promise<string | null>
   clearAutosave(): Promise<void>
 
-  /** Guarda el proyecto (JSON de domain/project.ts). Sin ruta, pregunta dónde. Devuelve la ruta o null si se cancela. */
-  saveProject(json: string, path?: string): Promise<string | null>
+  /**
+   * Los vídeos en marcha (la lista de Inicio): uno por fichero en la carpeta de datos de la app, por
+   * identificador (letras, números, «-» y «_»). Nunca se toca nada fuera de esa carpeta.
+   */
+  listProjects(): Promise<StoredProject[]>
+  readProject(id: string): Promise<string | null>
+  /** Guarda el vídeo (y, como mucho cada 10 minutos, deja el de antes como copia anterior). */
+  writeProject(id: string, json: string): Promise<void>
+  /** Borra el vídeo de la lista (con su copia y su historial). Los originales no se tocan nunca. */
+  deleteProject(id: string): Promise<void>
+  /** Vuelve a la copia anterior (y el de ahora pasa a ser la copia). Devuelve el JSON recuperado. */
+  restoreProjectBackup(id: string): Promise<string>
+  /** Historial de deshacer guardado del vídeo (JSON de domain/history-file.ts), o null. */
+  readProjectHistory(id: string): Promise<string | null>
+  writeProjectHistory(id: string, json: string): Promise<void>
+
+  /**
+   * Limpia la caché de la app (miniaturas, formas de onda, proxies, temporales y biblioteca descargada) sin
+   * tocar lo que usan `sources` (ficheros originales) ni `libraryFiles` (nombres en la caché de la
+   * biblioteca). Como mucho una vez al día, salvo con `force`. Ver src-tauri/src/cache_cleanup.rs.
+   */
+  cleanCache(sources: readonly string[], libraryFiles: readonly string[], force?: boolean): Promise<CacheCleanupReport>
+
+  /**
+   * Guarda el proyecto en un fichero .easycut (JSON de domain/project.ts). Sin ruta, pregunta dónde (con
+   * `suggestedName` como nombre). Devuelve la ruta o null si se cancela.
+   */
+  saveProject(json: string, path?: string, suggestedName?: string): Promise<string | null>
   /** Abre un proyecto guardado. Sin ruta, pregunta cuál. */
   loadProject(path?: string): Promise<{ path: string; json: string } | null>
 

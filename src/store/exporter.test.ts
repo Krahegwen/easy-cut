@@ -91,5 +91,43 @@ describe('guardar el vídeo', () => {
     await expect(job.result).rejects.toBeInstanceOf(CancelledError)
     expect(state.deleted).toHaveLength(1)
     expect(state.files.size).toBe(0)
+    expect(job.report.attempts).toEqual([{ encoder: 'h264_nvenc', exitCode: null, ms: expect.any(Number), error: null }])
+  })
+})
+
+describe('lo que se apunta de cada guardado', () => {
+  it('encoders probados, el pedido, cada intento y por qué falló, sin la carpeta del fichero', async () => {
+    const { p, media } = project()
+    const { bridge } = createFakeBridge({ media, ffmpegExitCodes: [1, 0], encoders: { h264_nvenc: true, h264_qsv: false, libx264: true } })
+    let t = 0
+    const job = startExport(bridge, { project: p, media, preset: 'youtube', now: () => date, clock: () => (t += 1000) })
+    await job.result
+    expect(job.report).toEqual({
+      target: 'youtube',
+      method: 'encode',
+      tool: 'editor',
+      availableEncoders: ['h264_nvenc', 'libx264'],
+      requestedEncoder: 'h264_nvenc',
+      attempts: [
+        { encoder: 'h264_nvenc', exitCode: 1, ms: 1000, error: 'Error al abrir el encoder' },
+        { encoder: 'libx264', exitCode: 0, ms: 1000, error: null },
+      ],
+      durationMs: 18_000,
+      width: expect.any(Number),
+      height: expect.any(Number),
+      fps: expect.any(Number),
+      fileName: 'Vídeo del 25 de noviembre de 2026 (para YouTube).mp4',
+    })
+  })
+
+  it('«Solo el sonido»: un intento sin encoder de vídeo', async () => {
+    const { p, media } = project()
+    const { bridge } = createFakeBridge({ media })
+    const job = startExport(bridge, { project: p, media, preset: 'sound', now: () => date })
+    await job.result
+    expect(job.report.availableEncoders).toBeNull()
+    expect(job.report.attempts).toEqual([{ encoder: null, exitCode: 0, ms: expect.any(Number), error: null }])
+    expect(job.report.fileName).toMatch(/\.m4a$/)
+    expect(job.report.width).toBeNull()
   })
 })

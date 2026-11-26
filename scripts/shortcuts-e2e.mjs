@@ -220,7 +220,7 @@ try {
   app = await connectToApp(port, { timeoutMs: 300_000 })
   await app.waitFor('return !!window.__easyCut?.store', { timeoutMs: 60_000, what: 'store de la app (modo desarrollo)' })
   // Punto de partida limpio: sin autoguardado ni texto del teleprompter.
-  await app.evaluate('await window.__easyCut.bridge.clearAutosave(); localStorage.removeItem("easy-cut:teleprompter"); location.reload(); return true')
+  await app.evaluate('await window.__easyCut.resetProjects(); localStorage.removeItem("easy-cut:teleprompter"); location.reload(); return true')
   await sleep(1500)
   app.close()
   app = await connectToApp(port)
@@ -349,6 +349,40 @@ try {
   await press('PageUp')
   check('AvPág / RePág: trozo siguiente / anterior', down === 1 && down2 === 2 && (await selectedIndex()) === 1, `${down}, ${down2}, ${await selectedIndex()}`)
 
+  // E / T / P sobre el trozo elegido (sin sonido ni efecto elegido), en la línea; V ya no es nada
+  {
+    const lengths = () => store('s.project.value.clips.map((c) => window.__easyCut.domain.clipOutputMs(c))')
+    const inOf = () => store('window.__easyCut.domain.clipInOut(s.project.value.clips[0]).startMs')
+    await store('s.select(s.project.value.clips[0].id)')
+    await blur()
+    await press('Home')
+    await press('ArrowRight')
+    await press('ArrowRight')
+    const before = await lengths()
+    await press('p', { repeat: true })
+    check('P dejado pulsado no parte el trozo', (await lengths()).length === before.length)
+    await press('p')
+    const split = await lengths()
+    check('P: parte el trozo elegido en la línea (2 s)', split.length === before.length + 1 && Math.abs(split[0] - 2000) <= 60 && ((await toast()) ?? '').includes('partido'), `${split.join(', ')} · ${await toast()}`)
+    await checkHints('Tu vídeo tras partir un trozo')
+    await press('z', { ctrl: true })
+    await press('t')
+    check('T: el trozo elegido termina en la línea', Math.abs((await lengths())[0] - 2000) <= 60, String((await lengths())[0]))
+    await press('z', { ctrl: true })
+    await press('e')
+    check('E: el trozo elegido empieza en la línea', Math.abs((await inOf()) - 2000) <= 60, String(await inOf()))
+    await press('z', { ctrl: true })
+    check('Y Ctrl+Z lo deja como estaba', JSON.stringify(await lengths()) === JSON.stringify(before))
+    await press('End')
+    check('Con la línea fuera del trozo, E / T / P no hacen nada', (await store('window.__easyCut.shortcuts().filter((x) => ["clip-trim-start", "clip-trim-end", "clip-split"].includes(x.id)).every((x) => !x.enabled)')) === true)
+    const n = (await lengths()).length
+    await press('v')
+    check('V ya no cambia nada (no hay tarjetas)', (await lengths()).length === n && !(await store('window.__easyCut.shortcuts().some((x) => x.keys.includes("v"))')))
+    await press('Home')
+    // Como lo dejó AvPág / RePág: elegido el trozo 2.
+    await store('s.select(s.project.value.clips[1].id)')
+  }
+
   // Supr + deshacer; Supr dejado pulsado no quita más
   {
     const before = await clips()
@@ -428,26 +462,34 @@ try {
   await press('Escape')
   check('Esc cierra «Duración máxima» y se queda en «Tu vídeo»', !(await app.evaluate('return !!document.querySelector(".popover")')) && (await screen()) === 'editor')
 
-  // Esc sin nada abierto: a Inicio, que ofrece seguir; empezar otro pregunta y Esc / Intro no lo descartan
+  // Esc sin nada abierto: a Inicio, con el vídeo en la lista; borrarlo pregunta y Esc / Intro no lo borran
   {
     const n = (await clips()).length
+    const id = await store('s.projectId.value')
     await blur()
     await press('Escape')
     await waitScreen('home')
-    check('Esc en «Tu vídeo»: a Inicio, que ofrece «Seguir con este vídeo»', !!(await app.text('[data-testid=resume-card]')))
-    await press('Enter')
-    await app.waitFor('return !!document.querySelector("[data-testid=confirm-dialog]")', { what: 'pregunta de empezar otro' })
+    const cardSel = `[data-testid=project-card][data-project-id="${id}"]`
+    await app.waitFor('return !!document.querySelector(args.s)', { args: { s: cardSel }, what: 'el vídeo en la lista de Inicio' })
+    check('Esc en «Tu vídeo»: a Inicio, con el vídeo en la lista', !!(await app.text(cardSel)))
+    await app.click(`${cardSel} [data-testid=project-delete]`)
+    await app.waitFor('return !!document.querySelector("[data-testid=confirm-dialog]")', { what: 'pregunta de borrar el vídeo' })
     await checkHints('Pregunta (destructiva)')
     await shot('keys-06-pregunta.png')
     await press('Escape')
-    check('Esc en la pregunta: la cierra sin descartar el vídeo', !(await dialogOpen()) && (await clips()).length === n)
-    await press('Enter')
+    check('Esc en la pregunta: la cierra sin borrar el vídeo', !(await dialogOpen()) && !!(await app.text(cardSel)) && (await clips()).length === n)
+    await app.click(`${cardSel} [data-testid=project-delete]`)
     await app.waitFor('return !!document.querySelector("[data-testid=confirm-dialog]")')
     await press('Enter')
-    check('Intro en una pregunta destructiva es «No, volver» (no descarta)', !(await dialogOpen()) && (await clips()).length === n && (await screen()) === 'home')
-    await app.click('[data-testid=resume]')
+    check('Intro en una pregunta destructiva es «No, volver» (no borra)', !(await dialogOpen()) && !!(await app.text(cardSel)) && (await screen()) === 'home')
+    await press('Enter')
+    await waitScreen('pick')
+    check('Intro en Inicio: «Hacer un vídeo nuevo», sin preguntar', !(await dialogOpen()))
+    await press('Escape')
+    await waitScreen('home')
+    await app.click(`${cardSel} [data-testid=project-open]`)
     await waitScreen('editor')
-    check('«Seguir con este vídeo» vuelve con todo', (await clips()).length === n)
+    check('Abrirlo desde la lista vuelve con todo', (await clips()).length === n)
   }
 
   // --- «Arreglar este trozo»
@@ -706,7 +748,7 @@ try {
   }
 } finally {
   try {
-    if (app) await app.evaluate('await window.__easyCut.bridge.clearAutosave(); return true')
+    if (app) await app.evaluate('await window.__easyCut.resetProjects(); return true')
   } catch {
     // La app ya no responde.
   }

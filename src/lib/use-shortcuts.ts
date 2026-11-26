@@ -1,7 +1,7 @@
 // Atajos de teclado en la interfaz: el registro único de la ventana, el composable con el que cada
 // pantalla o diálogo declara los suyos, el único listener de teclado y el panel «Teclas».
 import { getCurrentInstance, onBeforeUnmount, ref, shallowRef } from 'vue'
-import { createShortcutRegistry, LAYER_PRIORITY, listShortcuts, type FocusKind, type Shortcut } from './shortcuts'
+import { coveredByModal, createShortcutRegistry, LAYER_PRIORITY, listShortcuts, type FocusKind, type Shortcut } from './shortcuts'
 
 export type { Shortcut } from './shortcuts'
 
@@ -33,6 +33,12 @@ export function useShortcuts(options: UseShortcutsOptions): void {
     shortcuts: options.shortcuts,
   })
   if (getCurrentInstance()) onBeforeUnmount(remove)
+}
+
+/** ¿Hay un diálogo (o el panel «Teclas») abierto encima de la capa `id`? Reactivo: sirve en un computed. */
+export function isLayerCovered(id: string): boolean {
+  void layersVersion.value
+  return coveredByModal(shortcutRegistry.layers(), id)
 }
 
 // ------------------------------------------------------------------ panel «Teclas»

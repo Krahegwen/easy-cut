@@ -51,6 +51,8 @@ export const LAYER_PRIORITY = {
   overlay: 10,
   toast: 15,
   popover: 20,
+  /** La vista previa a pantalla completa: por encima de avisos y desplegables, por debajo de los diálogos. */
+  fullscreen: 25,
   dialog: 30,
   preparing: 35,
   error: 40,
@@ -113,6 +115,16 @@ export function activeLayers(layers: readonly ShortcutLayer[]): ShortcutLayer[] 
     if (l.modal) break
   }
   return out
+}
+
+/**
+ * ¿Hay ahora encima de la capa `id` otra capa modal activa (un diálogo, un error, el panel «Teclas»)?
+ * La pantalla completa lo usa para salirse cuando sale algo que, si no, quedaría tapado.
+ */
+export function coveredByModal(layers: readonly ShortcutLayer[], id: string): boolean {
+  const me = layers.find((l) => l.id === id)
+  if (!me) return false
+  return layers.some((l) => l !== me && l.modal && l.active() && (l.priority > me.priority || (l.priority === me.priority && l.order > me.order)))
 }
 
 /** Decide qué hacer con una tecla. */

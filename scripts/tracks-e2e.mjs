@@ -7,7 +7,9 @@
 // la sincronía; guardar «Para WhatsApp» y comprobarlo con ffprobe; créditos en «¡Listo!»; el buscador
 // («aplauso», «palmas», sin tildes), cada categoría de sonidos con su contador y nombres legibles; un sonido de
 // Freesound y uno de Kenney en un vídeo guardado, midiendo en el fichero dónde suenan; y el rendimiento con un
-// montaje de 5 minutos, 20 trozos, 3 pistas y 30 elementos. Capturas tracks-*.png y lib-*.png (biblioteca por
+// montaje de 5 minutos, 20 trozos, 3 pistas y 30 elementos. Probar pasando el ratón por encima (sonidos,
+// efectos y «De mi ordenador»: retardo, cortar al salir, cruzar deprisa, el botón, el foco, con el vídeo en
+// marcha) y las pegatinas (categoría, «Poner aquí», vista previa y color dentro y fuera en el fichero). Capturas tracks-*.png y lib-*.png (biblioteca por
 // categorías y búsqueda, a 1280×800 y 1100×700) en test-output/screenshots/.
 //
 // PowerShell (con Rust/cargo en el PATH, la app cerrada, los ficheros de `pnpm test:ffmpeg` en test-output y
@@ -228,23 +230,170 @@ async function libraryCategoryShots(size) {
   check(`Cada categoría de sonidos se elige y su contador cuadra (${size})`, cats.length >= 10, counts.join(' · '))
 }
 
+// ------------------------------------------------------------------ probar pasando el ratón por encima
+
+const moveMouse = (x, y) => app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0 })
+/** Lleva el ratón a la cabecera de la biblioteca (fuera de cualquier tarjeta). */
+async function mouseAway() {
+  const c = await app.center('[data-testid=library-panel] .head h2')
+  await moveMouse(c.x, c.y)
+}
+async function hoverCard(id, part = '.info') {
+  const c = await app.center(`[data-testid=library-asset][data-asset-id="${id}"] ${part}`)
+  await moveMouse(c.x, c.y)
+}
+const libAudio = () => app.evaluate('const a = document.querySelector("[data-testid=library-audio]"); return { key: a.dataset.playing, paused: a.paused, t: a.currentTime }')
+
+/** Sonidos: suenan al dejar el ratón encima (tras el retardo), se cortan al salir, no al cruzar deprisa; el botón manda. */
+async function hoverTests() {
+  await mouseAway()
+  await sleep(200)
+  await app.evaluate('const a = document.querySelector("[data-testid=library-audio]"); window.__libPlays = 0; a.addEventListener("play", () => window.__libPlays++); return true')
+  await hoverCard('ding')
+  await sleep(150)
+  const early = await libAudio()
+  const later = await app.waitFor('const a = document.querySelector("[data-testid=library-audio]"); return a.dataset.playing === "a:ding" && !a.paused && a.currentTime > 0 ? a.currentTime : null', { timeoutMs: 3000, what: 'sonar al pasar el ratón' })
+  check('Ratón encima de un sonido: no suena enseguida (retardo) y luego suena sin pulsar', early.key === '' && early.paused && later > 0, `a 150 ms: ${JSON.stringify(early)}; luego ${later} s`)
+  await mouseAway()
+  await sleep(120)
+  const left = await libAudio()
+  check('Al sacar el ratón se corta', left.paused && left.key === '', JSON.stringify(left))
+
+  // Cruzar la lista deprisa: nada suena.
+  await app.evaluate('document.querySelector("[data-testid=library-grid]").scrollTop = 0; window.__libPlays = 0; return true')
+  const ids = await app.evaluate('return [...document.querySelectorAll("[data-testid=library-asset]")].slice(0, 6).map((c) => c.dataset.assetId)')
+  for (const id of ids) {
+    await hoverCard(id)
+    await sleep(90)
+  }
+  await mouseAway()
+  await sleep(900)
+  check('Cruzar la lista con el ratón (90 ms por tarjeta) no hace sonar nada', (await app.evaluate('return window.__libPlays')) === 0 && (await libAudio()).paused, `${ids.length} tarjetas`)
+
+  // Una sola a la vez: de una tarjeta a otra, suena solo la segunda.
+  await hoverCard(ids[0])
+  await app.waitFor(`return document.querySelector("[data-testid=library-audio]").dataset.playing === "a:${ids[0]}"`, { timeoutMs: 3000, what: 'primera tarjeta' })
+  await hoverCard(ids[1])
+  const switched = await libAudio()
+  await app.waitFor(`return document.querySelector("[data-testid=library-audio]").dataset.playing === "a:${ids[1]}"`, { timeoutMs: 3000, what: 'segunda tarjeta' })
+  check('Uno solo a la vez: al pasar a otra tarjeta, la primera se calla y suena la otra', switched.key === '' && switched.paused, JSON.stringify(switched))
+  await mouseAway()
+  await sleep(150)
+
+  // El botón sigue funcionando y manda.
+  await hoverCard('ding')
+  await app.waitFor('return document.querySelector("[data-testid=library-audio]").dataset.playing === "a:ding"', { timeoutMs: 3000, what: 'ding al pasar el ratón' })
+  await app.click('[data-testid=library-listen-ding]')
+  await sleep(800)
+  const stopped = await libAudio()
+  check('Con el ratón encima y sonando, el botón (que dice «Parar») lo para y no vuelve a sonar solo', stopped.paused && stopped.key === '', JSON.stringify(stopped))
+  await app.click('[data-testid=library-listen-ding]')
+  await mouseAway()
+  await sleep(300)
+  const clicked = await libAudio()
+  check('Lo que se pone a sonar con el botón sigue sonando al sacar el ratón', clicked.key === 'a:ding' && !clicked.paused, JSON.stringify(clicked))
+  await app.click('[data-testid=library-listen-ding]')
+  await mouseAway()
+
+  // El foco del teclado no hace sonar nada.
+  await app.evaluate('document.querySelector("[data-testid=library-listen-ding]").focus(); return true')
+  await sleep(900)
+  check('El foco del teclado en una tarjeta de sonido no lo hace sonar', (await libAudio()).paused)
+  await app.evaluate('document.activeElement?.blur(); return true')
+
+  // Con el vídeo reproduciéndose, pasar el ratón no suena (el botón sí).
+  await app.key(' ')
+  await app.waitFor('return document.querySelector("[data-testid=player]").dataset.playing === "1"', { timeoutMs: 5000, what: 'reproducir' })
+  await hoverCard('ding')
+  await sleep(900)
+  const whilePlaying = await libAudio()
+  await mouseAway()
+  await app.key(' ')
+  await app.key('Home')
+  check('Con el vídeo reproduciéndose, pasar el ratón por un sonido no lo hace sonar', whilePlaying.paused && whilePlaying.key === '', JSON.stringify(whilePlaying))
+}
+
+/** Efectos: quietos hasta pasar el ratón (o el foco), se mueve solo ese y se para al salir. */
+async function effectHoverTests() {
+  await mouseAway()
+  await sleep(300)
+  const moving = () => app.evaluate('return [...document.querySelectorAll("[data-testid=library-asset] .preview video")].filter((v) => !v.paused).map((v) => v.closest("[data-asset-id]").dataset.assetId)')
+  const still = await moving()
+  check('Las vistas previas de los efectos están quietas (un fotograma) sin el ratón encima', still.length === 0, still.join(', '))
+  await hoverCard('chispas', '.preview')
+  await sleep(150)
+  const early = await moving()
+  const on = await app.waitFor('const v = document.querySelector("[data-asset-id=chispas] .preview video"); return v && !v.paused && v.currentTime > 0.2 ? v.currentTime : null', { timeoutMs: 3000, what: 'efecto en movimiento' })
+  const only = await moving()
+  check('Ratón encima de un efecto: tras el retardo se mueve ese y solo ese', early.length === 0 && on > 0 && only.length === 1 && only[0] === 'chispas', `a 150 ms: [${early}]; luego [${only}]`)
+  await mouseAway()
+  await sleep(150)
+  check('Al sacar el ratón se para', (await moving()).length === 0)
+  await app.evaluate('document.querySelector("[data-testid=library-try-chispas]").focus(); return true')
+  await sleep(300)
+  const focused = await moving()
+  await app.evaluate('document.activeElement?.blur(); return true')
+  await sleep(150)
+  check('Con el foco del teclado en su tarjeta también se mueve (y se para al irse)', focused.length === 1 && focused[0] === 'chispas' && (await moving()).length === 0, focused.join(', '))
+}
+
 /** Nada cortado ni tapado en la vista de pistas, la barra del elemento y la biblioteca. */
 async function layoutIsClean(where) {
   const res = await app.evaluate(`const bad = [];
     const sel = '[data-testid=item-bar] .btn, [data-testid=fx-panel] .btn, [data-testid=fx-panel] .seg, [data-testid=tracks-view] .zbtn, [data-testid=track-header] .mini, [data-testid=main-header] .mini, [data-testid=library-panel] .btn, [data-testid=library-panel] .tab, [data-testid=clip-panel] .btn';
     // Lo que está fuera de la vista dentro de una lista que se desplaza no cuenta (no está cortado: se desplaza).
-    const clippedByScroll = (el, r) => { for (let p = el.parentElement; p; p = p.parentElement) { const o = getComputedStyle(p).overflowY; if (o === 'auto' || o === 'scroll') { const pr = p.getBoundingClientRect(); return r.top + r.height / 2 < pr.top || r.top + r.height / 2 > pr.bottom } } return false };
+    const clippedByScroll = (el, r) => { for (let p = el.parentElement; p; p = p.parentElement) { const o = getComputedStyle(p).overflowY; if (o === 'auto' || o === 'scroll') { const pr = p.getBoundingClientRect(); return r.top < pr.top - 0.5 || r.bottom > pr.bottom + 0.5 } } return false };
     for (const el of document.querySelectorAll(sel)) {
       const r = el.getBoundingClientRect(); if (r.width === 0 || clippedByScroll(el, r)) continue;
       if (el.scrollWidth > el.clientWidth + 1) bad.push('cortado: ' + el.innerText.trim());
       if (r.right > window.innerWidth + 0.5 || r.bottom > window.innerHeight + 0.5) bad.push('fuera de la ventana: ' + el.innerText.trim());
       const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-      if (hit && hit !== el && !el.contains(hit) && !hit.closest('.popover')) bad.push('tapado: ' + el.innerText.trim() + ' por ' + (hit.dataset?.testid ?? hit.className ?? hit.tagName));
+      const STICKY = '.video-row, [data-testid=main-header], [data-testid=add-track-row], [data-testid=tracks-view] .corner, [data-testid=tracks-ruler]';
+      const underSticky = hit && !el.closest(STICKY) && !!hit.closest(STICKY);
+      if (hit && hit !== el && !el.contains(hit) && !hit.closest('.popover') && !underSticky) bad.push('tapado: ' + el.innerText.trim() + ' por ' + (hit.dataset?.testid ?? hit.className ?? hit.tagName));
     }
     const player = document.querySelector('[data-testid=preview-frame]').getBoundingClientRect();
     return { bad, preview: Math.round(player.width) + 'x' + Math.round(player.height) }`)
   check(`Nada cortado ni tapado (${where})`, res.bad.length === 0, res.bad.length ? res.bad.join(' | ') : `vista previa ${res.preview}`)
   return res
+}
+
+/**
+ * Los botones de la cabecera de cada fila caben en su fila (no se salen por abajo ni pisan la siguiente): se
+ * mide con getBoundingClientRect de cada botón dentro de su cabecera, y la cabecera, del alto de su fila.
+ */
+async function headersFit(where) {
+  const res = await app.evaluate(`const bad = []; let n = 0;
+    for (const h of document.querySelectorAll('[data-testid=track-header], [data-testid=main-header]')) {
+      const hr = h.getBoundingClientRect(); if (hr.height === 0) continue; n++;
+      const row = h.dataset.trackId ? document.querySelector('[data-testid=track-row][data-track-id="' + h.dataset.trackId + '"]') : document.querySelector('[data-testid=video-row]');
+      const rr = row.getBoundingClientRect();
+      if (Math.abs(rr.top - hr.top) > 0.5 || Math.abs(rr.bottom - hr.bottom) > 0.5) bad.push((h.dataset.trackId ?? 'vídeo') + ': cabecera ' + Math.round(hr.height) + ' px, fila ' + Math.round(rr.height) + ' px');
+      for (const b of h.querySelectorAll('button, input, .name-line')) {
+        const r = b.getBoundingClientRect(); if (r.width === 0) continue;
+        if (r.top < hr.top - 0.5 || r.bottom > hr.bottom - 0.5 || r.left < hr.left - 0.5 || r.right > hr.right + 0.5) bad.push((h.dataset.trackId ?? 'vídeo') + ' ' + (b.dataset.testid ?? b.className) + ': ' + [r.top, r.bottom].map(Math.round).join('–') + ' fuera de ' + [hr.top, hr.bottom].map(Math.round).join('–'));
+      }
+    }
+    return { n, bad }`)
+  check(`Los botones de cada cabecera caben en su fila (${where})`, res.n > 0 && res.bad.length === 0, res.bad.length ? res.bad.slice(0, 6).join(' | ') : `${res.n} filas`)
+}
+
+/** headersFit a varios tamaños de ventana (vuelve a 1280×800). */
+async function headersFitAtSizes(where) {
+  for (const [w, h] of [[1280, 800], [1100, 700], [1920, 1080], [2000, 1100], [2400, 1300]]) {
+    await app.setViewport(w, h)
+    await sleep(250)
+    // Con muchas filas, recorrerlas todas (la fila «Vídeo» y el pie se quedan fijos).
+    const sc = await app.evaluate('const s = document.querySelector("[data-testid=tracks-scroller]"); return { h: s.scrollHeight, c: s.clientHeight }')
+    for (let y = 0; y <= Math.max(0, sc.h - sc.c); y += Math.max(40, sc.c - 60)) {
+      await app.evaluate('document.querySelector("[data-testid=tracks-scroller]").scrollTop = args.y; return true', { y })
+      await sleep(80)
+      await headersFit(`${where}, ${w}×${h}${sc.h > sc.c ? `, desplazado ${y} px` : ''}`)
+    }
+    await app.evaluate('document.querySelector("[data-testid=tracks-scroller]").scrollTop = 0; return true')
+  }
+  await app.setViewport(1280, 800)
+  await sleep(250)
 }
 
 // ================================================================== prueba
@@ -254,7 +403,7 @@ try {
   app = await connectToApp(port, { timeoutMs: 240_000 })
   console.log(`Conectado a ${app.url}`)
   await app.waitFor('return !!window.__easyCut?.store', { timeoutMs: 60_000, what: 'store de la app (modo desarrollo)' })
-  await app.evaluate('await window.__easyCut.bridge.clearAutosave(); location.reload(); return true')
+  await app.evaluate('await window.__easyCut.resetProjects(); location.reload(); return true')
   await sleep(1500)
   app.close()
   app = await connectToApp(port)
@@ -269,8 +418,13 @@ try {
   await app.click('[data-testid=pick-videos]')
   await waitScreen('editor', 30_000)
   await app.waitFor('return !document.querySelector("[data-testid=preparing]") && window.__easyCut.store.project.value.clips.length === 3', { timeoutMs: 30_000 })
-  check('Sin pistas, la parte de abajo es la de siempre (tarjetas)', !!(await app.text('[data-testid=clip-strip]')) && !(await app.evaluate('return !!document.querySelector("[data-testid=tracks-view]")')))
-  check('Debajo de la tira, «Añadir sonidos y efectos»', (await app.text('[data-testid=add-sounds-effects]')) === 'Añadir sonidos y efectos')
+  check(
+    'Sin pistas, «Tu vídeo» abre ya en la vista de pistas: solo la fila «Vídeo» con sus 3 trozos',
+    (await app.evaluate('return !!document.querySelector("[data-testid=tracks-view]") && !document.querySelector("[data-testid=clip-strip]") && document.querySelectorAll("[data-testid=track-row]").length === 0 && document.querySelectorAll("[data-testid^=clip-block-]").length === 3')) === true,
+  )
+  check('En la columna derecha, «Añadir sonidos y efectos»', (await app.text('[data-testid=add-sounds-effects]')) === 'Añadir sonidos y efectos')
+  check('Sin conmutador tarjetas / pistas ni atajo V', !(await app.evaluate('return !!document.querySelector("[data-testid=view-cards], [data-testid=view-tracks]") || window.__easyCut.shortcuts().some((s) => s.keys.includes("v"))')))
+  await shot('tracks-00-sin-pistas.png')
   await visibleKeyHintsAreShortcuts('«Tu vídeo» sin pistas')
 
   // --- Biblioteca: sonidos (escuchar y «Poner aquí»)
@@ -282,8 +436,9 @@ try {
   const listening = await app.waitFor('const a = document.querySelector("[data-testid=library-panel] audio"); return a && !a.paused && a.currentTime > 0 ? a.currentTime : null', { timeoutMs: 10_000, what: 'probar un sonido' })
   check('Al pulsar su tarjeta, el sonido suena (para probarlo antes de poner)', listening > 0, `${listening} s`)
   await app.click('[data-testid=library-listen-ding]')
+  await hoverTests()
   {
-    const applause = ['aplausos-auditorio', 'ovacion-teatro', 'ovacion-teatro-larga', 'aplausos-gimnasio']
+    const applause =['aplausos-auditorio', 'ovacion-teatro', 'ovacion-teatro-larga', 'aplausos-gimnasio']
     const shown = () => app.evaluate('return [...document.querySelectorAll("[data-testid=library-asset]")].map((a) => a.dataset.assetId)')
     const inApplause = (ids) => S('return args.ids.every((id) => library.asset(id)?.category === "aplausos-y-vitores")', { ids })
     for (const word of ['aplauso', 'palmas']) {
@@ -316,14 +471,28 @@ try {
     check('«Poner aquí»: en la línea, en una pista de sonido nueva', ding.kind === 'sound' && Math.abs(ding.start - 12_000) < 50 && ding.trackName === 'Sonidos', JSON.stringify({ start: ding.start, track: ding.trackName }))
     const c = await clipStarts()
     check('Y pegado al trozo de debajo (el 2, a 2 s de su principio)', ding.anchor.clipId === c[1].id && Math.abs(ding.anchor.offsetMs - 2000) < 50, JSON.stringify(ding.anchor))
-    check('Al poner lo primero, abajo pasa a la vista de pistas', !!(await app.evaluate('return !!document.querySelector("[data-testid=tracks-view]")')))
+    check('Al poner lo primero, aparece su pista debajo de la fila «Vídeo»', (await app.evaluate('const v = document.querySelector("[data-testid=video-row]").getBoundingClientRect(); const rows = [...document.querySelectorAll("[data-testid=track-row]")]; return rows.length === 1 && rows[0].getBoundingClientRect().top >= v.bottom - 1')) === true)
     check('Y queda elegido (su barra sale al cerrar la biblioteca)', (await S('return tracks.selectedItemId.value')) === ding.id && !(await app.text('[data-testid=item-bar]')))
   }
 
   // --- Biblioteca: efectos (probar sobre mi vídeo y «Poner aquí»)
   await app.click('[data-testid=library-tab-effects]')
   await app.waitFor('return [...document.querySelectorAll("[data-testid=library-asset] video")].filter((v) => v.readyState >= 2).length >= 4', { timeoutMs: 30_000, what: 'vistas previas de los efectos' })
-  check('Los efectos se ven en su tarjeta (vídeo en bucle)', true)
+  check('Los efectos se ven en su tarjeta (vista previa cargada)', true)
+  await effectHoverTests()
+  // --- Pegatinas: su categoría con su contador
+  {
+    await selectCategory('pegatinas')
+    const n = await app.evaluate('return document.querySelectorAll("[data-testid=library-asset]").length')
+    const label = await app.evaluate('const s = document.querySelector("[data-testid=library-category]"); return s.options[s.selectedIndex].textContent.trim()')
+    const fmt = await app.evaluate('return [...document.querySelectorAll("[data-testid=library-asset]")].map((c) => c.querySelector(".preview img, .preview video")?.tagName ?? "-").join("")')
+    check('Categoría «Pegatinas» con su contador', n >= 12 && label === `Pegatinas (${n})`, `«${label}», ${n} tarjetas`)
+    await app.waitFor('return [...document.querySelectorAll("[data-testid=library-asset] .preview img")].every((i) => i.complete && i.naturalWidth > 0)', { timeoutMs: 15_000, what: 'vistas previas de las pegatinas' })
+    await shot('lib-pegatinas-1280.png')
+    await namesAreReadable('«Pegatinas» a 1280×800')
+    check('Pegatinas fijas (imagen) y alguna animada (vídeo)', fmt.includes('IMG') && fmt.includes('VIDEO'), fmt)
+    await selectCategory(null)
+  }
   await app.click('[data-testid=library-try-chispas]')
   const trying = await app.waitFor('const v = document.querySelector("[data-testid=trying-effect]"); return v && v.readyState >= 2 && !v.paused ? getComputedStyle(v).mixBlendMode : null', { timeoutMs: 15_000, what: 'probar sobre mi vídeo' })
   check('«Probar sobre mi vídeo»: se ve en la vista previa, como luz', trying === 'screen', trying)
@@ -350,6 +519,27 @@ try {
   {
     const m = (await items()).find((i) => i.name === 'Música de prueba')
     check('«De mi ordenador»: el sonido entra en la línea y, como pisaría al «ding», en otra pista', !!m && Math.abs(m.start - 12_000) < 50 && m.trackName === 'Sonidos 2', JSON.stringify({ start: m?.start, track: m?.trackName }))
+  }
+  // --- «De mi ordenador»: probar con el ratón encima y con su botón
+  {
+    // El único sonido traído es la música (los trozos son vídeos; lo de la biblioteca no sale aquí).
+    const sel = '[data-testid=pool-item][data-kind=sound]'
+    const info = await app.center(`${sel} .pool-info`)
+    await moveMouse(info.x, info.y)
+    await sleep(150)
+    const early = await libAudio()
+    await app.waitFor(`return document.querySelector("[data-testid=library-audio]").dataset.playing === ${JSON.stringify(`p:${music}`)} && !document.querySelector("[data-testid=library-audio]").paused`, { timeoutMs: 3000, what: 'sonido del ordenador al pasar el ratón' })
+    check('«De mi ordenador»: con el ratón encima de un sonido ya traído, suena tras el retardo', early.paused && early.key === '')
+    await mouseAway()
+    await sleep(150)
+    check('Y se corta al salir', (await libAudio()).paused)
+    await app.click(`${sel} [data-testid=pool-listen]`)
+    await sleep(300)
+    const btn = await libAudio()
+    check('Su botón de escuchar también (y se ve sin pasar el ratón)', btn.key === `p:${music}` && !btn.paused && (await app.evaluate('return getComputedStyle(document.querySelector(args.s + " .pool-play")).display !== "none"', { s: sel })), JSON.stringify(btn))
+    await app.click(`${sel} [data-testid=pool-listen]`)
+    check('Y lo para', (await libAudio()).paused)
+    await shot('lib-de-mi-ordenador-1280.png')
   }
   // Esc cierra primero el aviso abierto («Puesto en…») y después la biblioteca.
   await closeLibraryWithEsc()
@@ -417,8 +607,12 @@ try {
     await app.evaluate('const s = document.querySelector("[data-testid=volume-slider]"); s.value = "50"; s.dispatchEvent(new Event("input")); s.dispatchEvent(new Event("change")); return true')
     check('Volumen al 50 %', (await items()).find((i) => i.id === musicId).item.volume === 0.5)
     await app.key('Escape')
-    await app.click('[data-testid=item-fade-in]')
-    check('«Entrada suave»: un segundo', (await items()).find((i) => i.id === musicId).item.fadeInMs === 1000)
+    // «Aparecer y desaparecer»: al elegir una forma estando «De golpe», la duración del medio (1 s).
+    await app.click('[data-testid=item-fades]')
+    await app.click('[data-testid=fade-in-linear]')
+    const faded = (await items()).find((i) => i.id === musicId).item
+    check('«Aparecer»: «Al mismo ritmo», un segundo (lo de la antigua «entrada suave»)', faded.fadeInMs === 1000 && faded.fadeInEasing === 'linear', `${faded.fadeInMs} ms ${faded.fadeInEasing}`)
+    await app.key('Escape')
     await app.click('[data-testid=item-repeat]')
     const rep = (await items()).find((i) => i.id === musicId)
     check('«Repetir»: hasta el final del vídeo', rep.item.repeat && rep.item.durationMs === null && rep.end === (await S('return store.durationMs.value')), `${rep.start}–${rep.end}`)
@@ -452,6 +646,74 @@ try {
     check('Pista quitada', !(await S('return store.project.value.tracks.some((t) => t.id === args.t)', { t: musicTrack })))
     await app.key('z', { ctrl: true })
     check('Deshacer la recupera con lo que tenía', (await items()).some((i) => i.id === musicId))
+  }
+
+  // --- Cabeceras: los botones caben en su fila (con dos o tres filas y a varios tamaños, también ~2000 px)
+  await headersFitAtSizes(`${(await S('return store.project.value.tracks.length'))} pistas`)
+
+  // --- Escuchar solo una pista (y la fila «Vídeo») de un toque
+  {
+    const musicTrack = (await items()).find((i) => i.id === musicId).track
+    const sel = `[data-testid=track-header][data-track-id="${musicTrack}"] [data-testid=track-solo]`
+    await app.click(sel)
+    const state = () => S('const p = store.project.value; return { main: p.mainMuted, sounds: p.tracks.filter((t) => t.kind === "sound").map((t) => [t.id, t.muted]) }')
+    const solo = await state()
+    check('«Escuchar solo esta»: suena solo esa pista (la fila «Vídeo» y las demás, silenciadas)', solo.main && solo.sounds.every(([id, m]) => (id === musicTrack ? !m : m)), JSON.stringify(solo))
+    check('El botón se ve encendido y las demás filas, atenuadas', (await app.evaluate(`return document.querySelector(args.sel).getAttribute('aria-pressed') === 'true' && document.querySelector('[data-testid=video-row]').classList.contains('off')`, { sel })) === true)
+    await shot('tracks-05b-solo-una-pista.png')
+    await app.click(sel)
+    const all = await state()
+    check('Otra vez: vuelve a sonar todo', !all.main && all.sounds.every(([, m]) => !m), JSON.stringify(all))
+    await app.click('[data-testid=main-solo]')
+    const main = await state()
+    check('«Escuchar solo esta» en la fila «Vídeo»: calla las pistas de sonido', !main.main && main.sounds.every(([, m]) => m), JSON.stringify(main))
+    await app.key('z', { ctrl: true })
+  }
+
+  // --- Pistas nuevas a mano (sin límite) y pasar un sonido de una a otra
+  {
+    const n0 = await S('return store.project.value.tracks.length')
+    const sounds0 = await S('return store.project.value.tracks.filter((t) => t.kind === "sound").length')
+    await app.click('[data-testid=add-sound-track]')
+    const added = await S('const t = store.project.value.tracks.at(-1); return { kind: t.kind, name: t.name, items: t.items.length }')
+    check('«Pista de sonido» añade una pista vacía debajo de las de sonido', added.kind === 'sound' && added.items === 0 && added.name === `Sonidos ${sounds0 + 1}`, JSON.stringify(added))
+    await app.click('[data-testid=add-effect-track]')
+    const top = await S('const t = store.project.value.tracks[0]; return { kind: t.kind, items: t.items.length }')
+    check('«Pista de efectos» añade una pista de efectos encima de las demás', top.kind === 'effect' && top.items === 0, JSON.stringify(top))
+    check('El pie explica cómo pasar algo de una pista a otra', (await app.text('[data-testid=add-track-row]')).includes('arrástralo hasta ella'))
+    // Pasar el «ding» a la pista nueva arrastrándolo hacia abajo (con la vista previa pequeña, que se vean las dos).
+    await app.click('[data-testid=split-small]')
+    const newTrack = await S('return store.project.value.tracks.at(-1).id')
+    const row = await app.center(`[data-testid=track-row][data-track-id="${newTrack}"]`)
+    const d = await blockCenter(dingId)
+    check('La pista nueva y el «ding» se ven a la vez', Math.abs(row.y - (await app.center(`[data-testid=track-row][data-track-id="${newTrack}"]`)).y) < 1, `${row.y}`)
+    await app.drag({ x: d.x, y: d.y }, { x: d.x, y: row.y }, 12)
+    const moved = (await items()).find((i) => i.id === dingId)
+    check('Arrastrar un sonido hasta la pista nueva lo pasa a ella (en el mismo instante)', moved.track === newTrack, `${moved.track} (${moved.start} ms)`)
+    await app.key('z', { ctrl: true })
+    // Y muchas más: no hay tope (antes, 4 de sonido y 3 de efectos).
+    for (let i = 0; i < 5; i++) await app.click('[data-testid=add-sound-track]')
+    for (let i = 0; i < 3; i++) await app.click('[data-testid=add-effect-track]')
+    const n = await S('return store.project.value.tracks.length')
+    check('Sin límite de pistas: 12 o más', n === n0 + 10 && n >= 12, `${n0} → ${n}`)
+    const scroll = await app.evaluate('const s = document.querySelector("[data-testid=tracks-scroller]"); return { h: s.scrollHeight, c: s.clientHeight }')
+    check('Con muchas filas, la zona de pistas se desplaza hacia abajo', scroll.h > scroll.c + 100, JSON.stringify(scroll))
+    await app.evaluate('const s = document.querySelector("[data-testid=tracks-scroller]"); s.scrollTop = s.scrollHeight; return true')
+    await sleep(200)
+    const fixed = await app.evaluate(`const s = document.querySelector('[data-testid=tracks-scroller]').getBoundingClientRect();
+      const v = document.querySelector('[data-testid=video-row]').getBoundingClientRect(); const a = document.querySelector('[data-testid=add-track-row]').getBoundingClientRect();
+      return v.top >= s.top - 0.5 && v.bottom <= s.bottom + 0.5 && a.bottom <= s.bottom + 0.5 && a.top >= s.top`)
+    check('Desplazando, la fila «Vídeo» y el pie se quedan a la vista', fixed === true)
+    await shot('tracks-18-muchas-pistas.png')
+    await headersFitAtSizes(`${n} pistas`)
+    await app.setViewport(1100, 700)
+    await shot('tracks-19-muchas-pistas-1100.png')
+    await app.setViewport(2000, 1100)
+    await shot('tracks-20-muchas-pistas-2000.png')
+    await app.setViewport(1280, 800)
+    for (let i = 0; i < 10; i++) await app.key('z', { ctrl: true })
+    check('Deshacer quita las pistas añadidas', (await S('return store.project.value.tracks.length')) === n0)
+    await app.click('[data-testid=split-medium]')
   }
 
   // --- Quitar pausas en un trozo anterior: lo de después conserva su sitio respecto a su trozo
@@ -554,21 +816,36 @@ try {
     await visibleKeyHintsAreShortcuts('barra de un efecto')
   }
 
-  // --- Tarjetas con indicadores
+  // --- Indicadores en la fila «Vídeo» (lo que decían las tarjetas)
   {
-    await app.click('[data-testid=view-cards]')
-    await waitScreen('clip-strip')
-    const badges = await app.evaluate('return [...document.querySelectorAll("[data-testid=clip-attached]")].map((b) => b.innerText.trim())')
-    check('«Ver tarjetas»: cada trozo dice cuántos sonidos/efectos lleva pegados', badges.length >= 2 && badges.every((b) => /sonido|efecto/.test(b)), badges.join(' | '))
-    await shot('tracks-07-tarjetas-indicadores.png')
-    await app.key('v')
-    check('V vuelve a las pistas', !!(await app.evaluate('return !!document.querySelector("[data-testid=tracks-view]")')))
+    const labels = await app.evaluate('return [...document.querySelectorAll("[data-testid^=clip-block-]")].filter((b) => b.dataset.badges.split(" ").includes("attached")).map((b) => b.getAttribute("aria-label"))')
+    check('Cada trozo de la fila «Vídeo» dice cuántos sonidos/efectos lleva pegados', labels.length >= 2 && labels.every((b) => /lleva pegado .*(sonido|efecto)/.test(b)), labels.join(' | '))
+    const pauses = await app.evaluate('return [...document.querySelectorAll("[data-testid^=clip-block-]")].some((b) => b.dataset.badges.split(" ").includes("pauses") && !!b.querySelector(".b-pauses"))')
+    check('Y el que tiene las pausas quitadas lo enseña', pauses)
+    await shot('tracks-07-fila-video-indicadores.png')
+  }
+
+  // --- Recortar el principio del trozo ancla desde la fila «Vídeo»: lo pegado sigue a su imagen
+  {
+    const ding0 = (await items()).find((i) => i.id === dingId)
+    const anchor = (await clipStarts()).findIndex((c) => c.id === ding0.anchor.clipId)
+    const c0 = (await clipStarts())[anchor]
+    const past0 = await S('return store.history.value.past.length')
+    const px = await pxPerSec()
+    const h = await app.center(`[data-testid=clip-block-${anchor + 1}] [data-testid=clip-handle-start]`)
+    await app.drag({ x: h.x, y: h.y }, { x: h.x + px * 1, y: h.y }, 10)
+    const ding1 = (await items()).find((i) => i.id === dingId)
+    const c1 = (await clipStarts())[anchor]
+    const cut = c0.start + (await S('return window.__easyCut.domain.clipOutputMs(store.project.value.clips[args.i])', { i: anchor })) // fin nuevo
+    check('Recortar 1 s por delante el trozo del «ding»: el «ding» se adelanta lo mismo (sigue sobre su imagen)', c1.start === c0.start && Math.abs(ding0.start - ding1.start - 1000) < (1000 * 10) / px + 60 && ding1.anchor.clipId === ding0.anchor.clipId, `${ding0.start} → ${ding1.start} (trozo hasta ${cut})`)
+    check('En un solo paso de deshacer', (await S('return store.history.value.past.length')) === past0 + 1)
+    await app.key('z', { ctrl: true })
+    check('Y al deshacer vuelve a su sitio', (await items()).find((i) => i.id === dingId).start === ding0.start)
   }
 
   // --- Reproducir: los sonidos y los efectos van sincronizados con el montaje
   {
     const ding = (await items()).find((i) => i.id === dingId)
-    await app.click('[data-testid=view-tracks]')
     await seekTo(Math.max(0, ding.start - 1200))
     await app.key(' ')
     await sleep(2000)
@@ -627,6 +904,14 @@ try {
     await app.click('[data-testid=library-tab-effects]')
     await sleep(1200)
     await shot('tracks-13-biblioteca-efectos-1100.png')
+    await selectCategory('pegatinas')
+    await shot('lib-pegatinas-1100.png')
+    await namesAreReadable('«Pegatinas» a 1100×700')
+    await layoutIsClean('pegatinas a 1100×700')
+    await selectCategory(null)
+    await app.click('[data-testid=library-tab-computer]')
+    await shot('lib-de-mi-ordenador-1100.png')
+    await layoutIsClean('«De mi ordenador» a 1100×700')
     await closeLibraryWithEsc()
     const fxTrack = (await items()).find((i) => i.id === fxId).track
     await app.click(`[data-testid=track-header][data-track-id="${fxTrack}"] [data-testid=track-toggle]`)
@@ -639,9 +924,10 @@ try {
     await shot('tracks-15-tamano-y-sitio-1100.png')
     await layoutIsClean('«Tamaño y sitio» a 1100×700')
     await app.click('[data-testid=box-done]')
-    await app.click('[data-testid=view-cards]')
-    await shot('tracks-16-tarjetas-1100.png')
-    await app.click('[data-testid=view-tracks]')
+    await app.key('Escape')
+    await shot('tracks-16-fila-video-1100.png')
+    await layoutIsClean('fila «Vídeo» con un trozo elegido a 1100×700')
+    await visibleKeyHintsAreShortcuts('fila «Vídeo» con un trozo elegido a 1100×700')
     await app.setViewport(1280, 800)
     await sleep(400)
   }
@@ -710,6 +996,90 @@ try {
     check('Lo CC0 no pide créditos en «¡Listo!»', !credits, credits ?? '')
     await app.click('[data-testid=back-to-editor]')
     await waitScreen('editor')
+  }
+
+  // --- Una pegatina: «Poner aquí» la deja pequeña, fuera del centro y con transparencia; y así sale en el fichero
+  {
+    await S(`const d = domain; let p = d.createProject('16:9'); p = d.addClip(p, d.createClip(store.media.value[args.h], 'st-c1'));
+      store.commit(p); return true`, { h: media.horizontal })
+    await sleep(600)
+    await seekTo(1000)
+    await app.click('[data-testid=add-sounds-effects]')
+    await waitScreen('library-panel')
+    await app.click('[data-testid=library-tab-effects]')
+    await selectCategory('pegatinas')
+    await app.click('[data-testid=library-put-pegatina-estrella]')
+    await app.waitFor('return window.__easyCut.store.project.value.tracks.flatMap((t) => t.items).some((i) => i.source.assetId === "pegatina-estrella")', { timeoutMs: 20_000, what: 'pegatina puesta' })
+    await noErrorDialog('poner la pegatina')
+    await closeLibraryWithEsc()
+    const st = (await items()).find((i) => i.item.source.assetId === 'pegatina-estrella')
+    check('La pegatina entra pequeña, fuera del centro, en mezcla normal, 3 s', st.item.look.mix === 'normal' && st.item.look.box.scale === 0.25 && st.item.look.box.x === 0.8 && st.end - st.start === 3000, JSON.stringify({ look: st.item.look, ms: st.end - st.start }))
+    await seekTo(2000)
+    const r = await app.waitFor(`const e = document.querySelector('[data-testid=track-effect][data-item-id="${st.id}"]'); const f = document.querySelector('[data-testid=preview-frame]').getBoundingClientRect();
+      if (!e || !e.complete || getComputedStyle(e).visibility !== 'visible') return null; const b = e.getBoundingClientRect();
+      return { w: b.width / f.width, h: b.height / f.height, cx: (b.left + b.width / 2 - f.left) / f.width, cy: (b.top + b.height / 2 - f.top) / f.height, blend: getComputedStyle(e).mixBlendMode, tag: e.tagName }`, { timeoutMs: 15_000, what: 'pegatina en la vista previa' })
+    check('En la vista previa se ve pequeña (¼ del alto) y arriba a la derecha', r.tag === 'IMG' && Math.abs(r.h - 0.25) < 0.02 && Math.abs(r.cx - 0.8) < 0.02 && Math.abs(r.cy - 0.28) < 0.02 && r.blend === 'normal', JSON.stringify(r))
+    await shot('tracks-22-pegatina.png')
+    await app.click('[data-testid=save-video]')
+    await waitScreen('save-view')
+    await app.click('[data-testid=preset-whatsapp]')
+    await app.waitFor('return !!document.querySelector("[data-testid=done-view]")', { timeoutMs: 180_000, what: 'vídeo con pegatina guardado' })
+    await noErrorDialog('guardar con pegatina')
+    const out = await S('return store.lastExport.value.path')
+    // Color de un punto (fracción del ancho y del alto, de cada fichero) en un instante del guardado y del original.
+    const pixel = (path, sec, fx, fy) => {
+      const v = ffprobe(path).streams.find((s) => s.codec_type === 'video')
+      const x = Math.round(fx * v.width)
+      const y = Math.round(fy * v.height)
+      const buf = execFileSync('ffmpeg', ['-v', 'error', '-ss', String(sec), '-i', path, '-frames:v', '1', '-vf', `crop=1:1:${x}:${y},format=rgb24`, '-f', 'rawvideo', '-'])
+      return [...buf.subarray(0, 3)]
+    }
+    const inside = pixel(out, 2.5, 0.8, 0.28)
+    const before = pixel(out, 0.4, 0.8, 0.28)
+    const after = pixel(out, 4.6, 0.8, 0.28)
+    const src = pixel(media.horizontal, 2.5, 0.8, 0.28)
+    const outsideOut = pixel(out, 2.5, 0.3, 0.7)
+    const outsideSrc = pixel(media.horizontal, 2.5, 0.3, 0.7)
+    // Junto al borde del recuadro pero fuera de la estrella (esquina del cuadrado): ahí manda el vídeo (alfa).
+    const cornerOut = pixel(out, 2.5, 0.8 - 0.25 * 0.5625 * 0.46, 0.28 - 0.25 * 0.46)
+    const cornerSrc = pixel(media.horizontal, 2.5, 0.8 - 0.25 * 0.5625 * 0.46, 0.28 - 0.25 * 0.46)
+    const near = (a, b, tol = 24) => a.every((c, i) => Math.abs(c - b[i]) <= tol)
+    const yellow = (c) => c[0] > 200 && c[1] > 150 && c[2] < 150
+    check('En el fichero: dentro de la estrella, amarillo; antes y después de su tramo, el vídeo', yellow(inside) && !yellow(before) && !yellow(after), `dentro ${inside} · antes ${before} · después ${after} (original ${src})`)
+    check('Y fuera de la pegatina, el vídeo tal cual (también en la esquina transparente de su recuadro)', near(outsideOut, outsideSrc) && near(cornerOut, cornerSrc), `fuera ${outsideOut} / ${outsideSrc} · esquina ${cornerOut} / ${cornerSrc}`)
+    await app.click('[data-testid=back-to-editor]')
+    await waitScreen('editor')
+  }
+
+  // --- Rendimiento: 5 minutos, 20 trozos, 12 pistas (8 de sonido y 4 de efectos) y 48 elementos
+  {
+    const res = await S(`
+      const d = domain; let p = d.createProject('16:9');
+      const m = store.media.value[args.h];
+      for (let i = 0; i < 20; i++) { const c = d.createClip(m, 'perf-c' + i); p = d.addClip(p, c); p = d.setInOut(p, 'perf-c' + i, { inMs: 0, outMs: 10000 }); }
+      p = { ...p, clips: p.clips.map((c, i) => i < 10 ? { ...c, segments: [{ startMs: 0, endMs: 10000 }], speed: 0.5 } : c) };
+      const music = store.media.value[args.music];
+      let n = 0;
+      const put = (kind, src, info, at, extra) => { const it = d.createItem({ id: 'perf-i' + (n++), kind, source: src, name: 'Prueba ' + n, sourceDurationMs: info.durationMs, still: info.isStill, hasAudio: info.hasAudio, defaults: extra }); const r = d.insertItem(p, it, kind, at, { id: 'perf-t' + n }); if (r.ok) p = r.project; };
+      // Ocho sonidos a la vez (cada uno pisa a los anteriores: 8 pistas) cada 50 s, y cuatro efectos a la vez.
+      for (let k = 0; k < 4; k++) for (let j = 0; j < 8; j++) put('sound', { type: 'file', path: args.music }, music, k * 50000 + j * 300, {});
+      for (let k = 0; k < 4; k++) for (let j = 0; j < 4; j++) put('effect', { type: 'library', assetId: 'chispas' }, { durationMs: 6000, hasAudio: false }, k * 50000 + 1000 + j * 300, { look: { mix: 'light', opacity: 0.6 } });
+      store.commit(p);
+      return { clips: p.clips.length, tracks: p.tracks.length, sounds: p.tracks.filter((t) => t.kind === 'sound').length, items: p.tracks.reduce((s, t) => s + t.items.length, 0), duration: d.projectDurationMs(p) }`, { h: media.horizontal, music })
+    await sleep(800)
+    check('Montaje con muchas pistas', res.clips === 20 && res.tracks === 12 && res.sounds === 8 && res.items === 48 && res.duration >= 300_000, JSON.stringify(res))
+    await headersFitAtSizes('12 pistas')
+    // La vista previa aguanta: reproducir donde suenan los 8 a la vez y se ven los 4 efectos.
+    await app.key('Home')
+    await seekTo(50_000)
+    await app.key(' ')
+    await sleep(3000)
+    const play = await app.evaluate(`const p = document.querySelector('[data-testid=player]').dataset; const sync = JSON.parse(document.querySelector('[data-testid=track-layers]').dataset.sync);
+      const sounds = [...document.querySelectorAll('[data-testid=track-sound]')].filter((a) => !a.paused).length; const fx = [...document.querySelectorAll('[data-testid=track-effect]')].filter((v) => !v.paused && v.readyState >= 2).length;
+      return { ms: Number(p.currentMs), playing: p.playing === '1', sounds, fx, sync: Object.keys(sync).length }`)
+    await app.key(' ')
+    check('Reproduciendo con 8 sonidos y 4 efectos a la vez: el reloj avanza, suenan y se ven', play.playing && play.ms > 51_500 && play.ms < 54_500 && play.sounds >= 8 && play.fx >= 4, JSON.stringify(play))
+    await shot('tracks-21-rendimiento-12-pistas.png')
   }
 
   // --- Rendimiento: 5 minutos, 20 trozos, 3 pistas y 30 elementos

@@ -1,6 +1,6 @@
 // Registro de atajos: capas, foco en cuadros de texto, modificadores, repetición y teclado español.
 import { describe, expect, it, vi } from 'vitest'
-import { activeLayers, comboOf, createShortcutRegistry, LAYER_PRIORITY, listShortcuts, type KeyInput, type Shortcut } from './shortcuts'
+import { activeLayers, comboOf, coveredByModal, createShortcutRegistry, LAYER_PRIORITY, listShortcuts, type KeyInput, type Shortcut } from './shortcuts'
 
 function key(k: string, extra: Partial<KeyInput> = {}): KeyInput {
   return { key: k, code: '', ctrl: false, alt: false, meta: false, shift: false, repeat: false, focus: 'other', ...extra }
@@ -195,5 +195,42 @@ describe('foco en botones y deslizadores', () => {
   it('espacio sin atajo no desplaza la pantalla', () => {
     const r = createShortcutRegistry()
     expect(r.resolve(key(' '))).toEqual({ action: 'none', preventDefault: true })
+  })
+})
+
+describe('pantalla completa de la vista previa', () => {
+  function setup() {
+    const r = createShortcutRegistry()
+    let full = true
+    let dialog = false
+    const play = shortcut('play', ['Space'])
+    const back = shortcut('back', ['Escape'])
+    const toastClose = shortcut('toast', ['Escape'])
+    const exit = shortcut('fs-exit', ['Escape', 'f'])
+    const fsPlay = shortcut('fs-play', ['Space'])
+    r.add({ id: 'screen', title: '', priority: LAYER_PRIORITY.screen, modal: false, active: () => true, shortcuts: () => [play, back, shortcut('save', ['g'])] })
+    r.add({ id: 'fullscreen', title: '', priority: LAYER_PRIORITY.fullscreen, modal: true, active: () => full, shortcuts: () => [exit, fsPlay] })
+    r.add({ id: 'toast', title: '', priority: LAYER_PRIORITY.toast, modal: false, active: () => true, shortcuts: () => [toastClose] })
+    r.add({ id: 'dialog', title: '', priority: LAYER_PRIORITY.dialog, modal: true, active: () => dialog, shortcuts: () => [shortcut('cancel', ['Escape'])] })
+    return { r, setFull: (v: boolean) => (full = v), setDialog: (v: boolean) => (dialog = v) }
+  }
+
+  it('Esc sale de la pantalla completa antes que parar, cerrar un aviso o volver a Inicio; el resto de la pantalla no vale', () => {
+    const { r, setFull } = setup()
+    expect(ran(r.resolve(key('Escape')))).toBe('fs-exit')
+    expect(ran(r.resolve(key(' ')))).toBe('fs-play')
+    expect(ran(r.resolve(key('g')))).toBeNull()
+    setFull(false)
+    expect(ran(r.resolve(key('Escape')))).toBe('toast')
+    expect(ran(r.resolve(key('g')))).toBe('save')
+  })
+
+  it('sabe si un diálogo la tapa (para salirse y que se vea)', () => {
+    const { r, setDialog } = setup()
+    expect(coveredByModal(r.layers(), 'fullscreen')).toBe(false)
+    setDialog(true)
+    expect(coveredByModal(r.layers(), 'fullscreen')).toBe(true)
+    expect(ran(r.resolve(key('Escape')))).toBe('cancel')
+    expect(coveredByModal(r.layers(), 'nadie')).toBe(false)
   })
 })

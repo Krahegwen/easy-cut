@@ -189,7 +189,7 @@ try {
   console.log(`Conectado a ${app.url} (${fake ? 'cámara falsa' : 'cámara de verdad'})`)
   await app.waitFor('return !!window.__easyCut?.store', { timeoutMs: 60_000, what: 'store de la app (modo desarrollo)' })
   // Punto de partida limpio: sin autoguardado ni texto recordado.
-  await app.evaluate('await window.__easyCut.bridge.clearAutosave(); localStorage.removeItem("easy-cut:teleprompter"); location.reload(); return true')
+  await app.evaluate('await window.__easyCut.resetProjects(); localStorage.removeItem("easy-cut:teleprompter"); location.reload(); return true')
   await sleep(1500)
   app.close()
   app = await connectToApp(port)
@@ -295,6 +295,122 @@ try {
   await app.click('[data-testid=run-finish]')
   await waitStep('script')
   check('Al terminar el ensayo dice cuánto ha durado', /^Último ensayo: \d+ s$/.test((await app.text('[data-testid=last-rehearsal]')) ?? ''), await app.text('[data-testid=last-rehearsal]'))
+
+  // --- Palabra a palabra: el texto se pinta por donde debería ir la lectura (ya leído, la de ahora, por leer).
+  // Con un texto largo (750 palabras, unos 5 minutos): sigue al avance, al ritmo elegido y al cambiarlo, se para
+  // en pausa, ← retrocede y vuelve a dejar por leer lo retrocedido, y sin saltos. Al acabar deja el texto de
+  // prueba como estaba (lo que viene después lo necesita).
+  {
+    const LONG_SCRIPT = Array.from({ length: 10 }, (_, i) => paragraph(i * 7, 75)).join('\n\n')
+    const setScript = async (t) => {
+      await app.click('[data-testid=script-input]')
+      await app.evaluate('const ta = document.querySelector("[data-testid=script-input]"); ta.focus(); ta.select(); return true')
+      await app.send('Input.insertText', { text: t })
+      await sleep(300)
+    }
+    // Estado de las palabras pintadas: el atributo, las clases y lo que dice el dominio con el mismo avance.
+    const words = () =>
+      app.evaluate(`const b = document.querySelector('[data-testid=prompter-text]'); const r = document.querySelector('[data-testid=prompter-run]');
+        const spans = b.querySelectorAll('[data-u]'); const d = window.__easyCut.domain;
+        const c = d.wordCursorAt(d.flattenTokens(d.parseScript(args.t)), r.prompterState.units);
+        const cur = Number(b.dataset.currentWord); const read = Number(b.dataset.wordsRead);
+        const readOk = [...spans].every((s, i) => s.classList.contains('w-read') === (i < read && i !== cur));
+        const curOk = b.querySelectorAll('.w-current').length === (cur >= 0 ? 1 : 0) && (cur < 0 || spans[cur].classList.contains('w-current'));
+        return { cur, read, n: spans.length, domainOk: c.read === read && c.current === cur, classesOk: readOk && curOk, phase: r.prompterState.phase, units: r.prompterState.units }`, { t: LONG_SCRIPT })
+    // Muestrea en la página cada fotograma durante `ms`: avance, palabra pintada, saltos del texto y tareas largas.
+    const sample = (ms) =>
+      app.evaluate(`const b = document.querySelector('[data-testid=prompter-text]'); const r = document.querySelector('[data-testid=prompter-run]');
+        const spans = b.querySelectorAll('[data-u]'); const d = window.__easyCut.domain; const toks = d.flattenTokens(d.parseScript(args.t));
+        const uOf = () => { const i = Number(b.dataset.wordsRead); return i < spans.length ? Number(spans[i].dataset.u) : NaN };
+        const yOf = () => Number(/translate3d\\(0px, (-?[\\d.]+)px/.exec(b.style.transform)?.[1]);
+        let longTasks = 0; let po = null;
+        try { po = new PerformanceObserver((l) => (longTasks += l.getEntries().length)); po.observe({ type: 'longtask' }) } catch { po = null }
+        const out = { frames: 0, maxGap: 0, maxJumpPx: 0, maxStep: 0, backwards: 0, mismatches: 0 };
+        const s0 = { ...r.prompterState, u: uOf() };
+        let last = performance.now(); let lastRead = Number(b.dataset.wordsRead); let lastY = yOf();
+        await new Promise((done) => {
+          const end = last + args.ms;
+          const f = (now) => {
+            out.frames++; out.maxGap = Math.max(out.maxGap, now - last); last = now;
+            const read = Number(b.dataset.wordsRead);
+            out.maxStep = Math.max(out.maxStep, read - lastRead); if (read < lastRead) out.backwards++; lastRead = read;
+            const c = d.wordCursorAt(toks, r.prompterState.units);
+            if (c.read !== read || String(c.current) !== b.dataset.currentWord) out.mismatches++;
+            const y = yOf(); out.maxJumpPx = Math.max(out.maxJumpPx, Math.abs(y - lastY)); lastY = y;
+            if (now < end) requestAnimationFrame(f); else done();
+          };
+          requestAnimationFrame(f);
+        });
+        po?.disconnect();
+        const s1 = { ...r.prompterState, u: uOf() };
+        return { ...out, maxGap: Math.round(out.maxGap), maxJumpPx: Math.round(out.maxJumpPx * 10) / 10, longTasks: po ? longTasks : null, du: s1.u - s0.u, dUnits: s1.units - s0.units, dt: s1.at - s0.at, wpm: s1.wpm, phase: s1.phase }`, { t: LONG_SCRIPT, ms })
+    const rateOf = (s) => (s.dUnits / s.dt) * 60_000
+
+    await setScript(LONG_SCRIPT)
+    const longParsed = await app.evaluate('const s = window.__easyCut.domain.parseScript(args.t); return { words: s.words, pauses: s.pauses }', { t: LONG_SCRIPT })
+    check('Palabra a palabra: texto largo de 750 palabras en 10 párrafos', longParsed.words === 750 && longParsed.pauses === 9, JSON.stringify(longParsed))
+    await app.click('[data-testid=rehearse]')
+    await waitStep('rehearse')
+    {
+      const w = await words()
+      check('Palabra a palabra: en la cuenta atrás ya está marcada la primera palabra', w.phase === 'countdown' && w.cur === 0 && w.read === 0 && w.n === 750 && w.classesOk, JSON.stringify(w))
+    }
+    await waitRunning()
+    await sleep(800)
+    {
+      const s = await sample(4000)
+      const expected = (s.wpm * s.dt) / 60_000
+      check('Palabra a palabra: la palabra pintada es la que dice el dominio en cada fotograma', s.mismatches === 0 && s.backwards === 0, JSON.stringify(s))
+      // La palabra pintada va como mucho 1 palabra por detrás o 2 por delante del avance (pausa de párrafo).
+      check('Palabra a palabra: avanza al ritmo elegido (140 palabras por minuto)', s.wpm === 140 && Math.abs(rateOf(s) - 140) / 140 < 0.03 && Math.abs(s.du - expected) < 3, `${s.du} palabras en ${Math.round(s.dt)} ms (esperadas ${expected.toFixed(1)}), avance a ${rateOf(s).toFixed(1)} por minuto`)
+      check('Palabra a palabra: de una en una, sin saltarse ninguna', s.maxStep <= 1, `máximo ${s.maxStep} por fotograma`)
+      check('Palabra a palabra: con 750 palabras, sin saltos (fotogramas seguidos y sin tareas largas)', s.frames >= 100 && s.maxGap < 120 && s.maxJumpPx < 20 && (s.longTasks ?? 0) === 0, `${s.frames} fotogramas en 4 s, hueco máximo ${s.maxGap} ms, salto máximo del texto ${s.maxJumpPx} px, tareas largas ${s.longTasks ?? 'sin medir'}`)
+      await shot('tp-24-palabra-a-palabra.png')
+    }
+    // Más rápido (↓ cuatro veces: 160) y vuelta a 140
+    for (let i = 0; i < 4; i++) await app.key('ArrowDown')
+    {
+      const s = await sample(3000)
+      const expected = (s.wpm * s.dt) / 60_000
+      check('Palabra a palabra: al cambiar el ritmo sigue al nuevo (160 palabras por minuto)', s.wpm === 160 && Math.abs(rateOf(s) - 160) / 160 < 0.03 && Math.abs(s.du - expected) < 3 && s.mismatches === 0, `${s.du} palabras en ${Math.round(s.dt)} ms (esperadas ${expected.toFixed(1)})`)
+    }
+    for (let i = 0; i < 4; i++) await app.key('ArrowUp')
+    // En pausa no avanza (y se ven los tres estados)
+    await app.key(' ')
+    {
+      const a = await words()
+      await sleep(1200)
+      const b = await words()
+      check('Palabra a palabra: en pausa no avanza', b.phase === 'paused' && a.cur === b.cur && a.read === b.read && b.domainOk && b.classesOk, `${JSON.stringify(a)} → ${JSON.stringify(b)}`)
+      const look = await app.evaluate(`const b = document.querySelector('[data-testid=prompter-text]'); const spans = b.querySelectorAll('[data-u]');
+        const i = Number(b.dataset.currentWord) >= 0 ? Number(b.dataset.currentWord) : Number(b.dataset.wordsRead);
+        const st = (s) => { const c = getComputedStyle(s); return { color: c.color, line: c.textDecorationLine } };
+        return { read: st(spans[i - 1]), current: st(spans[i]), ahead: st(spans[i + 1]), onCurrent: Number(b.dataset.currentWord) >= 0 }`)
+      const colors = new Set([look.read.color, look.current.color, look.ahead.color])
+      check(
+        'Palabra a palabra: ya leído, la de ahora y por leer se distinguen (color, y la de ahora subrayada)',
+        colors.size === 3 && (!look.onCurrent || look.current.line.includes('underline')) && !look.ahead.line.includes('underline') && !look.read.line.includes('underline'),
+        JSON.stringify(look),
+      )
+      await shot('tp-25-palabra-a-palabra-pausa.png')
+    }
+    await app.key(' ')
+    await sleep(1500)
+    // ← retrocede: la palabra vuelve atrás y lo retrocedido vuelve a estar por leer
+    {
+      const before = await words()
+      await app.key('ArrowLeft')
+      const after = await words()
+      check('Palabra a palabra: ← vuelve atrás y deja por leer lo retrocedido', after.read < before.read && after.cur === after.read && after.domainOk && after.classesOk, `${before.read} → ${after.read} (palabra ${before.cur} → ${after.cur})`)
+      await sleep(1000)
+      const later = await words()
+      check('Palabra a palabra: y sigue desde ahí', later.read > after.read && later.phase === 'running' && later.domainOk && later.classesOk, `${after.read} → ${later.read}`)
+    }
+    await app.key('Escape')
+    await waitStep('script')
+    await setScript(SCRIPT)
+    check('Palabra a palabra: el texto de prueba vuelve a estar como antes', (await app.evaluate('return document.querySelector("[data-testid=script-input]").value')) === SCRIPT && (await app.text('[data-testid=pace-wpm]')) === '140 palabras por minuto', await app.text('[data-testid=pace-wpm]'))
+  }
 
   // --- 2. Preparar la cámara
   await app.click('[data-testid=go-camera]')
@@ -561,7 +677,7 @@ try {
     const voiceClip = await app.evaluate(`const s = window.__easyCut.store; const c = s.selectedClip.value;
       return c ? { path: c.sourcePath, picture: c.picture.kind, hasVideo: c.sourceHasVideo, n: s.project.value.clips.length, offer: s.recordingOffer.value === c.id, index: s.selectedIndex.value } : null`)
     check('«Usar esta grabación» la mete como trozo de solo sonido', !!voiceClip && voiceClip.n === clipsBefore + 1 && voiceClip.picture === 'none' && voiceClip.hasVideo === false && voiceClip.path === usedPath, JSON.stringify(voiceClip))
-    check('La tarjeta del trozo dice «Solo se oye»', (await app.evaluate(`return document.querySelector('[data-testid=clip-card-${voiceClip.index + 1}] .picture').dataset.picture`)) === 'sound')
+    check('El bloque del trozo dice «Solo se oye»', (await app.evaluate(`return document.querySelector('[data-testid=clip-block-${voiceClip.index + 1}]').dataset.picture`)) === 'sound')
     check('Y ofrece quitarle las pausas', !!voiceClip.offer && !!(await app.text('[data-testid=recording-offer]')))
     await sleep(600)
     await shot('pic-tp-voz-en-el-montaje.png')

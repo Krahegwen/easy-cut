@@ -1,12 +1,36 @@
-// Pistas de sonidos y efectos en la interfaz: qué está elegido, la vista (tarjetas o pistas), la biblioteca
-// abierta, y todas las acciones sobre los elementos. Cada acción es un paso de deshacer; los arrastres se ven
+// Pistas de sonidos y efectos en la interfaz: qué está elegido, la biblioteca abierta, crear pistas, y todas
+// las acciones sobre los elementos (y recortar o partir un trozo desde la fila «Vídeo»). Cada acción es un paso de deshacer; los arrastres se ven
 // al momento (preview) y entran en el historial al soltar (commitPreview), como el resto de la app.
 
 import { computed, ref, shallowRef, watch } from 'vue'
 import {
+  clipStartTimes as clipStarts,
+  cornerMoveAt,
+  findClipVideoItem,
+  moveToCornerAt,
+  setCover,
+  type CornerMove,
+  addMark,
+  boxAt,
+  clearMotion as clearMotionOfLook,
+  itemLocalMs,
+  markIndexAt,
+  moveMark as moveMarkOfLook,
+  neighbourMark,
+  removeMark,
+  setBoxAt,
+  setSegmentEasing,
+  updateEffectLook,
+  type EffectBox,
+  type MotionEasing,
+  addTrack as addTrackToProject,
   assetDefaults,
   baseName,
+  clipOutputMs,
+  clipStartTimes,
   createItem,
+  createTrack,
+  defaultTrackName,
   libraryFetchMessage,
   defaultIdFactory,
   displayName,
@@ -28,26 +52,54 @@ import {
   setMainMuted as setMainMutedInProject,
   setTrackHidden as setTrackHiddenInProject,
   setTrackMuted as setTrackMutedInProject,
+  splitClip,
+  inSharedJoin,
   splitItem,
+  toggleSoloSound,
+  trimClip,
   tracksOfKind,
   trimItemEnd,
   trimItemStart,
+  type Easing,
   type EffectLook,
   type LibraryAsset,
   type MediaInfo,
   type Project,
   type TrackItem,
+  type SoundRow,
   type TrackKind,
+  cellRects,
+  cellSourceFromInfo,
+  changeLayout,
+  clearCell,
+  createCollage as createCollageModel,
+  createCollageItem,
+  layoutById,
+  MAX_COLLAGE_CELLS,
+  MIN_ITEM_MS,
+  needsCellProxy,
+  projectTiming,
+  setCell,
+  setCellFit,
+  setCellFraming,
+  setCellMuted,
+  setCellVolume,
+  setCollageGap,
+  suggestLayout,
+  swapCells,
+  updateCollage,
+  type CellFit,
+  type Collage,
+  type CollageCellSource,
+  type CollageGap,
 } from '../domain'
 import { askConfirm } from '../lib/confirm'
 import type { EditorStore } from './editor'
 import type { LibraryStore } from './library'
 
-export type BottomView = 'cards' | 'tracks'
 export type LibraryTab = 'sound' | 'effect' | 'computer'
 
 export function createTracksStore(editor: EditorStore, library: LibraryStore) {
-  const view = ref<BottomView>('cards')
   const selectedItemId = ref<string | null>(null)
   const libraryOpen = ref(false)
   const libraryTab = ref<LibraryTab>('sound')
@@ -55,28 +107,32 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
   const trying = shallowRef<{ asset: LibraryAsset; path: string } | null>(null)
   /** «Tamaño y sitio»: el efecto elegido se mueve y redimensiona sobre la vista previa. */
   const boxEditing = ref(false)
+  /** «Huecos»: el collage elegido se llena e intercambia sobre la vista previa. */
+  const cellsEditing = ref(false)
+  /** El diálogo «Hacer un collage» (cuántos vídeos y cómo se reparten). */
+  const collageDialog = ref(false)
+  /** El hueco elegido en «Huecos» (0 = el primero). */
+  const pickedCell = ref(0)
   /** Mientras se añade algo (descarga o lectura de ficheros). */
   const adding = ref<string | null>(null)
   /** Dónde está la línea (el cabezal de la vista previa): «Poner aquí», partir, soltar ficheros… */
   const playheadMs = ref(0)
+  /**
+   * La marca de sitio y tamaño «a mano» (la última a la que se ha ido con ← marca / marca →, o que se ha pulsado
+   * en su pista): «Mover la marca aquí» la lleva a la línea.
+   */
+  const pickedMark = ref<{ itemId: string; atMs: number } | null>(null)
 
   const project = editor.project
   const hasTracks = computed(() => project.value.tracks.length > 0)
   const selectedItem = computed(() => (selectedItemId.value ? findItem(project.value, selectedItemId.value) : null))
 
-  // Al añadir la primera pista, la parte de abajo pasa a la vista de pistas; sin pistas, la de siempre.
-  watch(
-    () => project.value.tracks.length,
-    (n, old) => {
-      if (n > 0 && (old ?? 0) === 0) view.value = 'tracks'
-      if (n === 0) view.value = 'cards'
-    },
-  )
   // Lo elegido que deja de existir (deshacer, quitar la pista…) deja de estar elegido.
   watch(project, (p) => {
     if (selectedItemId.value && !findItem(p, selectedItemId.value)) {
       selectedItemId.value = null
       boxEditing.value = false
+      cellsEditing.value = false
     }
   })
 
@@ -85,17 +141,15 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
   }
 
   function select(itemId: string | null) {
+    if (itemId !== selectedItemId.value) cellsEditing.value = false
     selectedItemId.value = itemId
     if (!itemId) boxEditing.value = false
-  }
-
-  function setView(v: BottomView) {
-    view.value = v
+    if (pickedMark.value && pickedMark.value.itemId !== itemId) pickedMark.value = null
   }
 
   /** Lo que se hace con un proyecto nuevo que no cabe o no hay vídeo. */
   function reportInsertFailure(reason: 'no-room' | 'empty-video') {
-    editor.showToast(reason === 'empty-video' ? 'Primero añade algún vídeo o sonido al montaje.' : 'No queda sitio: ya hay cuatro pistas llenas en ese momento. Mueve o quita algo antes.')
+    editor.showToast(reason === 'empty-video' ? 'Primero añade algún vídeo o sonido al montaje.' : 'Ahí no cabe: esa pista está llena en ese momento. Mueve o quita algo antes.')
   }
 
   /** «2 · Sonidos 2, a los 0:12». */
@@ -139,7 +193,6 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     }
     editor.commit(res.project)
     selectedItemId.value = item.id
-    view.value = 'tracks'
     const where = describePlace(res.trackId, res.startMs, res.project)
     editor.showToast(res.shifted ? `Puesto en ${where} (justo después de lo que había).` : `Puesto en ${where}.`, { label: 'Deshacer', run: editor.undo })
     return item.id
@@ -158,7 +211,7 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
    * «De mi ordenador» (o soltar/pegar ficheros en la vista de pistas): sonidos, vídeos e imágenes en
    * `atMs`, uno detrás de otro. Un solo paso de deshacer. Devuelve cuántos se han puesto.
    */
-  async function addFiles(paths: readonly string[], atMs: number): Promise<number> {
+  async function addFiles(paths: readonly string[], atMs: number, asKind?: TrackKind): Promise<number> {
     const usable = paths.filter(isTrackMediaPath)
     if (usable.length === 0) {
       if (paths.length > 0) editor.showToast('Eso no es un sonido, un vídeo ni una imagen.')
@@ -172,7 +225,10 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     const failed: string[] = []
     for (const path of usable) {
       try {
-        const { kind, info } = await probeForTracks(path)
+        const probed = await probeForTracks(path)
+        const info = probed.info
+        // «Ponerlo como sonido» un vídeo: se usa su sonido. Una imagen o algo sin sonido no puede ser un sonido.
+        const kind: TrackKind = asKind === 'sound' && !info.isStill && info.hasAudio ? 'sound' : asKind === 'effect' && (info.isStill || info.hasVideo) ? 'effect' : probed.kind
         editor.setMedia(info)
         editor.setMissing(path, false)
         const item = createItem({
@@ -205,7 +261,6 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     if (added > 0) {
       editor.commit(p)
       selectedItemId.value = lastId
-      view.value = 'tracks'
       const msg = added === 1 ? 'Puesto en las pistas.' : `${added} puestos en las pistas.`
       editor.showToast(failed.length ? `${msg} No he podido leer: ${failed.join(', ')}.` : msg, { label: 'Deshacer', run: editor.undo })
     } else if (failed.length) {
@@ -224,6 +279,28 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
       return 0
     }
     return paths.length ? addFiles(paths, atMs) : 0
+  }
+
+  // ---------------------------------------------------------------- «De mi ordenador»: lo ya traído
+
+  /** Lo vuelve a poner como trozo, al final del vídeo (un vídeo o un sonido; una imagen todavía no). */
+  async function addPoolClip(path: string): Promise<boolean> {
+    if (isImagePath(path)) return false
+    const before = new Set(editor.history.value.present.clips.map((c) => c.id))
+    const res = await editor.addClipsFromPaths([path])
+    const added = editor.history.value.present.clips.findIndex((c) => !before.has(c.id))
+    if (res.added === 0 || added < 0) {
+      editor.showToast(`No he podido leer «${baseName(path)}».`)
+      return false
+    }
+    editor.select(editor.history.value.present.clips[added]!.id)
+    editor.showToast(`Añadido al final: es el trozo ${added + 1}.`, { label: 'Deshacer', run: editor.undo })
+    return true
+  }
+
+  /** Lo pone en una pista, donde está la línea: encima (como efecto) o como sonido. */
+  function addPoolItem(path: string, kind: TrackKind): Promise<number> {
+    return addFiles([path], playheadMs.value, kind)
   }
 
   // ---------------------------------------------------------------- mover, recortar, partir…
@@ -310,8 +387,9 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     editor.apply((p) => setItemVolume(p, itemId, volume))
   }
 
-  function setFade(itemId: string, which: 'in' | 'out', on: boolean) {
-    editor.apply((p) => setItemFade(p, itemId, which, on))
+  /** Cómo aparece o desaparece: duración (0 = de golpe) y curva (o el interruptor de antes, con true/false). */
+  function setFade(itemId: string, which: 'in' | 'out', fade: boolean | { ms: number; easing: Easing }) {
+    editor.apply((p) => setItemFade(p, itemId, which, fade))
   }
 
   function setRepeat(itemId: string, on: boolean) {
@@ -320,6 +398,151 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
 
   function setLook(itemId: string, change: Partial<Omit<EffectLook, 'box'>> & { box?: Partial<EffectLook['box']> }) {
     editor.apply((p) => setEffectLook(p, itemId, change))
+  }
+
+  // ---------------------------------------------------------------- tamaño y sitio con marcas
+
+  /** El instante del elemento que corresponde a la línea (sujeto a su tramo). */
+  function localAtLine(itemId: string): number {
+    return itemLocalMs(editor.history.value.present, itemId, playheadMs.value) ?? 0
+  }
+
+  /** Lo que se ve del efecto en la línea (con marcas, el valor de ese instante). */
+  function boxAtLine(itemId: string): EffectBox | null {
+    const found = findItem(editor.project.value, itemId)
+    if (!found?.item.look) return null
+    return boxAt(found.item.look, itemLocalMs(editor.project.value, itemId, playheadMs.value) ?? 0)
+  }
+
+  /** Mientras se arrastra en «Tamaño y sitio»: el valor de ese instante (crea o actualiza su marca si las hay). */
+  function previewBoxAt(itemId: string, localMs: number, change: Partial<EffectBox>) {
+    editor.preview((p) => updateEffectLook(p, itemId, (l) => setBoxAt(l, localMs, change)))
+  }
+
+  /** Lo mismo con botón o tecla (un paso de deshacer): p. ej. «Pantalla completa». */
+  function setBoxHere(itemId: string, change: Partial<EffectBox>) {
+    const local = localAtLine(itemId)
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => setBoxAt(l, local, change)))
+  }
+
+  /** ¿Hay una marca en la línea? */
+  function markAtLine(itemId: string): boolean {
+    const found = findItem(editor.project.value, itemId)
+    return !!found?.item.look && markIndexAt(found.item.look, itemLocalMs(editor.project.value, itemId, playheadMs.value) ?? 0) >= 0
+  }
+
+  /** «Marcar aquí» o, si ya hay una marca en la línea, «Quitar esta marca». */
+  function toggleMarkHere(itemId: string) {
+    const local = localAtLine(itemId)
+    const found = findItem(editor.history.value.present, itemId)
+    if (!found?.item.look) return
+    const on = markIndexAt(found.item.look, local) >= 0
+    const first = found.item.look.keyframes.length === 0
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => (on ? removeMark(l, local) : addMark(l, local))))
+    pickedMark.value = on ? null : { itemId, atMs: local }
+    if (on) editor.showToast('Marca quitada.', { label: 'Deshacer', run: editor.undo })
+    else if (first) editor.showToast('Marcado. Ahora lleva la línea a otro momento y mueve o cambia el tamaño: viajará de una marca a otra.')
+  }
+
+  /** «Quitar el movimiento»: sin marcas, quieto como está en la línea. */
+  function clearMotion(itemId: string) {
+    const local = localAtLine(itemId)
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => clearMotionOfLook(l, local)))
+    pickedMark.value = null
+    editor.showToast('Ya no se mueve: se queda como estaba en la línea.', { label: 'Deshacer', run: editor.undo })
+  }
+
+  /** Instante del vídeo de la marca anterior o siguiente (y la deja «a mano»); null si no hay. */
+  function neighbourMarkMs(itemId: string, dir: -1 | 1): number | null {
+    const p = editor.history.value.present
+    const r = resolveTracks(p).find((x) => x.item.id === itemId)
+    if (!r?.item.look) return null
+    const k = neighbourMark(r.item.look, playheadMs.value - r.startMs, dir, r.shownEndMs - r.startMs)
+    if (!k) return null
+    pickedMark.value = { itemId, atMs: k.atMs }
+    return r.startMs + k.atMs
+  }
+
+  /** «Mover la marca aquí»: la marca «a mano» pasa a la línea. */
+  function movePickedMarkHere(itemId: string): boolean {
+    const picked = pickedMark.value
+    if (!picked || picked.itemId !== itemId) return false
+    const local = localAtLine(itemId)
+    const before = editor.history.value.present
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => moveMarkOfLook(l, picked.atMs, local)))
+    if (editor.history.value.present === before) {
+      editor.showToast('Ahí no puede ir: hay otra marca muy cerca.')
+      return false
+    }
+    pickedMark.value = { itemId, atMs: local }
+    return true
+  }
+
+  /** Mientras se arrastra una marca en su pista; entra en el historial al soltar (commitPreview). */
+  function previewMoveMark(itemId: string, fromMs: number, toMs: number) {
+    editor.preview((p) => updateEffectLook(p, itemId, (l) => moveMarkOfLook(l, fromMs, toMs)))
+  }
+
+  // ---------------------------------------------------------------- el vídeo del trozo, a una esquina y de vuelta
+
+  /** El instante del trozo (su tiempo de salida) que está en la línea, sujeto a su tramo. */
+  function clipLocalAtLine(clipId: string): number {
+    const p = editor.project.value
+    const i = p.clips.findIndex((c) => c.id === clipId)
+    if (i < 0) return 0
+    return Math.max(0, Math.min(clipOutputMs(p.clips[i]!), playheadMs.value - clipStarts(p)[i]!))
+  }
+
+  /** Qué hará «Llevar a una esquina aquí» con la línea donde está: ir a la esquina o volver a pantalla completa. */
+  function cornerMove(clipId: string): CornerMove {
+    return cornerMoveAt(editor.project.value, clipId, clipLocalAtLine(clipId))
+  }
+
+  /**
+   * «Llevar a una esquina aquí» / «Volver a pantalla completa aquí»: el vídeo del trozo se encoge hasta la esquina
+   * (o vuelve) desde la línea, en menos de un segundo. Si el trozo aún no tiene nada detrás (otro vídeo de fondo),
+   * primero se elige ese vídeo. Un solo paso de deshacer.
+   */
+  async function cornerHere(clipId: string): Promise<boolean> {
+    let p = editor.history.value.present
+    const clip = p.clips.find((c) => c.id === clipId)
+    if (!clip) return false
+    if (!clip.sourceHasVideo) {
+      editor.showToast('Este trozo es un sonido: no tiene imagen que llevar a una esquina.')
+      return false
+    }
+    const local = clipLocalAtLine(clipId)
+    if (clip.picture.kind !== 'cover') {
+      editor.showToast('Elige qué vídeo se verá detrás cuando te vayas a la esquina.')
+      const info = await editor.chooseCoverVideo()
+      if (!info) return false
+      p = setCover(editor.history.value.present, clipId, info)
+    }
+    const res = moveToCornerAt(p, clipId, local, { itemId: newId('item'), trackId: newId('track'), trackName: 'Tu vídeo encima' })
+    if (!res) {
+      editor.showToast('Este trozo es demasiado corto para eso.')
+      return false
+    }
+    editor.commit(res.project)
+    selectedItemId.value = null
+    editor.showToast(
+      res.move === 'to-corner'
+        ? 'Hecho: en ese momento te vas a la esquina. Para volver a pantalla completa, lleva la línea más adelante y pulsa otra vez.'
+        : 'Hecho: en ese momento vuelves a pantalla completa.',
+      { label: 'Deshacer', run: editor.undo },
+    )
+    return true
+  }
+
+  /** El elemento «vídeo de este trozo» de un trozo (si lo tiene). */
+  function clipVideoItemId(clipId: string): string | null {
+    return findClipVideoItem(editor.project.value, clipId)?.item.id ?? null
+  }
+
+  /** «Cómo viaja»: la curva del tramo de la línea. */
+  function setTravelEasing(itemId: string, easing: MotionEasing) {
+    const local = localAtLine(itemId)
+    editor.apply((p) => updateEffectLook(p, itemId, (l) => setSegmentEasing(l, local, easing)))
   }
 
   // ---------------------------------------------------------------- pistas
@@ -338,6 +561,27 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
 
   function renameTrack(trackId: string, name: string) {
     editor.apply((p) => renameTrackInProject(p, trackId, name))
+  }
+
+  /** «Escuchar solo esta» (la fila «Vídeo» o una pista de sonido); otra vez, vuelve a sonar todo. */
+  function toggleSolo(row: SoundRow) {
+    editor.apply((p) => toggleSoloSound(p, row))
+  }
+
+  /**
+   * «Pista de sonido» / «Pista de efectos»: una pista vacía (la de efectos, encima de las demás; la de sonido,
+   * debajo). No hay límite. Devuelve su id.
+   */
+  function addTrack(kind: TrackKind): string {
+    const id = newId('track')
+    const p = editor.history.value.present
+    const name = defaultTrackName(p, kind)
+    editor.commit(addTrackToProject(p, createTrack(kind, id, name)))
+    editor.showToast(
+      kind === 'sound' ? `Pista «${name}» añadida. Arrastra a ella un sonido de otra pista, o pon uno nuevo.` : `Pista «${name}» añadida: lo que pongas en ella se verá por encima.`,
+      { label: 'Deshacer', run: editor.undo },
+    )
+    return id
   }
 
   /** «Quitar pista»: si tiene cosas, pregunta antes. Deshacer la recupera entera. */
@@ -359,6 +603,261 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     editor.showToast(`Pista «${t.name}» quitada.`, { label: 'Deshacer', run: editor.undo })
     return true
   }
+
+  // ---------------------------------------------------------------- trozos desde la fila «Vídeo»
+
+  /** Mientras se tira del asa de un trozo: se ve al momento; entra en el historial al soltar. */
+  function previewClipTrim(clipId: string, edge: 'start' | 'end', deltaMs: number, wrap: (p: Project) => Project = (p) => p) {
+    editor.preview((p) => wrap(trimClip(p, clipId, edge, deltaMs)))
+  }
+
+  /** E / T con el trozo elegido: que empiece o termine en la línea (tiempo del vídeo). */
+  function trimClipAt(clipId: string, edge: 'start' | 'end', atMs: number, wrap: (p: Project) => Project = (p) => p): boolean {
+    const p = editor.history.value.present
+    const i = p.clips.findIndex((c) => c.id === clipId)
+    if (i < 0) return false
+    const local = atMs - clipStartTimes(p)[i]!
+    const len = clipOutputMs(p.clips[i]!)
+    const inside = local > 0 && local < len
+    const next = inside ? wrap(trimClip(p, clipId, edge, edge === 'start' ? local : local - len)) : p
+    if (next === p) {
+      editor.showToast(edge === 'start' ? 'Aquí no puede empezar: pon la línea dentro del trozo.' : 'Aquí no puede terminar: pon la línea dentro del trozo.')
+      return false
+    }
+    editor.commit(next)
+    return true
+  }
+
+  /** P con el trozo elegido: lo parte donde está la línea (lo pegado se queda con la parte donde cae). */
+  function splitClipAt(clipId: string, atMs: number): string | null {
+    const p = editor.history.value.present
+    const i = p.clips.findIndex((c) => c.id === clipId)
+    if (i < 0) return null
+    const id = defaultIdFactory()
+    const local = atMs - clipStartTimes(p)[i]!
+    if (inSharedJoin(p, clipId, local)) {
+      editor.showToast('Aquí no se puede partir: es el paso de un trozo a otro.')
+      return null
+    }
+    const next = splitClip(p, clipId, local, id)
+    if (next === p) {
+      editor.showToast('Pon la línea dentro del trozo (no en su principio ni en su final) para partirlo.')
+      return null
+    }
+    editor.commit(next)
+    editor.showToast('Trozo partido en dos.', { label: 'Deshacer', run: editor.undo })
+    return id
+  }
+
+  // ---------------------------------------------------------------- collage
+
+  /** El collage elegido (o null). */
+  const selectedCollage = computed(() => {
+    const f = selectedItem.value
+    return f?.item.collage ? f.item : null
+  })
+
+  /** Lo que se sabe de un fichero para un hueco (lo mide si hace falta). null si no vale (un sonido) o no se lee. */
+  async function cellSourceFor(path: string): Promise<CollageCellSource | null> {
+    try {
+      const info = editor.media.value[path] ?? (await editor.bridge.probe(path, { still: isImagePath(path) }))
+      editor.setMedia(info)
+      editor.setMissing(path, false)
+      const source = cellSourceFromInfo(info)
+      if (source && needsCellProxy(info)) void editor.ensureCellProxy(path)
+      return source
+    } catch (e) {
+      console.warn('[easy-cut] no se ha podido leer el fichero para el collage', path, e)
+      return null
+    }
+  }
+
+  /** Lee los ficheros para los huecos; dice lo que no vale. */
+  async function cellSourcesFor(paths: readonly string[]): Promise<CollageCellSource[]> {
+    const out: CollageCellSource[] = []
+    const bad: string[] = []
+    for (const path of paths) {
+      const s = await cellSourceFor(path)
+      if (s) out.push(s)
+      else bad.push(baseName(path))
+    }
+    if (bad.length) editor.showToast(`En un hueco solo puede ir un vídeo o una foto: no he puesto ${bad.map((b) => `«${b}»`).join(', ')}.`)
+    return out
+  }
+
+  /**
+   * «Collage»: uno nuevo con esa plantilla donde está la línea (en una pista de efectos con sitio o en una nueva),
+   * con los vídeos ya puestos si se dan (en el orden de `order`, como la sugerencia). Queda elegido y en «Huecos».
+   * Un paso de deshacer.
+   */
+  function createCollage(layoutId: string, atMs: number, sources: readonly (CollageCellSource | null)[] = []): string | null {
+    const p = editor.history.value.present
+    const total = projectTiming(p).totalMs
+    if (total <= 0) {
+      reportInsertFailure('empty-video')
+      return null
+    }
+    let collage = createCollageModel(layoutId)
+    sources.forEach((s, i) => {
+      if (s) collage = setCell(collage, i, s)
+    })
+    const at = Math.min(Math.max(0, Math.round(atMs)), Math.max(0, total - MIN_ITEM_MS))
+    const item = createCollageItem(newId('item'), collage, total - at)
+    const res = insertItem(p, item, 'effect', at, { id: newId('track') })
+    if (!res.ok) {
+      reportInsertFailure(res.reason)
+      return null
+    }
+    editor.commit(res.project)
+    selectedItemId.value = item.id
+    boxEditing.value = false
+    cellsEditing.value = true
+    pickedCell.value = collage.cells.findIndex((c) => !c.source) >= 0 ? collage.cells.findIndex((c) => !c.source) : 0
+    editor.showToast(`Collage puesto en ${describePlace(res.trackId, res.startMs, res.project)}.`, { label: 'Deshacer', run: editor.undo })
+    return item.id
+  }
+
+  /** «Hacer un collage con estos» (de 2 a 4 ficheros): la distribución que mejor encaja, con cada vídeo en su hueco. */
+  async function createCollageFrom(paths: readonly string[], atMs: number): Promise<string | null> {
+    const sources = await cellSourcesFor(paths.slice(0, MAX_COLLAGE_CELLS))
+    if (sources.length < 2) {
+      if (sources.length === 1) editor.showToast('Para un collage hacen falta al menos 2 vídeos o fotos.')
+      return null
+    }
+    const frame = outputFrame()
+    const s = suggestLayout(sources.length, sources.map((x) => (x.width > 0 ? { width: x.width, height: x.height } : null)), frame.width, frame.height)
+    if (!s) return null
+    return createCollage(s.layoutId, atMs, s.order.map((k) => sources[k] ?? null))
+  }
+
+  /** Forma del marco (para sugerir distribuciones): la del vídeo. */
+  function outputFrame(): { width: number; height: number } {
+    const a = editor.project.value.aspect
+    return a === '9:16' ? { width: 1080, height: 1920 } : a === '1:1' ? { width: 1080, height: 1080 } : { width: 1920, height: 1080 }
+  }
+
+  /** Un cambio en los huecos del collage `itemId` (un paso de deshacer). */
+  function changeCollage(itemId: string, fn: (c: Collage) => Collage) {
+    editor.apply((p) => updateCollage(p, itemId, fn))
+  }
+
+  /**
+   * Pone ficheros en los huecos: el primero en `cell` y los demás en los huecos vacíos que siguen (y luego en los de
+   * antes). Un paso de deshacer.
+   */
+  async function fillCells(itemId: string, cell: number, paths: readonly string[]): Promise<number> {
+    const found = findItem(editor.history.value.present, itemId)
+    if (!found?.item.collage || paths.length === 0) return 0
+    adding.value = paths.length === 1 ? baseName(paths[0]!) : `${paths.length} ficheros`
+    const sources = await cellSourcesFor(paths)
+    adding.value = null
+    if (sources.length === 0) return 0
+    const cells = found.item.collage.cells
+    const order = [cell, ...cells.map((_, i) => i).filter((i) => i !== cell && !cells[i]!.source)]
+    const targets = order.slice(0, sources.length)
+    changeCollage(itemId, (c) => targets.reduce((acc, i, k) => setCell(acc, i, sources[k]!), c))
+    pickedCell.value = targets[targets.length - 1]!
+    if (sources.length > targets.length) editor.showToast('No caben todos: el collage no tiene más huecos libres.')
+    return targets.length
+  }
+
+  /** «Elegir vídeo» para un hueco (con varios, llena los huecos vacíos que siguen). */
+  async function pickCellVideo(itemId: string, cell: number): Promise<number> {
+    let paths: string[]
+    try {
+      paths = await editor.bridge.pickVideos({ multiple: true, forTracks: true, title: `Vídeo para el hueco ${cell + 1}` })
+    } catch (e) {
+      editor.showError('No se ha podido abrir la ventana para elegir ficheros.', e)
+      return 0
+    }
+    return paths.length ? fillCells(itemId, cell, paths) : 0
+  }
+
+  function swapCollageCells(itemId: string, a: number, b: number) {
+    changeCollage(itemId, (c) => swapCells(c, a, b))
+    pickedCell.value = b
+  }
+
+  function clearCollageCell(itemId: string, cell: number) {
+    changeCollage(itemId, (c) => clearCell(c, cell))
+    editor.showToast(`Hueco ${cell + 1} vacío.`, { label: 'Deshacer', run: editor.undo })
+  }
+
+  function setCollageCellFit(itemId: string, cell: number, fit: CellFit) {
+    changeCollage(itemId, (c) => setCellFit(c, cell, fit))
+  }
+
+  function setCollageCellMuted(itemId: string, cell: number, muted: boolean) {
+    changeCollage(itemId, (c) => setCellMuted(c, cell, muted))
+  }
+
+  function setCollageCellVolume(itemId: string, cell: number, volume: number) {
+    changeCollage(itemId, (c) => setCellVolume(c, cell, volume))
+  }
+
+  function previewCollageCellVolume(itemId: string, cell: number, volume: number) {
+    editor.preview((p) => updateCollage(p, itemId, (c) => setCellVolume(c, cell, volume)))
+  }
+
+  /** Mover el encuadre del hueco con los botones (un paso). */
+  function panCollageCell(itemId: string, cell: number, dx: number, dy: number) {
+    changeCollage(itemId, (c) => {
+      const x = c.cells[cell]
+      return x ? setCellFraming(c, cell, { offsetX: x.offsetX + dx, offsetY: x.offsetY + dy }) : c
+    })
+  }
+
+  /** Mientras se arrastra dentro del hueco: el encuadre de ese momento (entra al soltar con commitPreview). */
+  function previewCellFraming(itemId: string, cell: number, offsetX: number, offsetY: number) {
+    editor.preview((p) => updateCollage(p, itemId, (c) => setCellFraming(c, cell, { offsetX, offsetY })))
+  }
+
+  function setCollageLayout(itemId: string, layoutId: string, order?: readonly number[]) {
+    changeCollage(itemId, (c) => changeLayout(c, layoutId, order))
+  }
+
+  function setCollageGapOf(itemId: string, gap: CollageGap) {
+    changeCollage(itemId, (c) => setCollageGap(c, gap))
+  }
+
+  /** La distribución que mejor encaja con los vídeos que tiene (null si ya es esa o no hay con qué saberlo). */
+  function betterLayout(itemId: string): { layoutId: string; order: number[] } | null {
+    const found = findItem(editor.project.value, itemId)
+    const c = found?.item.collage
+    if (!c) return null
+    const shapes = c.cells.map((x) => (x.source && x.source.width > 0 ? { width: x.source.width, height: x.source.height } : null))
+    if (shapes.filter(Boolean).length < 2) return null
+    const frame = outputFrame()
+    const s = suggestLayout(c.cells.length, shapes, frame.width, frame.height)
+    if (!s) return null
+    const same = s.layoutId === c.layoutId && s.order.every((k, i) => k === i)
+    if (same) return null
+    // Solo si de verdad encaja mejor que lo que hay.
+    const now = suggestLayoutLoss(c, frame)
+    return s.loss < now - 0.01 ? { layoutId: s.layoutId, order: s.order } : null
+  }
+
+  function suggestLayoutLoss(c: Collage, frame: { width: number; height: number }): number {
+    const layout = layoutById(c.layoutId)
+    if (!layout) return 0
+    const rects = cellRects(layout, frame.width, frame.height, 'none')
+    const area = frame.width * frame.height
+    return (
+      c.cells.reduce((sum, x, i) => {
+        if (!x.source || x.source.width <= 0) return sum
+        const rv = x.source.width / x.source.height
+        const r = rects[i]!
+        const rc = r.width / r.height
+        return sum + r.width * r.height * (1 - Math.min(rv / rc, rc / rv))
+      }, 0) / area
+    )
+  }
+
+  // Dejar de elegir el collage (o deshacer hasta quitarlo) deja el modo «Huecos».
+  watch(selectedCollage, (c) => {
+    if (!c) cellsEditing.value = false
+    else if (pickedCell.value >= (c.collage?.cells.length ?? 0)) pickedCell.value = 0
+  })
 
   // ---------------------------------------------------------------- biblioteca
 
@@ -389,7 +888,6 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
   }
 
   return {
-    view,
     selectedItemId,
     selectedItem,
     hasTracks,
@@ -397,13 +895,33 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     libraryTab,
     trying,
     boxEditing,
+    cellsEditing,
+    collageDialog,
+    pickedCell,
+    selectedCollage,
+    createCollage,
+    createCollageFrom,
+    fillCells,
+    pickCellVideo,
+    swapCollageCells,
+    clearCollageCell,
+    setCollageCellFit,
+    setCollageCellMuted,
+    setCollageCellVolume,
+    previewCollageCellVolume,
+    panCollageCell,
+    previewCellFraming,
+    setCollageLayout,
+    setCollageGap: setCollageGapOf,
+    betterLayout,
     adding,
     playheadMs,
     select,
-    setView,
     addAsset,
     addFiles,
     pickFiles,
+    addPoolClip,
+    addPoolItem,
     previewMove,
     previewTrim,
     previewLook,
@@ -418,11 +936,31 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     setFade,
     setRepeat,
     setLook,
+    pickedMark,
+    localAtLine,
+    boxAtLine,
+    previewBoxAt,
+    setBoxHere,
+    markAtLine,
+    toggleMarkHere,
+    clearMotion,
+    neighbourMarkMs,
+    movePickedMarkHere,
+    previewMoveMark,
+    setTravelEasing,
+    cornerMove,
+    cornerHere,
+    clipVideoItemId,
     setTrackMuted,
     setTrackHidden,
     setMainMuted,
     renameTrack,
     removeTrack,
+    addTrack,
+    toggleSolo,
+    previewClipTrim,
+    trimClipAt,
+    splitClipAt,
     openLibrary,
     closeLibrary,
     tryEffect,

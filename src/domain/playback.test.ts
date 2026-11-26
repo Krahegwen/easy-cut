@@ -1,11 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildPlaybackPlan,
+  COVER_DRIFT_TOLERANCE_MS,
+  coverNeedsResync,
   findSpanForSource,
   firstSpanOfClip,
+  formatReviewRate,
   hasReachedSpanEnd,
+  isReviewRate,
   locatePlayback,
+  MAX_MEDIA_RATE,
+  mediaRate,
+  MIN_MEDIA_RATE,
+  normalizeReviewRate,
   playbackTimeAt,
+  REVIEW_RATES,
+  reviewAdvanceMs,
+  reviewNotice,
+  reviewWallMs,
+  spanEndToleranceMs,
 } from './playback'
 import { addClip, applyKeepSegments, createClip, createProject, setInOut, setSpeed } from './project'
 import { projectDurationMs } from './durations'
@@ -40,7 +53,7 @@ describe('plan de reproducción', () => {
 
   it('proyecto vacío', () => {
     const plan = buildPlaybackPlan(createProject())
-    expect(plan).toEqual({ spans: [], durationMs: 0 })
+    expect(plan).toEqual({ spans: [], durationMs: 0, joins: [] })
     expect(locatePlayback(plan, 100)).toBeNull()
   })
 
@@ -87,6 +100,18 @@ describe('plan de reproducción', () => {
     expect(hasReachedSpanEnd(span, 3100)).toBe(true)
   })
 
+  it('fin de tramo: el margen crece con lo rápido que suena el original (un fotograma de pantalla)', () => {
+    const span = buildPlaybackPlan(sample()).spans[0]! // acaba en el 3000 del original
+    expect(spanEndToleranceMs()).toBe(40)
+    expect(spanEndToleranceMs(2)).toBe(40)
+    expect(spanEndToleranceMs(4)).toBe(68)
+    expect(spanEndToleranceMs(8)).toBe(136)
+    // A 8× (un trozo a 4× repasado a 2×), en el siguiente fotograma ya se habría pasado: se salta antes.
+    expect(hasReachedSpanEnd(span, 2900, 8)).toBe(true)
+    expect(hasReachedSpanEnd(span, 2900, 1)).toBe(false)
+    expect(hasReachedSpanEnd(span, 2800, 8)).toBe(false)
+  })
+
   it('redondeo con velocidad: el último tramo acaba donde dice clipOutputMs', () => {
     let p = createProject()
     p = addClip(p, createClip(fakeMedia({ path: 'a.mp4', durationMs: 10_000 }), 'a'))
@@ -98,5 +123,79 @@ describe('plan de reproducción', () => {
     const plan = buildPlaybackPlan(p)
     expect(plan.spans[1]!.projectEndMs).toBe(500)
     expect(plan.spans[1]!.projectStartMs).toBe(250)
+  })
+})
+
+describe('repasar más rápido (solo la vista previa)', () => {
+  it('ofrece 1×, 1,5× y 2×; lo demás cuenta como 1×', () => {
+    expect(REVIEW_RATES).toEqual([1, 1.5, 2])
+    for (const r of REVIEW_RATES) expect(isReviewRate(r)).toBe(true)
+    for (const bad of [0, 0.5, 3, 4, -1, Number.NaN, '2', null, undefined]) {
+      expect(isReviewRate(bad)).toBe(false)
+      expect(normalizeReviewRate(bad)).toBe(1)
+    }
+    expect(normalizeReviewRate(1.5)).toBe(1.5)
+  })
+
+  it('la velocidad del trozo se multiplica por la de repaso', () => {
+    // Trozo normal, lento, rápido y muy rápido, a 1×, 1,5× y 2×.
+    expect(mediaRate(1, 1)).toBe(1)
+    expect(mediaRate(1, 1.5)).toBe(1.5)
+    expect(mediaRate(1, 2)).toBe(2)
+    expect(mediaRate(0.5, 1)).toBe(0.5)
+    expect(mediaRate(0.5, 1.5)).toBe(0.75)
+    expect(mediaRate(0.5, 2)).toBe(1)
+    expect(mediaRate(2, 1.5)).toBe(3)
+    expect(mediaRate(2, 2)).toBe(4)
+    expect(mediaRate(4, 2)).toBe(8)
+    // Sin factor, como siempre.
+    expect(mediaRate(2)).toBe(2)
+  })
+
+  it('no se sale de lo que admite Chromium (0,0625–16) ni acepta valores raros', () => {
+    expect(MIN_MEDIA_RATE).toBe(0.0625)
+    expect(MAX_MEDIA_RATE).toBe(16)
+    expect(mediaRate(12, 2)).toBe(16)
+    expect(mediaRate(0.01, 1)).toBe(0.0625)
+    expect(mediaRate(0, 2)).toBe(1)
+    expect(mediaRate(Number.NaN, 2)).toBe(1)
+    expect(mediaRate(Number.POSITIVE_INFINITY, 2)).toBe(1)
+    // Un factor de repaso que no se ofrece no cambia nada.
+    expect(mediaRate(2, 7)).toBe(2)
+  })
+
+  it('el reloj del montaje avanza al ritmo del repaso', () => {
+    expect(reviewAdvanceMs(1000, 1)).toBe(1000)
+    expect(reviewAdvanceMs(1000, 1.5)).toBe(1500)
+    expect(reviewAdvanceMs(1000, 2)).toBe(2000)
+    expect(reviewAdvanceMs(-50, 2)).toBe(0)
+    // Un vídeo de 60 s se repasa en 40 s a 1,5× y en 30 s a 2×.
+    expect(reviewWallMs(60_000, 1.5)).toBe(40_000)
+    expect(reviewWallMs(60_000, 2)).toBe(30_000)
+    expect(reviewWallMs(60_000, 1)).toBe(60_000)
+    for (const r of REVIEW_RATES) expect(reviewWallMs(reviewAdvanceMs(1234, r), r)).toBeCloseTo(1234, 6)
+  })
+
+  it('lo de encima y las pistas (a velocidad normal en el montaje) siguen al reloj: su deriva se mide igual', () => {
+    // Un sonido que empieza en el 0 del montaje: tras 1 s de pared a 2×, el montaje va por el 2000 y el sonido,
+    // que suena a mediaRate(1, 2) = 2, también ha avanzado 2000 ms de su original.
+    const wall = 1000
+    for (const r of REVIEW_RATES) {
+      const montage = reviewAdvanceMs(wall, r)
+      const soundSource = wall * mediaRate(1, r)
+      expect(soundSource).toBe(montage)
+      expect(coverNeedsResync(soundSource, montage)).toBe(false)
+    }
+    expect(COVER_DRIFT_TOLERANCE_MS).toBe(150)
+  })
+
+  it('texto del factor y aviso visible mientras se repasa', () => {
+    expect(formatReviewRate(1)).toBe('1×')
+    expect(formatReviewRate(1.5)).toBe('1,5×')
+    expect(formatReviewRate(2)).toBe('2×')
+    expect(reviewNotice(1)).toBeNull()
+    expect(reviewNotice(1.5)).toBe('Repasando a 1,5× · el vídeo guardado no cambia')
+    expect(reviewNotice(2)).toBe('Repasando a 2× · el vídeo guardado no cambia')
+    expect(reviewNotice(3)).toBeNull()
   })
 })

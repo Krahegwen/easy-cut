@@ -34,10 +34,9 @@ async function withClips(s: ReturnType<typeof setup>) {
 }
 
 describe('pistas en el store', () => {
-  it('«Poner aquí» desde la biblioteca: descarga, información del catálogo y pista nueva; la vista pasa a pistas', async () => {
+  it('«Poner aquí» desde la biblioteca: descarga, información del catálogo y pista nueva', async () => {
     const s = setup()
     await withClips(s)
-    expect(s.tracks.view.value).toBe('cards')
     const ding = s.library.asset('ding')!
     const id = await s.tracks.addAsset(ding, 12_000)
     await nextTick()
@@ -46,7 +45,6 @@ describe('pistas en el store', () => {
     const path = 'C:\\cache\\library\\ding.m4a'
     expect(s.editor.media.value[path]).toEqual(mediaFromAsset(ding, path))
     expect(s.library.itemPath(findItem(s.editor.project.value, id!)!.item)).toBe(path)
-    expect(s.tracks.view.value).toBe('tracks')
     expect(s.tracks.selectedItemId.value).toBe(id)
     expect(s.editor.toast.value?.message).toBe('Puesto en «Sonidos», a los 0:12.')
     // Otra vez el mismo: ya está descargado.
@@ -79,7 +77,7 @@ describe('pistas en el store', () => {
     expect(resolveTracks(s.editor.project.value)[0]!.startMs).toBe(10_000)
   })
 
-  it('quitar una pista con cosas pregunta; sin pistas, vuelve a las tarjetas', async () => {
+  it('quitar una pista con cosas pregunta, y se deshace entera', async () => {
     const s = setup()
     await withClips(s)
     await s.tracks.addFiles([MUSIC], 0)
@@ -92,11 +90,59 @@ describe('pistas en el store', () => {
     expect(await pending).toBe(true)
     await nextTick()
     expect(s.editor.project.value.tracks).toEqual([])
-    expect(s.tracks.view.value).toBe('cards')
     s.editor.undo()
     await nextTick()
     expect(s.editor.project.value.tracks).toHaveLength(1)
-    expect(s.tracks.view.value).toBe('tracks')
+  })
+
+  it('pistas nuevas a mano, sin límite, y «Escuchar solo esta» en un paso', async () => {
+    const s = setup()
+    await withClips(s)
+    const ids = Array.from({ length: 9 }, () => s.tracks.addTrack('sound'))
+    const fx = s.tracks.addTrack('effect')
+    expect(s.editor.project.value.tracks.map((t) => t.name)).toEqual(['Efectos', 'Sonidos', ...Array.from({ length: 8 }, (_, i) => `Sonidos ${i + 2}`)])
+    expect(s.editor.project.value.tracks[0]!.id).toBe(fx)
+    expect(s.editor.toast.value?.message).toBe('Pista «Efectos» añadida: lo que pongas en ella se verá por encima.')
+    const before = s.editor.history.value.past.length
+    s.tracks.toggleSolo(ids[3]!)
+    expect(s.editor.history.value.past.length).toBe(before + 1)
+    expect(s.editor.project.value.mainMuted).toBe(true)
+    expect(s.editor.project.value.tracks.filter((t) => t.kind === 'sound' && !t.muted).map((t) => t.id)).toEqual([ids[3]])
+    s.tracks.toggleSolo(ids[3]!)
+    expect(s.editor.project.value.mainMuted).toBe(false)
+    expect(s.editor.project.value.tracks.some((t) => t.muted)).toBe(false)
+  })
+
+  it('recortar y partir un trozo desde las pistas: en la línea, un paso de deshacer, lo pegado sigue a su imagen', async () => {
+    const s = setup()
+    const [first, second] = await withClips(s)
+    await s.tracks.addFiles([MUSIC], 14_000) // pegado al trozo 2, a 4 s de su principio
+    const before = s.editor.history.value.past.length
+    // Tirar del asa del principio del trozo 2: varios pasos de vista previa, uno de historial.
+    s.tracks.previewClipTrim(second!, 'start', 1000)
+    s.tracks.previewClipTrim(second!, 'start', 2500)
+    expect(s.editor.history.value.past.length).toBe(before)
+    s.editor.commitPreview()
+    expect(s.editor.history.value.past.length).toBe(before + 1)
+    expect(s.editor.durationMs.value).toBe(17_500)
+    expect(resolveTracks(s.editor.project.value)[0]!.startMs).toBe(11_500)
+    // T con la línea a los 5 s: el trozo 1 termina ahí; lo de después se recoloca.
+    expect(s.tracks.trimClipAt(first!, 'end', 5000)).toBe(true)
+    expect(s.editor.durationMs.value).toBe(12_500)
+    expect(resolveTracks(s.editor.project.value)[0]!.startMs).toBe(6500)
+    // E fuera del trozo no hace nada y lo explica.
+    expect(s.tracks.trimClipAt(first!, 'start', 8000)).toBe(false)
+    expect(s.editor.toast.value?.message).toBe('Aquí no puede empezar: pon la línea dentro del trozo.')
+    // P parte el trozo 1 en la línea.
+    const id = s.tracks.splitClipAt(first!, 2000)
+    expect(id).not.toBeNull()
+    expect(s.editor.project.value.clips.map((c) => c.id)).toEqual([first, id, second])
+    expect(s.editor.toast.value?.message).toBe('Trozo partido en dos.')
+    s.editor.undo()
+    s.editor.undo()
+    s.editor.undo()
+    expect(s.editor.durationMs.value).toBe(20_000)
+    expect(resolveTracks(s.editor.project.value)[0]!.startMs).toBe(14_000)
   })
 
   it('arrastrar se ve al momento y entra en el historial en un solo paso', async () => {
@@ -130,5 +176,32 @@ describe('guardar con pistas', () => {
     expect(args).toContain('C:\\cache\\library\\ding.m4a')
     const script = args[args.indexOf('-/filter_complex') + 1]!
     expect(s.state.tempFiles[script]).toContain('amix=inputs=2:normalize=0')
+  })
+})
+
+describe('«De mi ordenador»: lo ya traído', () => {
+  it('un vídeo quitado se vuelve a poner como trozo, encima (efecto) y como sonido; una imagen, solo encima', async () => {
+    const s = setup()
+    const [a] = await withClips(s)
+    await s.tracks.addFiles([LOGO], 0)
+    s.editor.removeClip(a!)
+    s.editor.removeClip(s.editor.project.value.clips[0]!.id)
+    expect(s.editor.project.value.clips).toHaveLength(0)
+    expect(s.editor.project.value.media.map((m) => m.path)).toEqual([H, LOGO])
+    expect(await s.tracks.addPoolClip(H)).toBe(true)
+    expect(s.editor.project.value.clips.map((c) => c.sourcePath)).toEqual([H])
+    expect(s.editor.toast.value?.message).toBe('Añadido al final: es el trozo 1.')
+    s.tracks.playheadMs.value = 2000
+    expect(await s.tracks.addPoolItem(H, 'effect')).toBe(1)
+    expect(await s.tracks.addPoolItem(H, 'sound')).toBe(1)
+    const kinds = s.editor.project.value.tracks.flatMap((t) => t.items.filter((i) => i.source.type === 'file' && i.source.path === H).map(() => t.kind))
+    expect(kinds.sort()).toEqual(['effect', 'sound'])
+    const sound = resolveTracks(s.editor.project.value).find((r) => r.item.source.type === 'file' && r.item.source.path === H && r.item.look === null)!
+    expect(sound.startMs).toBe(2000)
+    expect(sound.item).toMatchObject({ hasAudio: true, still: false, volume: 1 })
+    // Una imagen no puede ser un trozo ni un sonido: se queda como efecto.
+    expect(await s.tracks.addPoolClip(LOGO)).toBe(false)
+    await s.tracks.addPoolItem(LOGO, 'sound')
+    expect(s.editor.project.value.tracks.filter((t) => t.kind === 'sound').flatMap((t) => t.items)).toHaveLength(1)
   })
 })

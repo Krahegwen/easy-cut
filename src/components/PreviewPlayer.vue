@@ -7,32 +7,73 @@
 // Lo que se ve lo decide la imagen del trozo: su vídeo; el fondo liso con «Solo se oye» (el <video> sigue
 // sonando, escondido; también reproduce sin problema un fichero de solo sonido); u otro vídeo encima en un
 // segundo <video> silenciado que sigue el tiempo de salida del trozo (se recoloca si se separa más de
-// 150 ms y se queda en su última imagen si se acaba), con el vídeo del trozo en pequeño en una esquina.
+// 150 ms y se queda en su última imagen si se acaba). Si el trozo lleva «el vídeo de este trozo» en una pista de
+// efectos (en una esquina, o yendo y viniendo de ella con marcas), es su propio <video> el que se coloca encima con
+// el sitio y el tamaño de cada instante (boxAt, transform) entre las capas de las pistas (z-index): así va siempre
+// a la vez que su sonido, porque es el mismo elemento que marca el reloj del montaje.
+//
+// Pantalla completa (`fullscreenable`): la raíz del propio reproductor pasa a la capa superior del navegador con
+// la Popover API (`popover="manual"` + `showPopover()`), sin moverla en el DOM. Así no se vuelve a montar nada
+// (los <video>, el vídeo de encima y las pistas siguen siendo los mismos elementos, en el mismo instante) y la
+// capa superior se salta el `container-type` de «Tu vídeo», que con una capa `position: fixed` la dejaría
+// encerrada en su columna. Ocupa la ventana, y la ventana se pone a pantalla completa del sistema
+// (`setWindowFullscreen`; en el modo de pruebas no). No es la Fullscreen API: WebView2 la rechaza («not
+// granted») si la ventana no está activa, que es como corren las pruebas, y no se podría probar.
+//
+// «Repasar más rápido» (`reviewable`): un factor que solo vive aquí (se pierde al salir de la pantalla, así
+// que vuelve solo a 1× al guardar o al reabrir) y multiplica el playbackRate de todo lo que suena: el trozo
+// (por su velocidad), el vídeo de encima y las pistas. El reloj del montaje sale del <video> del trozo, así
+// que avanza a ese ritmo sin más; la lógica está en `src/domain/playback.ts`.
+//
+// Transiciones entre trozos: cada trozo montado va en su capa (su vídeo, su vídeo de encima, su fondo liso y su
+// fondo desenfocado), y en el paso de uno a otro cada capa lleva la opacidad, el desplazamiento y el tamaño que dice
+// `joinAt` (dominio), con el que entra encima; a negro / a blanco, con una capa de color. Con solape, el reloj del
+// montaje sigue siendo el <video> del que sale y el que entra (ya montado como «siguiente») se pone a sonar a la
+// vez, recolocado si se separa más de 150 ms; al acabar el que sale se sigue con el que entra donde va, sin buscarlo.
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   buildPlaybackPlan,
   clipOutputAt,
+  boxAt,
   clipShowsOwnVideo,
+  cornerRadius,
+  findClipVideoItem,
+  FULL_FRAME_SCALE,
   clipStartTimes,
+  clipTimeline,
+  clipVideoJoinFades,
   computeFramingLayout,
+  edgeFades,
+  incomingSourceMs,
+  joinAt,
+  overlapExitOf,
+  clipOutputMs,
   coverNeedsResync,
+  fadeGainAt,
   coverTimeAt,
   findSpanForSource,
   firstSpanOfClip,
   fitAspect,
   formatClock,
+  formatReviewRate,
   hasReachedSpanEnd,
-  insetRect,
   locatePlayback,
+  mediaRate,
+  normalizeReviewRate,
   PLAIN_BACKGROUND_CSS,
   playbackTimeAt,
+  REVIEW_RATES,
+  reviewNotice,
   type Clip,
   type CoverPicture,
   type FramingLayout,
   type Project,
+  type ReviewRate,
 } from '../domain'
-import { store } from '../store'
+import { LAYER_PRIORITY } from '../lib/shortcuts'
+import { isLayerCovered, openKeysPanel, useShortcuts } from '../lib/use-shortcuts'
+import { store, tracks as tracksStore } from '../store'
 import AppIcon from './AppIcon.vue'
 import KeyHint from './KeyHint.vue'
 import type { PanEvent, PlayerTime } from './player-types'
@@ -51,8 +92,20 @@ const props = withDefaults(
     anchor?: 'project' | 'source'
     /** Con las pistas de sonidos y efectos (y la fila principal silenciada si lo está): «Tu vídeo». */
     tracks?: boolean
+    /** Con el botón de pantalla completa (y sus teclas mientras dura): «Tu vídeo». */
+    fullscreenable?: boolean
+    /** Con «Repasar más rápido» (1×, 1,5×, 2×; solo la vista previa): «Tu vídeo». */
+    reviewable?: boolean
   }>(),
-  { loop: false, pannable: false, clockLabel: 'Posición en el vídeo', anchor: 'project', tracks: false },
+  {
+    loop: false,
+    pannable: false,
+    clockLabel: 'Posición en el vídeo',
+    anchor: 'project',
+    tracks: false,
+    fullscreenable: false,
+    reviewable: false,
+  },
 )
 
 const emit = defineEmits<{ time: [t: PlayerTime]; pan: [e: PanEvent] }>()
@@ -61,12 +114,13 @@ const plan = computed(() => buildPlaybackPlan(props.project))
 const spanIndex = ref(0)
 const currentMs = ref(0)
 const playing = ref(false)
+/** «Repasar más rápido»: solo la vista previa, no se guarda en ningún sitio (al volver a montarse, 1×). */
+const reviewRate = ref<ReviewRate>(1)
 /** Instante del original que se enseña fuera de lo conservado (al mover el cabezal en «Cortar»). */
 const freeSourceMs = ref<number | null>(null)
 const sourceMs = ref(0)
 
 const stage = ref<HTMLDivElement | null>(null)
-const canvas = ref<HTMLCanvasElement | null>(null)
 const stageSize = ref({ width: 0, height: 0 })
 const frame = computed(() => fitAspect(props.project.aspect, stageSize.value.width, stageSize.value.height))
 
@@ -82,11 +136,90 @@ const mountedClips = computed(() => {
   const list = [clips[a]!]
   const next = a + 1 < clips.length ? a + 1 : props.loop && clips.length > 1 ? 0 : -1
   if (next >= 0 && next !== a) list.push(clips[next]!)
+  // Si el siguiente empieza su propio paso enseguida (un trozo corto montado entre dos transiciones), el de después
+  // también, cargado de antemano: si no, al acabar el activo entraría tarde (medido: hasta medio segundo).
+  if (next === a + 1 && next + 1 < clips.length) {
+    const starts = clipStartTimes(props.project)
+    if (starts[next + 1]! - starts[next]! < 1500) list.push(clips[next + 1]!)
+  }
   return list
 })
 const mountedCovers = computed(() => mountedClips.value.filter((c) => c.picture.kind === 'cover'))
 
 const markers = computed(() => clipStartTimes(props.project).slice(1))
+
+// ------------------------------------------------------------------ transiciones
+
+/** Juntas resueltas de cada trozo (en ms; la de entrada de cada uno). */
+const timeline = computed(() => clipTimeline(props.project))
+/** La junta cuyo paso contiene el instante de ahora, con cómo se ve cada capa. */
+const joinNow = computed(() => joinAt(plan.value, currentMs.value))
+/** La junta con solape por la que sale el trozo activo (el siguiente suena a la vez durante el paso). */
+const exitJoin = computed(() => overlapExitOf(plan.value, activeClipIndex.value))
+
+/** Papel del trozo en el paso de ahora: el que sale, el que entra o ninguno (solo si los dos están montados). */
+function roleOf(clip: Clip): 'out' | 'in' | null {
+  const j = joinNow.value
+  if (!j) return null
+  const i = props.project.clips.indexOf(clip)
+  const outClip = props.project.clips[j.join.clipIndex - 1]
+  const inClip = props.project.clips[j.join.clipIndex]
+  if (!outClip || !inClip) return null
+  // Con solape, las dos capas a la vez; si el que sale ya no está montado (acaba de terminar), sin estilo.
+  const mounted = mountedClips.value
+  if (j.join.join.overlap && !(mounted.includes(outClip) && mounted.includes(inClip))) return null
+  if (i === j.join.clipIndex - 1) return 'out'
+  if (i === j.join.clipIndex) return 'in'
+  return null
+}
+
+/** ¿Se ve la imagen de este trozo ahora? El activo y, en un paso con solape, el que entra. */
+function clipVisible(clip: Clip): boolean {
+  const role = roleOf(clip)
+  if (role) return joinNow.value!.style[role].visible
+  return clip.id === activeClip.value?.id
+}
+
+/** Estilo de la capa de un trozo: opacidad, desplazamiento y tamaño del paso, y el que entra encima. */
+function layerStyle(clip: Clip) {
+  const role = roleOf(clip)
+  const visible = clipVisible(clip)
+  if (!role) return { zIndex: clip.id === activeClip.value?.id ? '1' : '0', visibility: visible ? undefined : ('hidden' as const) }
+  const l = joinNow.value!.style[role]
+  const parts: string[] = []
+  if (l.shiftX) parts.push(`translateX(${l.shiftX * frame.value.width}px)`)
+  if (l.scale !== 1) parts.push(`scale(${l.scale})`)
+  return {
+    zIndex: role === 'in' ? '2' : '1',
+    opacity: l.opacity < 1 ? String(l.opacity) : undefined,
+    transform: parts.length ? parts.join(' ') : undefined,
+    visibility: l.visible ? undefined : ('hidden' as const),
+  }
+}
+
+/** Capa de color de a negro / a blanco (encima de los trozos, debajo de las pistas). */
+const joinColor = computed(() => {
+  const j = joinNow.value
+  if (!j?.style.color || j.style.colorOpacity <= 0.001) return null
+  return { background: j.style.color === 'white' ? '#fff' : '#000', opacity: String(j.style.colorOpacity) }
+})
+
+/** Volumen del <video> de un trozo: su aparecer / desaparecer (sin el borde con transición) por el del paso. */
+function clipVolume(clip: Clip): number {
+  const role = roleOf(clip)
+  const base = clip.id === activeClip.value?.id ? clipFade.value : 1
+  return Math.min(1, Math.max(0, role ? base * joinNow.value!.style[role].volume : base))
+}
+
+/** «El vídeo de este trozo» en un paso: el del que sale se desvanece y el del que entra aparece. */
+function clipVideoOpacity(clip: Clip): number {
+  const i = props.project.clips.indexOf(clip)
+  if (i < 0) return 1
+  const tl = timeline.value
+  const fades = clipVideoJoinFades(tl.joins[i] ?? null, tl.joins[i + 1] ?? null)
+  if (fades.fadeInMs <= 0 && fades.fadeOutMs <= 0) return 1
+  return fadeGainAt(fades, clipOutputAt(props.project, i, currentMs.value), tl.lengths[i]!)
+}
 
 const elements = new Map<string, HTMLVideoElement>()
 const coverElements = new Map<string, HTMLVideoElement>()
@@ -103,9 +236,22 @@ function coverOf(clip: Clip | null): CoverPicture | null {
   return clip && clip.picture.kind === 'cover' ? clip.picture : null
 }
 
-/** ¿Se enseña el vídeo del propio trozo (entero o en la esquina)? */
+/** «El vídeo de este trozo» en una pista de efectos que se ve (con otro vídeo de fondo en el trozo). */
+function clipVideoOf(clip: Clip) {
+  if (clip.picture.kind !== 'cover' || !clip.sourceHasVideo) return null
+  const found = findClipVideoItem(props.project, clip.id)
+  return found && !found.track.hidden && found.item.look ? found : null
+}
+
+/** ¿Se enseña el vídeo del propio trozo (entero, o encima en una pista)? */
 function showsOwn(clip: Clip): boolean {
-  return clipShowsOwnVideo(clip) && !!mediaOf(clip.sourcePath)?.hasVideo
+  return (clipShowsOwnVideo(clip) || !!clipVideoOf(clip)) && !!mediaOf(clip.sourcePath)?.hasVideo
+}
+
+/** Capa de una pista de efectos (la de más abajo, 1): el orden de apilado con los efectos (z-index). */
+function effectLayer(trackId: string): number {
+  const order = props.project.tracks.filter((t) => t.kind === 'effect').map((t) => t.id)
+  return order.length - order.indexOf(trackId)
 }
 
 const activeKind = computed<'own' | 'none' | 'cover' | null>(() => {
@@ -140,26 +286,40 @@ function placed(l: FramingLayout) {
   }
 }
 
-/** Estilo del <video> del trozo: entero, en la esquina o escondido (pero sonando). */
+/**
+ * Estilo del <video> del trozo: entero, encima en una pista (el vídeo de este trozo) o escondido (pero sonando).
+ * Encima: un recuadro con la forma del marco que lo llena recortando al centro (object-fit: cover, como al
+ * guardar), llevado a su sitio y tamaño de este instante con transform; las esquinas redondeadas (el radio se
+ * divide por el tamaño, que el transform lo multiplica); oscurecido con el trozo si aparece o desaparece.
+ */
 function videoStyle(clip: Clip) {
-  const cover = coverOf(clip)
-  if (cover && cover.inset && showsOwn(clip) && frame.value.width > 0) {
-    // En la esquina: recorte centrado con la forma del vídeo (aproximado; lo guardado es exacto).
-    const r = insetRect(cover.inset, frame.value.width, frame.value.height)
+  const cv = clipVideoOf(clip)
+  if (cv && showsOwn(clip) && frame.value.width > 0) {
+    const W = frame.value.width
+    const H = frame.value.height
+    const look = cv.item.look!
+    const index = props.project.clips.indexOf(clip)
+    const local = clip.id === activeClip.value?.id || roleOf(clip) ? clipOutputAt(props.project, index, currentMs.value) : 0
+    const box = boxAt(look, local)
     const odd = clip.quarterTurns % 2 === 1
-    const w = odd ? r.height : r.width
-    const h = odd ? r.width : r.height
+    const w = odd ? H : W
+    const h = odd ? W : H
+    const radius = box.scale < FULL_FRAME_SCALE ? cornerRadius(look, W, H) / Math.max(0.01, box.scale) : 0
     return {
       width: `${w}px`,
       height: `${h}px`,
-      left: `${r.left + r.width / 2 - w / 2}px`,
-      top: `${r.top + r.height / 2 - h / 2}px`,
-      transform: clip.quarterTurns ? `rotate(${clip.quarterTurns * 90}deg)` : undefined,
+      left: `${W / 2 - w / 2}px`,
+      top: `${H / 2 - h / 2}px`,
+      transform: `translate(${(box.x - 0.5) * W}px, ${(box.y - 0.5) * H}px) scale(${box.scale})${clip.quarterTurns ? ` rotate(${clip.quarterTurns * 90}deg)` : ''}`,
+      transformOrigin: 'center',
       objectFit: 'cover' as const,
-      borderRadius: `${r.radius}px`,
+      borderRadius: `${radius}px`,
+      zIndex: String(10 + effectLayer(cv.track.id)),
+      filter: clipFade.value < 0.999 && clip.id === activeClip.value?.id ? `brightness(${clipFade.value})` : undefined,
+      opacity: String(clipVideoOpacity(clip)),
     }
   }
-  if (!cover) {
+  if (!coverOf(clip)) {
     const l = layoutFor(clip)
     if (l) return placed(l)
   }
@@ -167,8 +327,14 @@ function videoStyle(clip: Clip) {
 }
 
 function videoVisible(clip: Clip): boolean {
-  if (clip.id !== activeClip.value?.id || !showsOwn(clip)) return false
-  return clip.picture.kind === 'own' || !!coverOf(clip)?.inset
+  if (clipVideoOf(clip)) return showsOwn(clip) && (clip.id === activeClip.value?.id || !!roleOf(clip))
+  return clipVisible(clip) && showsOwn(clip)
+}
+
+/** Lo que se ve de un trozo como imagen: su vídeo, el de encima o el fondo liso. */
+function kindOf(clip: Clip): 'own' | 'none' | 'cover' {
+  if (clip.picture.kind === 'cover') return 'cover'
+  return showsOwn(clip) && !clipVideoOf(clip) ? 'own' : 'none'
 }
 
 function coverStyle(clip: Clip) {
@@ -192,11 +358,43 @@ function registerCover(clipId: string, el: unknown) {
 }
 
 function configure(el: HTMLVideoElement, clip: Clip, active: boolean) {
-  el.defaultPlaybackRate = clip.speed
-  if (el.playbackRate !== clip.speed) el.playbackRate = clip.speed
+  // La velocidad del trozo por la de repaso (si se está repasando más rápido).
+  const rate = mediaRate(clip.speed, reviewRate.value)
+  el.defaultPlaybackRate = rate
+  if (el.playbackRate !== rate) el.playbackRate = rate
   el.preservesPitch = true
-  el.muted = !active || isMutedClip(clip)
+  const incoming = !active && roleOf(clip) === 'in'
+  el.muted = !(active || incoming) || isMutedClip(clip)
+  el.volume = clipVolume(clip)
 }
+
+// ------------------------------------------------------------------ aparecer y desaparecer del trozo
+
+/**
+ * Factor (0..1) de aparecer y desaparecer del trozo activo en este instante (el mismo cálculo que al guardar):
+ * la imagen se oscurece hacia negro con una capa negra encima (debajo de los efectos, como en el fichero) y el
+ * sonido baja con el volumen del <video>.
+ */
+const clipFade = computed(() => {
+  const clip = activeClip.value
+  if (!clip || (clip.fadeInMs <= 0 && clip.fadeOutMs <= 0)) return 1
+  // En un borde con transición manda la transición.
+  const i = activeClipIndex.value
+  const fades = edgeFades(clip, timeline.value.joins[i] ?? null, timeline.value.joins[i + 1] ?? null)
+  return fadeGainAt(fades, clipOutputAt(props.project, i, currentMs.value), clipOutputMs(clip))
+})
+// El volumen de cada <video> montado sigue al aparecer del trozo y al paso.
+watch([clipFade, joinNow], () => {
+  for (const clip of mountedClips.value) {
+    const el = elements.get(clip.id)
+    if (!el) continue
+    const v = clipVolume(clip)
+    if (Math.abs(el.volume - v) > 0.001) el.volume = v
+    const shouldHear = clip.id === activeClip.value?.id || roleOf(clip) === 'in'
+    const muted = !shouldHear || isMutedClip(clip)
+    if (el.muted !== muted) el.muted = muted
+  }
+})
 
 /** Lleva un <video> al instante que le toca, si se ha desviado. */
 function sync(clip: Clip) {
@@ -223,7 +421,11 @@ function prepareElements() {
   for (const clip of mountedClips.value) {
     const isActive = active?.id === clip.id
     const el = elements.get(clip.id)
-    if (!isActive) {
+    if (!isActive && isIncomingNow(clip)) {
+      // El que entra, ya en el paso: lo lleva syncIncoming.
+      if (el) configure(el, clip, false)
+      continue
+    } else if (!isActive) {
       const first = plan.value.spans[firstSpanOfClip(plan.value, props.project.clips.indexOf(clip))]
       if (first) desired.set(clip.id, first.sourceStartMs)
       if (el && !el.paused) el.pause()
@@ -242,6 +444,79 @@ function prepareElements() {
     checkDecodable(clip)
   }
   syncCover(playing.value, true)
+  syncIncoming(playing.value, true)
+}
+
+// ------------------------------------------------------------------ el que entra (paso con solape)
+
+/** Posición real y esperada del que entra (para las pruebas: data-incoming-ms / data-incoming-expected-ms). */
+const incomingActualMs = ref<number | null>(null)
+const incomingExpectedMs = ref<number | null>(null)
+
+/**
+ * Lo que se adelanta el arranque del que entra (ms del montaje, a 1×): un <video> parado tarda en empezar a avanzar
+ * después de play(), y sin esto entraba siempre por detrás. Antes del paso no se ve ni se oye.
+ */
+const INCOMING_PREROLL_MS = 80
+
+/** Desde cuándo (ms del vídeo) el que entra ya suena (reproduciendo, un poco antes del paso). */
+function incomingFromMs(startMs: number): number {
+  return playing.value ? startMs - INCOMING_PREROLL_MS * normalizeReviewRate(reviewRate.value) : startMs
+}
+
+/** ¿Es este trozo el que entra en un paso con solape que ya ha empezado (o está a punto, reproduciendo)? */
+function isIncomingNow(clip: Clip): boolean {
+  const ex = exitJoin.value
+  return !!ex && props.project.clips[ex.clipIndex]?.id === clip.id && currentMs.value >= incomingFromMs(ex.startMs)
+}
+
+/**
+ * Lleva el <video> del que entra (y su vídeo de encima) a donde le toca en el paso y lo pone a sonar o en pausa.
+ * Reproduciendo, solo se recoloca si se separa más de 150 ms (en tiempo del montaje); en pausa, exacto.
+ */
+function syncIncoming(play: boolean, exact = false) {
+  const ex = exitJoin.value
+  const clip = ex ? props.project.clips[ex.clipIndex] : undefined
+  const el = clip ? elements.get(clip.id) : undefined
+  if (!ex || !clip || !el || currentMs.value < incomingFromMs(ex.startMs)) {
+    incomingActualMs.value = null
+    incomingExpectedMs.value = null
+    return
+  }
+  if (currentMs.value < ex.startMs) {
+    // Justo antes del paso: arranca desde su principio (sin verse ni oírse) para llegar a tiempo.
+    configure(el, clip, false)
+    if (play && el.paused && el.readyState >= 2) void el.play().catch(() => {})
+    return
+  }
+  const expected = incomingSourceMs(plan.value, ex.clipIndex, currentMs.value)
+  incomingExpectedMs.value = Math.round(expected)
+  desired.set(clip.id, expected)
+  // Sonido y volumen del paso (la velocidad la lleva esto de abajo, que la ajusta para no separarse).
+  el.preservesPitch = true
+  el.muted = roleOf(clip) !== 'in' || isMutedClip(clip)
+  el.volume = clipVolume(clip)
+  syncCoverOf(clip, ex.clipIndex, play, exact)
+  if (el.readyState < 1) return
+  incomingActualMs.value = Math.round(el.currentTime * 1000)
+  if (play) {
+    if (el.paused && el.readyState >= 2) void el.play().catch(() => {})
+  } else if (!el.paused) {
+    el.pause()
+  }
+  if (el.seeking) return
+  // Lo que va por delante (+) o por detrás (−), en tiempo del montaje.
+  const ahead = (el.currentTime * 1000 - expected) / Math.max(0.01, clip.speed)
+  const base = mediaRate(clip.speed, reviewRate.value)
+  if (exact ? Math.abs(ahead) > 45 : coverNeedsResync(ahead, 0)) {
+    el.currentTime = expected / 1000
+    if (el.playbackRate !== base) el.playbackRate = base
+    return
+  }
+  // Por debajo de los 150 ms no se busca (buscar se para un momento y lo deja más atrás): se alcanza acelerando o
+  // frenando un 8 % (el tono no cambia) hasta quedar a menos de 25 ms.
+  const want = !play || Math.abs(ahead) < 25 ? base : mediaRate(clip.speed * (ahead < 0 ? 1.08 : 0.92), reviewRate.value)
+  if (Math.abs(el.playbackRate - want) > 1e-6) el.playbackRate = want
 }
 
 // ------------------------------------------------------------------ vídeo de encima
@@ -256,18 +531,24 @@ const coverExpectedMs = ref<number | null>(null)
  */
 function syncCover(play: boolean, exact = false) {
   const clip = activeClip.value
-  const cover = coverOf(clip)
-  const el = clip ? coverElements.get(clip.id) : undefined
-  if (!clip || !cover || !el) {
+  if (!clip || !coverOf(clip) || !coverElements.get(clip.id)) {
     coverActualMs.value = null
     coverExpectedMs.value = null
     return
   }
-  const outMs = clipOutputAt(props.project, activeClipIndex.value, currentMs.value)
+  syncCoverOf(clip, activeClipIndex.value, play, exact, true)
+}
+
+/** Lo mismo para cualquier trozo montado (el activo o el que entra en un paso). `report`: para las pruebas. */
+function syncCoverOf(clip: Clip, clipIndex: number, play: boolean, exact = false, report = false) {
+  const cover = coverOf(clip)
+  const el = coverElements.get(clip.id)
+  if (!cover || !el) return
+  const outMs = clipOutputAt(props.project, clipIndex, currentMs.value)
   const expected = coverTimeAt(cover, outMs)
-  coverExpectedMs.value = Math.round(expected)
+  if (report) coverExpectedMs.value = Math.round(expected)
   if (el.readyState < 1) return
-  coverActualMs.value = Math.round(el.currentTime * 1000)
+  if (report) coverActualMs.value = Math.round(el.currentTime * 1000)
   const endMs = Number.isFinite(el.duration) && el.duration > 0 ? Math.min(el.duration * 1000, cover.sourceDurationMs) : cover.sourceDurationMs
   if (expected >= endMs - 40) {
     // Se ha acabado: quieto en su última imagen.
@@ -275,7 +556,12 @@ function syncCover(play: boolean, exact = false) {
     if (!el.seeking && el.currentTime * 1000 < endMs - 120) el.currentTime = Math.max(0, endMs / 1000 - 0.03)
     return
   }
-  if (el.playbackRate !== 1) el.playbackRate = 1
+  // A velocidad normal dentro del montaje: solo le afecta el repaso.
+  const rate = mediaRate(1, reviewRate.value)
+  if (el.playbackRate !== rate) {
+    el.defaultPlaybackRate = rate
+    el.playbackRate = rate
+  }
   if (play) {
     if (el.paused && el.readyState >= 2) void el.play().catch(() => {})
   } else if (!el.paused) {
@@ -327,14 +613,20 @@ function tick() {
     if (src < span.sourceStartMs - 300 || src > span.sourceEndMs + 300) {
       // Se ha desviado (p. ej. tras un salto): se recoloca en el tramo.
       el.currentTime = Math.min(Math.max(sourceMs.value, span.sourceStartMs), span.sourceEndMs) / 1000
-    } else if (hasReachedSpanEnd(span, src) || el.ended) {
+    } else if (hasReachedSpanEnd(span, src, mediaRate(span.speed, reviewRate.value)) || el.ended) {
       advance()
     } else {
       sourceMs.value = src
       currentMs.value = playbackTimeAt(plan.value, spanIndex.value, src)
       if (el.paused) void el.play().catch(() => {})
       syncCover(true)
+      syncIncoming(true)
       emitTime()
+      if (stopAtMs !== null && currentMs.value >= stopAtMs) {
+        stopAtMs = null
+        pause()
+        return
+      }
     }
     paintBackground()
   }
@@ -363,9 +655,17 @@ function goToSpan(index: number, keepPlaying: boolean) {
   const span = plan.value.spans[index]
   if (!span) return
   const previousClipId = activeSpan.value?.clipId
+  const incoming = elements.get(span.clipId)
+  const wasIncoming = keepPlaying && incomingActualMs.value !== null && exitJoin.value?.clipIndex === span.clipIndex && !!incoming && !incoming.paused
   spanIndex.value = index
   sourceMs.value = span.sourceStartMs
   currentMs.value = span.projectStartMs
+  if (wasIncoming && incoming) {
+    // Ya estaba sonando en el paso: sigue donde va, sin buscarlo otra vez.
+    const src = Math.min(Math.max(incoming.currentTime * 1000, span.sourceStartMs), span.sourceEndMs)
+    sourceMs.value = src
+    currentMs.value = playbackTimeAt(plan.value, index, src)
+  }
   if (previousClipId && previousClipId !== span.clipId) pauseClip(previousClipId)
   void activate(keepPlaying)
 }
@@ -425,12 +725,26 @@ function pause() {
   for (const el of elements.values()) if (!el.paused) el.pause()
   for (const el of coverElements.values()) if (!el.paused) el.pause()
   syncCover(false, true)
+  syncIncoming(false, true)
   emitTime()
 }
 
 function toggle() {
+  stopAtMs = null
   if (playing.value) pause()
   else play()
+}
+
+/** Dónde se para solo (null = hasta el final): «Probar» una transición. */
+let stopAtMs: number | null = null
+
+/** Reproduce de `fromMs` a `toMs` y se para ahí («Probar» una transición). */
+function playRange(fromMs: number, toMs: number) {
+  const d = plan.value.durationMs
+  const from = Math.min(Math.max(0, fromMs), d)
+  seek(from)
+  stopAtMs = Math.min(Math.max(from, toMs), d)
+  if (!playing.value) play()
 }
 
 function locateAt(projectMs: number) {
@@ -498,6 +812,15 @@ watch(plan, () => {
 })
 
 watch(mountedClips, () => void nextTick(prepareElements))
+// Al entrar en un paso o salir de él, el otro trozo se pone a sonar (o se para) y su fondo se pinta.
+watch(
+  () => (joinNow.value ? `${joinNow.value.join.clipIndex}` : ''),
+  () =>
+    void nextTick(() => {
+      syncIncoming(playing.value, !playing.value)
+      paintBackground()
+    }),
+)
 // Silenciar la fila principal se oye al momento.
 watch(
   () => props.project.mainMuted,
@@ -550,11 +873,21 @@ const preparingPreview = computed(() => {
 // ------------------------------------------------------------------ fondo desenfocado
 
 const BG_WIDTH = 48
+const canvases = new Map<string, HTMLCanvasElement>()
+function registerCanvas(clipId: string, el: unknown) {
+  if (el instanceof HTMLCanvasElement) canvases.set(clipId, el)
+  else canvases.delete(clipId)
+}
+
+/** Pinta el fondo desenfocado del activo y, en un paso, del otro trozo que se ve. */
 function paintBackground() {
-  const layout = activeLayout.value
-  const clip = activeClip.value
-  const c = canvas.value
-  if (!layout?.showsBackground || !clip || !c) return
+  for (const clip of mountedClips.value) if (clip.id === activeClip.value?.id || roleOf(clip)) paintBackgroundOf(clip)
+}
+
+function paintBackgroundOf(clip: Clip) {
+  const layout = layoutFor(clip)
+  const c = canvases.get(clip.id)
+  if (!layout?.showsBackground || !c) return
   const cover = coverOf(clip)
   const el = cover ? coverElements.get(clip.id) : elements.get(clip.id)
   const turns = cover ? cover.quarterTurns : clip.quarterTurns
@@ -617,6 +950,123 @@ function panUp(e: PointerEvent) {
   panStart = null
 }
 
+// ------------------------------------------------------------------ repasar más rápido
+
+const notice = computed(() => (props.reviewable ? reviewNotice(reviewRate.value) : null))
+
+function setReviewRate(rate: number) {
+  if (!props.reviewable) return
+  reviewRate.value = normalizeReviewRate(rate)
+}
+
+// Cambiar el factor se nota al momento: el trozo que suena, el siguiente y el vídeo de encima.
+watch(reviewRate, () => {
+  for (const clip of mountedClips.value) {
+    const el = elements.get(clip.id)
+    if (el) configure(el, clip, clip.id === activeClip.value?.id)
+  }
+  syncCover(playing.value)
+})
+
+// ------------------------------------------------------------------ pantalla completa
+
+const root = ref<HTMLDivElement | null>(null)
+const fullscreen = ref(false)
+/** Cuándo se salió de la pantalla completa (para que un Esc rezagado no haga además lo de la pantalla). */
+let exitedAt = Number.NEGATIVE_INFINITY
+const FULLSCREEN_LAYER = 'preview-fullscreen'
+const ESC_GRACE_MS = 400
+/** ¿Se ha pedido poner la ventana a pantalla completa del sistema (y hay que dejarla como estaba)? */
+let windowFullscreenAsked = false
+/** Las peticiones a la ventana, en orden: entrar y salir muy seguido no se cruzan. */
+let windowQueue: Promise<unknown> = Promise.resolve()
+
+function setWindowFullscreen(on: boolean) {
+  windowQueue = windowQueue
+    .then(() => store.bridge.setWindowFullscreen(on))
+    .catch((err) => console.warn('[easy-cut] no se ha podido cambiar la pantalla completa de la ventana', err))
+}
+
+function enterFullscreen() {
+  const el = root.value
+  if (!props.fullscreenable || !el || fullscreen.value) return
+  try {
+    // El atributo solo mientras dura: un popover cerrado es `display: none`.
+    el.setAttribute('popover', 'manual')
+    el.showPopover()
+  } catch (err) {
+    el.removeAttribute('popover')
+    console.warn('[easy-cut] no se ha podido poner la vista previa a pantalla completa', err)
+    store.showToast('No se ha podido poner la vista previa a pantalla completa.')
+    return
+  }
+  fullscreen.value = true
+  windowFullscreenAsked = true
+  setWindowFullscreen(true)
+}
+
+function exitFullscreen() {
+  if (!fullscreen.value) return
+  const el = root.value
+  if (el) {
+    try {
+      if (el.matches(':popover-open')) el.hidePopover()
+    } catch {
+      // Ya no estaba en la capa superior.
+    }
+    el.removeAttribute('popover')
+  }
+  fullscreen.value = false
+  exitedAt = performance.now()
+  if (windowFullscreenAsked) {
+    windowFullscreenAsked = false
+    setWindowFullscreen(false)
+  }
+}
+
+function toggleFullscreen() {
+  if (fullscreen.value) exitFullscreen()
+  else void enterFullscreen()
+}
+
+if (props.fullscreenable) {
+  const has = () => props.project.clips.length > 0
+  // Mientras dura, solo valen estas (modal): lo de la pantalla de debajo no se ve. Esc sale y nada más.
+  useShortcuts({
+    id: FULLSCREEN_LAYER,
+    title: 'Pantalla completa',
+    priority: LAYER_PRIORITY.fullscreen,
+    modal: true,
+    active: () => fullscreen.value,
+    shortcuts: () => [
+      { id: 'fullscreen-exit', keys: ['Escape', 'f'], label: 'Esc', description: 'salir de la pantalla completa (también F)', run: exitFullscreen },
+      { id: 'fullscreen-play', keys: ['Space'], label: 'Espacio', description: 'reproducir o parar', run: toggle, enabled: has() },
+      { id: 'fullscreen-start', keys: ['Home'], label: 'Inicio', description: 'ir al principio', run: () => seek(0), enabled: has() },
+      { id: 'fullscreen-end', keys: ['End'], label: 'Fin', description: 'ir al final', run: () => seek(durationMs.value), enabled: has() },
+      { id: 'fullscreen-back', keys: ['ArrowLeft'], label: '←', description: '1 segundo atrás', run: () => seek(currentMs.value - 1000), enabled: has(), repeat: true },
+      { id: 'fullscreen-forward', keys: ['ArrowRight'], label: '→', description: '1 segundo adelante', run: () => seek(currentMs.value + 1000), enabled: has(), repeat: true },
+      // F1 abre la lista; como la tapa, se sale de la pantalla completa (ver abajo) y se ve.
+      { id: 'fullscreen-keys', keys: ['F1'], label: 'F1', description: 'ver la lista de teclas (sale de la pantalla completa)', run: openKeysPanel, inText: true },
+    ],
+  })
+  // Justo después de salir, un Esc que llegue tarde (una tecla que se repite, dos pulsaciones) no hace nada más.
+  useShortcuts({
+    id: `${FULLSCREEN_LAYER}-grace`,
+    title: 'Pantalla completa',
+    priority: LAYER_PRIORITY.fullscreen,
+    active: () => !fullscreen.value && performance.now() - exitedAt < ESC_GRACE_MS,
+    shortcuts: () => [{ id: 'fullscreen-esc-grace', keys: ['Escape'], label: 'Esc', description: 'nada (acabas de salir)', run: () => {}, hidden: true }],
+  })
+}
+
+// Un diálogo, un error o la lista de teclas quedarían tapados por la pantalla completa: se sale para verlos.
+const covered = computed(() => fullscreen.value && isLayerCovered(FULLSCREEN_LAYER))
+watch(covered, (v) => {
+  if (v) exitFullscreen()
+})
+// Al cambiar de tamaño, el marco se recalcula solo (ResizeObserver); el fondo desenfocado, a pintarlo.
+watch(fullscreen, () => void nextTick(paintBackground))
+
 // ------------------------------------------------------------------ montaje
 
 let observer: ResizeObserver | null = null
@@ -630,8 +1080,10 @@ onMounted(() => {
   void activate(false)
 })
 onBeforeUnmount(() => {
+  exitFullscreen()
   observer?.disconnect()
   cancelAnimationFrame(raf)
+  stopAtMs = null
   for (const el of [...elements.values(), ...coverElements.values()]) {
     el.pause()
     el.removeAttribute('src')
@@ -641,13 +1093,34 @@ onBeforeUnmount(() => {
 
 const durationMs = computed(() => plan.value.durationMs)
 
-defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durationMs, sourceMs })
+defineExpose({
+  play,
+  pause,
+  toggle,
+  seek,
+  playRange,
+  showSource,
+  playing,
+  currentMs,
+  durationMs,
+  sourceMs,
+  fullscreen,
+  enterFullscreen,
+  exitFullscreen,
+  toggleFullscreen,
+  reviewRate,
+  setReviewRate,
+})
 </script>
 
 <template>
   <div
+    ref="root"
     class="player"
+    :class="{ 'is-fullscreen': fullscreen }"
     data-testid="player"
+    :data-fullscreen="fullscreen ? '1' : '0'"
+    :data-review-rate="reviewRate"
     :data-current-ms="Math.round(currentMs)"
     :data-duration-ms="durationMs"
     :data-playing="playing ? '1' : '0'"
@@ -657,6 +1130,11 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
     :data-cover-ms="coverActualMs ?? ''"
     :data-cover-expected-ms="coverExpectedMs ?? ''"
     :data-main-muted="tracks && project.mainMuted ? '1' : '0'"
+    :data-clip-fade="clipFade.toFixed(3)"
+    :data-join-progress="joinNow ? joinNow.style.progress.toFixed(3) : ''"
+    :data-join-kind="joinNow ? joinNow.join.join.kind : ''"
+    :data-incoming-ms="incomingActualMs ?? ''"
+    :data-incoming-expected-ms="incomingExpectedMs ?? ''"
   >
     <div ref="stage" class="stage">
       <div
@@ -669,57 +1147,92 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
         @pointerup="panUp"
         @pointercancel="panUp"
       >
-        <canvas
-          v-show="activeLayout?.showsBackground"
-          ref="canvas"
-          class="background"
-          :width="BG_WIDTH"
-          :height="canvasHeight"
-          aria-hidden="true"
-        />
-        <video
-          v-for="clip in mountedCovers"
-          :key="`cover-${clip.id}`"
-          :ref="(el) => registerCover(clip.id, el)"
-          class="video cover"
-          :class="{ hidden: clip.id !== activeClip?.id }"
-          :src="store.mediaSrc(coverOf(clip)?.sourcePath ?? '')"
-          :style="coverStyle(clip)"
-          data-testid="cover-video"
-          muted
-          preload="auto"
-          playsinline
-          disablepictureinpicture
-          disableremoteplayback
-          @loadedmetadata="onCoverMetadata(clip, $event)"
-          @error="onCoverError(clip)"
-          @seeked="onSeeked(clip)"
-        />
+        <!-- Cada trozo montado, en su capa: en un paso, cada una con su opacidad, desplazamiento y tamaño. -->
         <div
-          v-if="activeKind === 'none'"
-          class="plain"
-          :style="{ background: PLAIN_BACKGROUND_CSS }"
-          data-testid="preview-sound-only"
-        >
-          <span class="plain-icon" :class="{ playing }"><AppIcon name="wave" :size="56" /></span>
-          <span class="plain-text">Solo se oye</span>
-        </div>
-        <video
           v-for="clip in mountedClips"
-          :key="clip.id"
-          :ref="(el) => register(clip.id, el)"
-          class="video"
-          :class="{ hidden: !videoVisible(clip), inset: clip.picture.kind === 'cover' }"
-          :src="store.mediaSrc(clip.sourcePath)"
-          :style="videoStyle(clip)"
-          preload="auto"
-          playsinline
-          disablepictureinpicture
-          disableremoteplayback
-          @loadedmetadata="onLoadedMetadata(clip, $event)"
-          @error="onError(clip)"
-          @seeked="onSeeked(clip)"
-        />
+          :key="`layer-${clip.id}`"
+          class="clip-layer"
+          :style="layerStyle(clip)"
+          :data-layer-clip="clip.id"
+          :data-layer-role="roleOf(clip) ?? ''"
+          data-testid="clip-layer"
+        >
+          <canvas
+            v-show="layoutFor(clip)?.showsBackground && clipVisible(clip)"
+            :ref="(el) => registerCanvas(clip.id, el)"
+            class="background"
+            :width="BG_WIDTH"
+            :height="canvasHeight"
+            aria-hidden="true"
+          />
+          <video
+            v-if="clip.picture.kind === 'cover'"
+            :key="`cover-${clip.id}`"
+            :ref="(el) => registerCover(clip.id, el)"
+            class="video cover"
+            :class="{ hidden: !clipVisible(clip) }"
+            :src="store.mediaSrc(coverOf(clip)?.sourcePath ?? '')"
+            :style="coverStyle(clip)"
+            data-testid="cover-video"
+            muted
+            preload="auto"
+            playsinline
+            disablepictureinpicture
+            disableremoteplayback
+            @loadedmetadata="onCoverMetadata(clip, $event)"
+            @error="onCoverError(clip)"
+            @seeked="onSeeked(clip)"
+          />
+          <div
+            v-if="kindOf(clip) === 'none' && clipVisible(clip)"
+            class="plain"
+            :style="{ background: PLAIN_BACKGROUND_CSS }"
+            data-testid="preview-sound-only"
+          >
+            <span class="plain-icon" :class="{ playing }"><AppIcon name="wave" :size="56" /></span>
+            <span class="plain-text">Solo se oye</span>
+          </div>
+          <video
+            v-if="!clipVideoOf(clip)"
+            :key="clip.id"
+            :ref="(el) => register(clip.id, el)"
+            class="video"
+            :class="{ hidden: !videoVisible(clip) }"
+            data-clip-video=""
+            :data-clip-id="clip.id"
+            :src="store.mediaSrc(clip.sourcePath)"
+            :style="videoStyle(clip)"
+            preload="auto"
+            playsinline
+            disablepictureinpicture
+            disableremoteplayback
+            @loadedmetadata="onLoadedMetadata(clip, $event)"
+            @error="onError(clip)"
+            @seeked="onSeeked(clip)"
+          />
+        </div>
+        <!-- «El vídeo de este trozo»: su propio <video>, encima, entre las capas de las pistas (z-index). -->
+        <template v-for="clip in mountedClips" :key="`inset-${clip.id}`">
+          <video
+            v-if="clipVideoOf(clip)"
+            :ref="(el) => register(clip.id, el)"
+            class="video inset"
+            :class="{ hidden: !videoVisible(clip) }"
+            :data-clip-video="clipVideoOf(clip)?.item.id ?? ''"
+            :data-clip-id="clip.id"
+            :src="store.mediaSrc(clip.sourcePath)"
+            :style="videoStyle(clip)"
+            preload="auto"
+            playsinline
+            disablepictureinpicture
+            disableremoteplayback
+            @loadedmetadata="onLoadedMetadata(clip, $event)"
+            @error="onError(clip)"
+            @seeked="onSeeked(clip)"
+          />
+        </template>
+        <div v-if="clipFade < 0.999" class="clip-fade" :style="{ opacity: String(1 - clipFade) }" data-testid="clip-fade" aria-hidden="true" />
+        <div v-if="joinColor" class="join-color" :style="joinColor" data-testid="join-color" aria-hidden="true" />
         <TrackLayers
           v-if="tracks && frame.width > 0"
           :project="project"
@@ -727,13 +1240,18 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
           :playing="playing"
           :frame-width="frame.width"
           :frame-height="frame.height"
+          :rate="reviewRate"
         />
         <div v-if="project.clips.length === 0" class="empty">Aquí verás tu vídeo</div>
+        <div v-if="notice" class="review-notice" role="status" data-testid="review-notice">
+          <AppIcon name="speed" :size="20" />
+          {{ notice }}
+        </div>
         <div v-if="preparingPreview" class="notice">
           <span class="spinner" />
           Preparando la vista previa…
         </div>
-        <slot name="overlay" />
+        <div class="overlay-layer"><slot name="overlay" /></div>
       </div>
     </div>
     <div class="controls">
@@ -757,6 +1275,46 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
         :label="clockLabel"
         @seek="seek"
       />
+      <div
+        v-if="reviewable"
+        class="review"
+        role="group"
+        aria-label="Repasar más rápido: solo cambia cómo lo ves ahora, no el vídeo que se guarda"
+        data-testid="review-rate"
+      >
+        <span class="review-label" aria-hidden="true">Repasar más rápido</span>
+        <button
+          v-for="r in REVIEW_RATES"
+          :key="r"
+          class="review-btn"
+          :class="{ on: reviewRate === r }"
+          type="button"
+          :aria-pressed="reviewRate === r"
+          :aria-label="r === 1 ? 'Ver a velocidad normal' : `Repasar a ${formatReviewRate(r)}`"
+          :data-testid="`review-rate-${r}`"
+          @click="setReviewRate(r)"
+        >
+          {{ formatReviewRate(r) }}
+        </button>
+      </div>
+      <button
+        v-if="fullscreenable && !fullscreen"
+        class="fs-btn"
+        type="button"
+        aria-label="Ver a pantalla completa"
+        :disabled="project.clips.length === 0"
+        data-testid="fullscreen-enter"
+        @click="enterFullscreen"
+      >
+        <AppIcon name="fullscreen" :size="24" />
+        <!-- En «Tamaño y sitio» la F es otra cosa (el efecto a pantalla completa): ahí no se dibuja. -->
+        <KeyHint v-if="!tracksStore.boxEditing.value" k="F" />
+      </button>
+      <button v-if="fullscreen" class="fs-btn exit" type="button" data-testid="fullscreen-exit" @click="exitFullscreen">
+        <AppIcon name="close" :size="22" />
+        <span>Salir</span>
+        <KeyHint k="Esc" />
+      </button>
     </div>
   </div>
 </template>
@@ -806,8 +1364,39 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
   transform-origin: 50% 50%;
   pointer-events: none;
 }
+.overlay-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+}
+.overlay-layer > :deep(*) {
+  pointer-events: auto;
+}
+.clip-fade {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  background: #000;
+  pointer-events: none;
+}
+/* Cada trozo montado, en su capa (debajo del negro de aparecer, del color del paso y de las pistas). */
+.clip-layer {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  transform-origin: 50% 50%;
+  pointer-events: none;
+}
+.join-color {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  pointer-events: none;
+}
 .video.inset {
-  box-shadow: 0 2px 12px rgb(0 0 0 / 0.45);
+  /* Encima, como al guardar: sin sombra (el fichero no la lleva). */
+  box-shadow: none;
 }
 .video.hidden {
   visibility: hidden;
@@ -850,6 +1439,7 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
 }
 .empty {
   position: absolute;
+  z-index: 50;
   inset: 0;
   display: grid;
   place-items: center;
@@ -858,6 +1448,7 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
 }
 .notice {
   position: absolute;
+  z-index: 50;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
@@ -906,5 +1497,137 @@ defineExpose({ play, pause, toggle, seek, showSource, playing, currentMs, durati
   white-space: nowrap;
   min-width: 110px;
   color: rgb(255 255 255 / 0.85);
+}
+/* Pantalla completa: en la capa superior (popover) y ocupando toda la ventana, sin lo que el navegador pone de
+   serie a un popover (borde, relleno, tamaño ajustado al contenido y colores del sistema); sin bordes redondeados
+   y la imagen con algo más de aire. */
+.player.is-fullscreen {
+  position: fixed;
+  inset: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+}
+.player.is-fullscreen .stage {
+  margin: 20px 24px 0;
+}
+.player.is-fullscreen .controls {
+  padding: 12px 24px 18px;
+}
+/* «Repasar más rápido»: aviso visible mientras dura, para no confundirlo con la velocidad de un trozo. */
+.review-notice {
+  position: absolute;
+  z-index: 50;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 0.72);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.review {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.review-label {
+  margin-right: 4px;
+  font-size: 15px;
+  color: rgb(255 255 255 / 0.85);
+  white-space: nowrap;
+}
+.review-btn {
+  min-width: 48px;
+  min-height: 40px;
+  padding: 0 8px;
+  border: 2px solid rgb(255 255 255 / 0.35);
+  border-radius: 10px;
+  background: transparent;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.review-btn:hover {
+  border-color: rgb(255 255 255 / 0.7);
+}
+.review-btn.on {
+  border-color: #fff;
+  background: #fff;
+  color: var(--stage);
+}
+.fs-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 2px solid rgb(255 255 255 / 0.35);
+  border-radius: 12px;
+  background: transparent;
+  color: #fff;
+  font-size: 17px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.fs-btn:hover:not(:disabled) {
+  border-color: rgb(255 255 255 / 0.7);
+}
+.fs-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.fs-btn.exit {
+  border-color: #fff;
+  background: #fff;
+  color: var(--stage);
+}
+/* Con poco ancho, «Repasar más rápido» se queda en los tres botones (el aviso sigue diciendo qué es). */
+@container preview (max-width: 820px) {
+  .review-label {
+    display: none;
+  }
+}
+/* A pantalla completa hay sitio (las consultas de contenedor siguen mirando la columna de «Tu vídeo»). */
+.player.is-fullscreen .review-label {
+  display: inline;
+}
+/* En «Tu vídeo» la vista previa se puede encoger (divisor): baja, los controles ocupan menos alto. */
+@container preview (max-height: 340px) {
+  .stage {
+    margin: 8px 10px 0;
+  }
+  .controls {
+    gap: 10px;
+    padding: 6px 12px 8px;
+  }
+  .play {
+    min-height: 42px;
+    min-width: 132px;
+    font-size: 16px;
+  }
+  .clock {
+    font-size: 16px;
+  }
 }
 </style>

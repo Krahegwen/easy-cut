@@ -27,8 +27,10 @@ import {
   setTargetDuration,
   sourceToOutput,
   splitClip,
+  trimClip,
   type Clip,
   type Project,
+  syncMediaPool,
 } from './project'
 import { fakeMedia } from './test-helpers'
 
@@ -109,6 +111,59 @@ describe('entrada y salida', () => {
       { startMs: 6000, endMs: 9500 },
     ])
     expect(clipInOut(clip(p))).toEqual({ startMs: 1000, endMs: 9500 })
+  })
+})
+
+describe('recortar desde las pistas (trimClip)', () => {
+  it('por el principio y por el final, en tiempo del vídeo, hasta donde dé el original', () => {
+    let p = setInOut(withClip(), 'a', { inMs: 2000, outMs: 8000 })
+    p = trimClip(p, 'a', 'start', 1500)
+    expect(clipInOut(clip(p))).toEqual({ startMs: 3500, endMs: 8000 })
+    p = trimClip(p, 'a', 'end', -1000)
+    expect(clipInOut(clip(p))).toEqual({ startMs: 3500, endMs: 7000 })
+    // Alargar no pasa del original.
+    p = trimClip(trimClip(p, 'a', 'start', -99_000), 'a', 'end', 99_000)
+    expect(clipInOut(clip(p))).toEqual({ startMs: 0, endMs: 10_000 })
+    // Nunca más corto que el mínimo.
+    expect(clipOutputMs(clip(trimClip(p, 'a', 'start', 99_000)))).toBe(MIN_PIECE_MS)
+    expect(clipOutputMs(clip(trimClip(p, 'a', 'end', -99_000)))).toBe(MIN_PIECE_MS)
+    expect(trimClip(p, 'a', 'end', 0)).toBe(p)
+    expect(trimClip(p, 'nope', 'end', 100)).toBe(p)
+  })
+
+  it('con otra velocidad, el original se mueve lo arrastrado por la velocidad', () => {
+    let p = setSpeed(withClip(), 'a', 2) // dura 5 s
+    p = trimClip(p, 'a', 'start', 1000)
+    expect(clipInOut(clip(p)).startMs).toBe(2000)
+    expect(clipOutputMs(clip(p))).toBe(4000)
+    p = trimClip(p, 'a', 'end', -1000)
+    expect(clipInOut(clip(p)).endMs).toBe(8000)
+    p = setSpeed(p, 'a', 0.5) // 6 s de original → 12 s
+    p = trimClip(p, 'a', 'end', 2000)
+    expect(clipInOut(clip(p)).endMs).toBe(9000)
+  })
+
+  it('con pausas quitadas, recortar se salta lo quitado y no estira un rango por encima de una pausa', () => {
+    const pauses = applyKeepSegments(withClip(), 'a', [
+      { startMs: 0, endMs: 2000 },
+      { startMs: 4000, endMs: 6000 },
+      { startMs: 8000, endMs: 10_000 },
+    ]) // se ven 6 s
+    // 2,5 s de lo que se ve: 2 s del primer rango y 0,5 s del segundo.
+    const s = trimClip(pauses, 'a', 'start', 2500)
+    expect(clip(s).segments).toEqual([
+      { startMs: 4500, endMs: 6000 },
+      { startMs: 8000, endMs: 10_000 },
+    ])
+    // Justo en la frontera (4 s de lo que se ve): acaba donde acaba el segundo rango, sin coger la pausa.
+    const e = trimClip(pauses, 'a', 'end', -2000)
+    expect(clip(e).segments).toEqual([
+      { startMs: 0, endMs: 2000 },
+      { startMs: 4000, endMs: 6000 },
+    ])
+    expect(clipOutputMs(clip(e))).toBe(4000)
+    // Al alargar por delante se estira el primer rango.
+    expect(clip(trimClip(s, 'a', 'start', -1000)).segments[0]).toEqual({ startMs: 3500, endMs: 6000 })
   })
 })
 
@@ -313,8 +368,8 @@ describe('serialización', () => {
     p = setTargetDuration(setAspect(p, '1:1'), 60_000)
     const json = serializeProject(p)
     expect(JSON.parse(json).app).toBe('easy-cut')
-    expect(JSON.parse(json).version).toBe(3)
-    expect(parseProject(json)).toEqual(p)
+    expect(JSON.parse(json).version).toBe(7)
+    expect(parseProject(json)).toEqual(syncMediaPool(p))
   })
 
   it('rechaza ficheros que no son proyectos o son de una versión futura', () => {

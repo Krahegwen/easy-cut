@@ -15,7 +15,6 @@ import {
   setCover,
   setFraming,
   setInOut,
-  setInset,
   setMuted,
   setSpeed,
   type Project,
@@ -46,7 +45,6 @@ describe('duplicar un trozo', () => {
     p = rotateClip(p, 'a', 1)
     p = setFraming(p, 'a', { mode: 'fill', zoom: 1.5, offsetX: 0.2 })
     p = setCover(p, 'a', cover, 1000)
-    p = setInset(p, 'a', { corner: 'top-left', size: 'medium' })
     const original = p.clips[0]!
     const copy = duplicateClip(original, 'nuevo')
 
@@ -62,7 +60,6 @@ describe('duplicar un trozo', () => {
     expect(copy.picture).not.toBe(original.picture)
     if (copy.picture.kind === 'cover' && original.picture.kind === 'cover') {
       expect(copy.picture.framing).not.toBe(original.picture.framing)
-      expect(copy.picture.inset).not.toBe(original.picture.inset)
     }
   })
 

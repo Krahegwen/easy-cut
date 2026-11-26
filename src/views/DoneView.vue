@@ -4,15 +4,23 @@ import { computed, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import KeyHint from '../components/KeyHint.vue'
 import KeysButton from '../components/KeysButton.vue'
-import { baseName, creditsText, formatDuration, projectCredits } from '../domain'
+import { baseName, creditsText, describeSave, formatDuration, projectCredits, saveLogDetails } from '../domain'
 import { copyText } from '../lib/clipboard'
 import { askConfirm } from '../lib/confirm'
 import { useShortcuts } from '../lib/use-shortcuts'
-import { library, store } from '../store'
+import { library, saveFlow, store, trim } from '../store'
 
 const copied = ref(false)
+/** Cómo se ha guardado (tarjeta gráfica o procesador) y cuánto ha tardado; los detalles, para el dueño. */
+const saveLog = computed(() => saveFlow.lastLog.value)
+const detailsCopied = ref(false)
+async function copyDetails() {
+  if (saveLog.value) detailsCopied.value = await copyText(saveLogDetails(saveLog.value))
+}
+/** ¿Viene de «Solo recortar»? Entonces se vuelve allí, y no hay créditos (no lleva nada de la biblioteca). */
+const fromTrim = computed(() => saveFlow.origin.value === 'trim')
 /** Material de la biblioteca con autor que pide que se le nombre (para la descripción del vídeo). */
-const credits = computed(() => projectCredits(store.project.value, library.catalog.value))
+const credits = computed(() => (fromTrim.value ? [] : projectCredits(store.project.value, library.catalog.value)))
 const creditsCopied = ref(false)
 async function copyCredits() {
   creditsCopied.value = await copyText(creditsText(credits.value))
@@ -64,7 +72,9 @@ useShortcuts({
   title: '¡Listo!',
   shortcuts: () => [
     { id: 'open-video', keys: ['Enter'], label: 'Intro', description: sound.value ? '«Escuchar»' : '«Ver el vídeo»', run: open },
-    { id: 'back', keys: ['Escape'], label: 'Esc', description: 'volver a tu vídeo', run: () => store.go('editor') },
+    fromTrim.value
+      ? { id: 'back', keys: ['Escape'], label: 'Esc', description: 'volver a recortar', run: () => store.go('trim') }
+      : { id: 'back', keys: ['Escape'], label: 'Esc', description: 'volver a tu vídeo', run: () => store.go('editor') },
   ],
 })
 </script>
@@ -78,6 +88,13 @@ useShortcuts({
       <p class="where">{{ sound ? 'El sonido está guardado en «Mis montajes»' : 'Tu vídeo está guardado en «Mis montajes»' }}</p>
       <p v-if="store.lastExport.value" class="file muted" data-testid="done-file">
         {{ baseName(store.lastExport.value.path) }} · dura {{ formatDuration(store.lastExport.value.durationMs) }}
+      </p>
+      <p v-if="saveLog" class="save-info muted" data-testid="done-save-info">
+        <span data-testid="done-save-summary">{{ describeSave(saveLog) }}</span>
+        <button class="btn small quiet" type="button" data-testid="copy-save-details" @click="copyDetails">
+          <AppIcon :name="detailsCopied ? 'check' : 'copy'" :size="16" />
+          {{ detailsCopied ? 'Detalles copiados' : 'Copiar detalles' }}
+        </button>
       </p>
       <div class="grid">
         <button class="btn primary large" type="button" data-testid="open-video" @click="open">
@@ -103,7 +120,22 @@ useShortcuts({
           {{ creditsCopied ? 'Créditos copiados' : 'Copiar los créditos' }}
         </button>
       </div>
-      <div class="secondary">
+      <div v-if="fromTrim" class="secondary">
+        <button class="btn" type="button" data-testid="back-to-trim" @click="store.go('trim')">
+          <AppIcon name="back" />
+          Volver a recortar
+          <KeyHint k="Esc" />
+        </button>
+        <button class="btn" type="button" data-testid="done-trim-convert" @click="trim.convert()">
+          <AppIcon name="film" />
+          Convertir en un vídeo normal
+        </button>
+        <button class="btn" type="button" data-testid="done-trim-another" @click="trim.begin()">
+          <AppIcon name="scissors" />
+          Recortar otro vídeo
+        </button>
+      </div>
+      <div v-else class="secondary">
         <button class="btn" type="button" data-testid="save-another-way" @click="store.go('save')">
           <AppIcon name="save" />
           Guardarlo también de otra forma
@@ -154,6 +186,14 @@ h1 {
 }
 .file {
   overflow-wrap: anywhere;
+}
+.save-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 10px;
+  font-size: 15px;
 }
 .grid {
   display: grid;

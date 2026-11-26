@@ -239,8 +239,8 @@ async function useVoiceRecording() {
   if (placement === null) return
   unloadReview()
   voiceRecording.value = null
-  if (placement.resume) await store.resumeAutosave()
-  const ok = await store.addRecording(v.path, { targetMs: targetMs.value, fresh: placement.fresh && !placement.resume })
+  if (placement.resume) await store.openProject(placement.resume)
+  const ok = await store.addRecording(v.path, { targetMs: targetMs.value, fresh: placement.fresh })
   if (!ok) {
     store.showError('He guardado tu voz, pero no la puedo leer para añadirla al vídeo.', store.preparing.value[0]?.details ?? v.path)
     store.go(store.project.value.clips.length > 0 ? 'editor' : 'home')
@@ -369,37 +369,31 @@ async function saveIt(): Promise<SavedRecording | null> {
 }
 
 /**
- * Sin vídeo abierto pero con uno a medias: ¿la grabación va a ese o a uno nuevo?
- * (fresh = empezar uno nuevo; resume = seguir con el que estaba a medias).
+ * Desde «Tu vídeo», la grabación va a ese vídeo. Desde Inicio, si hay vídeos en marcha: ¿al más reciente o a
+ * uno nuevo? (fresh = empezar uno nuevo; resume = el id del vídeo al que se añade).
  */
-async function askPlacement(): Promise<{ fresh: boolean; resume: boolean } | null> {
-  let fresh = store.project.value.clips.length === 0
-  let resume = false
-  if (fresh && store.autosave.value) {
-    const startNew = await askConfirm({
-      title: '¿Dónde pongo la grabación?',
-      message: 'Tienes un vídeo sin terminar. Puedo añadirla al final de ese vídeo o empezar uno nuevo con ella.',
-      confirmLabel: 'Empezar un vídeo nuevo con ella',
-      cancelLabel: 'Añadirla al vídeo sin terminar',
-    })
-    resume = !startNew
-    fresh = startNew
-  }
-  return { fresh, resume }
+async function askPlacement(): Promise<{ fresh: boolean; resume: string | null } | null> {
+  const fromEditor = store.previousScreen.value === 'editor' && store.project.value.clips.length > 0
+  if (fromEditor) return { fresh: false, resume: null }
+  const recent = store.recentProject.value
+  if (!recent) return { fresh: true, resume: null }
+  const startNew = await askConfirm({
+    title: '¿Dónde pongo la grabación?',
+    message: `Puedo añadirla al final de «${recent.name}» o empezar un vídeo nuevo con ella.`,
+    confirmLabel: 'Empezar un vídeo nuevo con ella',
+    cancelLabel: `Añadirla a «${recent.name}»`,
+  })
+  return startNew ? { fresh: true, resume: null } : { fresh: false, resume: recent.id }
 }
 
 async function useRecording() {
   const placement = await askPlacement()
   if (placement === null) return
-  let fresh = placement.fresh
   savingLabel.value = 'Preparando la grabación…'
   const res = await saveIt()
   if (!res) return
-  if (placement.resume) {
-    await store.resumeAutosave()
-    fresh = false
-  }
-  const ok = await store.addRecording(res.path, { targetMs: targetMs.value, fresh })
+  if (placement.resume) await store.openProject(placement.resume)
+  const ok = await store.addRecording(res.path, { targetMs: targetMs.value, fresh: placement.fresh })
   if (!ok) {
     store.showError('He guardado la grabación, pero no la puedo leer para añadirla al vídeo.', store.preparing.value[0]?.details ?? res.path)
     store.go(store.project.value.clips.length > 0 ? 'editor' : 'home')

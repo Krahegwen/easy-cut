@@ -5,12 +5,17 @@
 // ItemAnchor en project.ts). Aquí: resolver los tiempos, colocar sin solapes, mover, recortar, partir,
 // duplicar, imanes y lo que hace falta para la vista previa. Todo puro e inmutable, en milisegundos.
 
+import { collageName, collageNaturalMs, COLLAGE_DEFAULT_MS } from './collage'
+import { copyLook, shiftKeyframes, splitKeyframes } from './keyframes'
+import { effectiveFadeLengths, fadeGainAt, isEasing, type Easing } from './motion'
 import {
   anchorAt,
   anchorTimeMs,
   clipOutputMs,
+  clipTimeline,
+  type ClipTimeline,
+  type Collage,
   MAX_ITEM_VOLUME,
-  MAX_TRACKS,
   normalizeLook,
   type EffectLook,
   type ItemSource,
@@ -22,7 +27,7 @@ import {
 
 /** Un elemento no puede quedar más corto que esto en pantalla. */
 export const MIN_ITEM_MS = 300
-/** Lo que duran la entrada y la salida suaves (una duración fija: nada de milisegundos en la interfaz). */
+/** Lo que duraban la entrada y la salida suaves del interruptor de antes (ahora: Corta / Media / Larga). */
 export const SOFT_FADE_MS: Record<TrackKind, number> = { sound: 1000, effect: 500 }
 /** Lo que dura de serie una imagen fija. */
 export const DEFAULT_STILL_MS = 4000
@@ -30,25 +35,16 @@ export const DEFAULT_STILL_MS = 4000
 // ---------------------------------------------------------------------------
 // Tiempos de la fila principal
 
-/** Inicio y duración de cada trozo y duración total, para resolver los anclajes. */
-export interface ProjectTiming {
-  starts: number[]
-  lengths: number[]
-  totalMs: number
-}
+/** Inicio y duración de cada trozo, sus juntas y duración total, para resolver los anclajes (ver ClipTimeline). */
+export type ProjectTiming = ClipTimeline
 
 /**
- * Tiempos de la fila de trozos. Sin `lengths`, los de la vista previa (clipOutputMs); al guardar se pasan
- * los de los fotogramas enteros de cada trozo, para que cada sonido caiga donde cae su trozo en el fichero.
+ * Tiempos de la fila de trozos (con los solapes de las transiciones). Sin `lengths`, los de la vista previa
+ * (clipOutputMs); al guardar se pasan los de los fotogramas enteros de cada trozo con `unitsPerMs` = F/1000, para que
+ * cada sonido caiga donde cae su trozo en el fichero.
  */
-export function projectTiming(project: Project, lengths: readonly number[] = project.clips.map(clipOutputMs)): ProjectTiming {
-  const starts: number[] = []
-  let acc = 0
-  for (const len of lengths) {
-    starts.push(acc)
-    acc += len
-  }
-  return { starts, lengths: [...lengths], totalMs: acc }
+export function projectTiming(project: Project, lengths: readonly number[] = project.clips.map(clipOutputMs), unitsPerMs = 1): ProjectTiming {
+  return clipTimeline(project, lengths, unitsPerMs)
 }
 
 // ---------------------------------------------------------------------------
@@ -59,9 +55,9 @@ export function itemLoopMs(item: TrackItem): number {
   return Math.max(1, item.outMs - item.inMs)
 }
 
-/** ¿Su duración en pantalla se elige aparte (repite o es una imagen fija)? */
+/** ¿Su duración en pantalla se elige aparte (repite, es una imagen fija o es un collage)? */
 export function itemHasFreeLength(item: TrackItem): boolean {
-  return item.repeat || item.still
+  return item.repeat || item.still || item.source.type === 'collage'
 }
 
 /** Cuánto dura en pantalla si empieza en `startMs` (null en durationMs = hasta el final del vídeo). */
@@ -86,6 +82,15 @@ export function itemStartMs(project: Project, item: TrackItem, timing: ProjectTi
 }
 
 function resolveOne(project: Project, track: Track, trackIndex: number, item: TrackItem, timing: ProjectTiming): ResolvedItem {
+  if (item.source.type === 'clip') {
+    // «El vídeo de este trozo»: justo lo que dura su trozo, desde su principio.
+    const clipId = item.source.clipId
+    const i = project.clips.findIndex((c) => c.id === clipId)
+    if (i < 0) return { item, track, trackIndex, startMs: 0, endMs: 0, shownEndMs: 0 }
+    const start = timing.starts[i]!
+    const end = start + timing.lengths[i]!
+    return { item, track, trackIndex, startMs: start, endMs: end, shownEndMs: Math.min(end, timing.totalMs) }
+  }
   const startMs = itemStartMs(project, item, timing)
   const endMs = startMs + itemLengthMs(item, startMs, timing.totalMs)
   return { item, track, trackIndex, startMs, endMs, shownEndMs: Math.min(endMs, timing.totalMs) }
@@ -117,25 +122,14 @@ export function itemSourceTimeAt(item: TrackItem, localMs: number): number {
   return item.inMs + ((item.phaseMs + t) % itemLoopMs(item))
 }
 
-/** Entrada y salida suaves que caben en esta duración (entre las dos, como mucho lo que dura). */
+/** Entrada y salida que caben en esta duración (entre las dos, como mucho lo que dura). */
 export function effectiveFades(item: TrackItem, lengthMs: number): { inMs: number; outMs: number } {
-  let fadeIn = Math.max(0, item.fadeInMs)
-  let fadeOut = Math.max(0, item.fadeOutMs)
-  const total = fadeIn + fadeOut
-  if (total > lengthMs && total > 0) {
-    fadeIn = Math.floor((lengthMs * fadeIn) / total)
-    fadeOut = Math.floor((lengthMs * fadeOut) / total)
-  }
-  return { inMs: fadeIn, outMs: fadeOut }
+  return effectiveFadeLengths(item, lengthMs)
 }
 
-/** Factor de las entradas y salidas suaves (0..1) a los `localMs` ms de un elemento de `lengthMs`. */
+/** Factor de aparecer y desaparecer (0..1), con su curva, a los `localMs` ms de un elemento de `lengthMs`. */
 export function itemFadeAt(item: TrackItem, localMs: number, lengthMs: number): number {
-  const f = effectiveFades(item, lengthMs)
-  let g = 1
-  if (f.inMs > 0 && localMs < f.inMs) g = Math.min(g, Math.max(0, localMs) / f.inMs)
-  if (f.outMs > 0 && localMs > lengthMs - f.outMs) g = Math.min(g, Math.max(0, lengthMs - localMs) / f.outMs)
-  return Math.min(1, Math.max(0, g))
+  return fadeGainAt(item, localMs, lengthMs)
 }
 
 /** Elementos que suenan o se ven en `t`, o que empiezan en los próximos `aheadMs` (para cargarlos antes). */
@@ -148,10 +142,6 @@ export function itemsAround(resolved: readonly ResolvedItem[], t: number, aheadM
 
 export function tracksOfKind(project: Project, kind: TrackKind): Track[] {
   return project.tracks.filter((t) => t.kind === kind)
-}
-
-export function canAddTrack(project: Project, kind: TrackKind): boolean {
-  return tracksOfKind(project, kind).length < MAX_TRACKS[kind]
 }
 
 /** «Sonidos», «Sonidos 2»…; «Efectos», «Efectos 2»… (el primero libre). */
@@ -167,11 +157,11 @@ export function createTrack(kind: TrackKind, id: string, name: string): Track {
 }
 
 /**
- * Añade una pista (si cabe). Las de efectos van encima de las que ya hay (lo nuevo se ve por encima); las
- * de sonido, debajo de las de sonido.
+ * Añade una pista (no hay límite: la vista de pistas se desplaza). Las de efectos van encima de las que ya
+ * hay (lo nuevo se ve por encima); las de sonido, debajo de las de sonido.
  */
 export function addTrack(project: Project, track: Track): Project {
-  if (!canAddTrack(project, track.kind)) return project
+  if (project.tracks.some((t) => t.id === track.id)) return project
   const tracks = project.tracks.slice()
   if (track.kind === 'effect') {
     const first = tracks.findIndex((t) => t.kind === 'effect')
@@ -217,6 +207,36 @@ export function setMainMuted(project: Project, mainMuted: boolean): Project {
   return project.mainMuted === mainMuted ? project : { ...project, mainMuted }
 }
 
+/** Lo que suena por su cuenta: la fila «Vídeo» (`'main'`) o una pista de sonido (su id). */
+export type SoundRow = 'main' | string
+
+function soundRowMuted(project: Project, row: SoundRow): boolean {
+  return row === 'main' ? project.mainMuted : project.tracks.find((t) => t.id === row)?.muted ?? true
+}
+
+/** ¿Solo se oye esta fila? (ella suena y las demás de sonido, que las hay, están silenciadas). */
+export function isSoloSound(project: Project, row: SoundRow): boolean {
+  const others: SoundRow[] = ['main', ...tracksOfKind(project, 'sound').map((t) => t.id)].filter((r) => r !== row)
+  return others.length > 0 && !soundRowMuted(project, row) && others.every((r) => soundRowMuted(project, r))
+}
+
+/**
+ * «Escuchar solo esta»: la fila suena y las demás de sonido (la fila «Vídeo» incluida) se silencian, en un
+ * solo cambio. Si ya era la única que sonaba, vuelven a sonar todas.
+ */
+export function toggleSoloSound(project: Project, row: SoundRow): Project {
+  if (row !== 'main' && !project.tracks.some((t) => t.id === row && t.kind === 'sound')) return project
+  const all = !isSoloSound(project, row)
+  const mainMuted = all ? row !== 'main' : false
+  const tracks = project.tracks.map((t) => {
+    if (t.kind !== 'sound') return t
+    const muted = all ? t.id !== row : false
+    return t.muted === muted ? t : { ...t, muted }
+  })
+  const changed = mainMuted !== project.mainMuted || tracks.some((t, i) => t !== project.tracks[i])
+  return changed ? { ...project, mainMuted, tracks } : project
+}
+
 // ---------------------------------------------------------------------------
 // Elementos: crear y buscar
 
@@ -227,6 +247,8 @@ export interface ItemDefaults {
   volume?: number
   fadeInMs?: number
   fadeOutMs?: number
+  fadeInEasing?: Easing
+  fadeOutEasing?: Easing
   look?: Partial<Omit<EffectLook, 'box'>> & { box?: Partial<EffectLook['box']> }
 }
 
@@ -275,8 +297,65 @@ export function createItem(input: NewItem): TrackItem {
     volume: clampVolume(d.volume ?? (input.kind === 'sound' ? 1 : 0)),
     fadeInMs: Math.max(0, Math.round(d.fadeInMs ?? 0)),
     fadeOutMs: Math.max(0, Math.round(d.fadeOutMs ?? 0)),
+    fadeInEasing: isEasing(d.fadeInEasing) ? d.fadeInEasing : 'linear',
+    fadeOutEasing: isEasing(d.fadeOutEasing) ? d.fadeOutEasing : 'linear',
     look,
+    collage: null,
   }
+}
+
+/**
+ * Un collage nuevo (aún sin sitio), vacío o con los huecos ya puestos: siempre «Normal», a pantalla completa y sin
+ * sonido propio (suena, como mucho, el hueco que se elija). Dura lo que el vídeo más largo de sus huecos (sin pasar
+ * de `maxMs`) o, sin vídeos, COLLAGE_DEFAULT_MS.
+ */
+export function createCollageItem(id: string, collage: Collage, maxMs = Number.POSITIVE_INFINITY): TrackItem {
+  return {
+    id,
+    source: { type: 'collage' },
+    name: collageName(collage),
+    sourceDurationMs: 0,
+    still: false,
+    hasAudio: false,
+    anchor: { clipId: null, offsetMs: 0 },
+    inMs: 0,
+    outMs: 0,
+    phaseMs: 0,
+    repeat: false,
+    durationMs: collageDurationFor(collage, maxMs),
+    volume: 0,
+    fadeInMs: 0,
+    fadeOutMs: 0,
+    fadeInEasing: 'linear',
+    fadeOutEasing: 'linear',
+    look: normalizeLook({ mix: 'normal', opacity: 1, fit: 'cover', box: { x: 0.5, y: 0.5, scale: 1 } }),
+    collage,
+  }
+}
+
+/** Lo que dura de serie un collage: lo del vídeo más largo (sin pasar de `maxMs`) o, sin vídeos, COLLAGE_DEFAULT_MS. */
+export function collageDurationFor(collage: Collage, maxMs = Number.POSITIVE_INFINITY): number {
+  const natural = collageNaturalMs(collage) ?? COLLAGE_DEFAULT_MS
+  return Math.max(MIN_ITEM_MS, Math.round(Math.min(natural, Math.max(MIN_ITEM_MS, maxMs))))
+}
+
+/**
+ * Cambia los huecos de un collage (con una función de collage.ts). Mientras el collage dure lo de serie (lo de su
+ * vídeo más largo, o lo de un collage vacío), sigue a sus vídeos: al poner uno más largo, se alarga (sin pasar del
+ * final del vídeo ni pisar al siguiente); si se ha recortado a mano, se queda como está.
+ */
+export function updateCollage(project: Project, itemId: string, fn: (c: Collage) => Collage, timing = projectTiming(project)): Project {
+  const n = neighbours(project, itemId, timing)
+  if (!n || !n.self.item.collage) return project
+  const item = n.self.item
+  const collage = fn(item.collage!)
+  if (collage === item.collage) return project
+  let durationMs = item.durationMs
+  const s = n.self.startMs
+  const room = Math.min(n.nextStart, timing.totalMs) - s
+  const before = collageDurationFor(item.collage!, room)
+  if (durationMs !== null && item.phaseMs === 0 && Math.abs(durationMs - before) <= 1) durationMs = collageDurationFor(collage, room)
+  return updateItem(project, itemId, (i) => ({ ...i, collage, durationMs, name: collageName(collage) }))
 }
 
 function clampVolume(v: number): number {
@@ -374,9 +453,9 @@ export type InsertResult =
   | { ok: false; reason: 'no-room' | 'empty-video' }
 
 /**
- * «Poner aquí»: en `startMs`, en la primera pista del tipo con sitio; si no hay, en una pista nueva (si
- * caben más); si tampoco, en el primer hueco a continuación. `newTrack` da el id y el nombre de la pista
- * que se crearía. Un solo cambio del proyecto.
+ * «Poner aquí»: en `startMs`, en la primera pista del tipo con sitio; si no hay, en una pista nueva.
+ * Con `trackId` (solo esa pista), si no cabe ahí, en el primer hueco a continuación. `newTrack` da el id y
+ * el nombre de la pista que se crearía. Un solo cambio del proyecto.
  */
 export function insertItem(
   project: Project,
@@ -396,7 +475,7 @@ export function insertItem(
       return { ok: true, project: putItem(project, t.id, item, start, timing), trackId: t.id, startMs: start, newTrack: false, shifted: false }
     }
   }
-  if (!options.trackId && canAddTrack(project, kind)) {
+  if (!options.trackId) {
     const withTrack = addTrack(project, createTrack(kind, newTrack.id, newTrack.name ?? defaultTrackName(project, kind)))
     return { ok: true, project: putItem(withTrack, newTrack.id, item, start, timing), trackId: newTrack.id, startMs: start, newTrack: true, shifted: false }
   }
@@ -428,7 +507,16 @@ export function updateItem(project: Project, itemId: string, fn: (item: TrackIte
  */
 export function moveItem(project: Project, itemId: string, startMs: number, toTrackId?: string, timing = projectTiming(project)): Project | null {
   const found = findItem(project, itemId)
+  // «El vídeo de este trozo» va siempre con su trozo: solo puede cambiar de pista.
   if (!found) return null
+  if (found.item.source.type === 'clip') {
+    const target = project.tracks.find((t) => t.id === toTrackId)
+    if (!target || target.kind !== 'effect' || target.id === found.track.id) return null
+    const r = resolveOne(project, found.track, found.trackIndex, found.item, timing)
+    if (!fitsAt(project, target.id, r.startMs, r.endMs - r.startMs, itemId, timing)) return null
+    const without = removeItem(project, itemId)
+    return updateTrack(without, target.id, (t) => ({ ...t, items: [...t.items, found.item] }))
+  }
   const target = toTrackId ? project.tracks.find((t) => t.id === toTrackId) : found.track
   if (!target || target.kind !== found.track.kind) return null
   const maxStart = Math.max(0, timing.totalMs - MIN_ITEM_MS)
@@ -462,23 +550,29 @@ function mod(a: number, n: number): number {
  */
 export function trimItemStart(project: Project, itemId: string, newStartMs: number, timing = projectTiming(project)): Project {
   const n = neighbours(project, itemId, timing)
-  if (!n) return project
+  if (!n || n.self.item.source.type === 'clip') return project
   const { item, startMs: s, endMs: e } = n.self
   let start = Math.round(Math.min(Math.max(newStartMs, n.prevEnd, 0), e - MIN_ITEM_MS))
+  const collage = item.source.type === 'collage'
+  // Un collage no se alarga por delante de su principio (sus vídeos empiezan ahí).
+  if (collage) start = Math.max(start, s - item.phaseMs)
   let next: TrackItem
   if (itemHasFreeLength(item)) {
     const delta = start - s
     next = {
       ...item,
       durationMs: item.durationMs === null ? null : e - start,
-      phaseMs: item.repeat ? mod(item.phaseMs + delta, itemLoopMs(item)) : 0,
+      // Un collage va por donde iba, sin vueltas.
+      phaseMs: item.repeat ? mod(item.phaseMs + delta, itemLoopMs(item)) : collage ? item.phaseMs + delta : 0,
     }
   } else {
     const inMs = Math.min(Math.max(0, item.inMs + (start - s)), item.outMs - MIN_ITEM_MS)
     start = s + (inMs - item.inMs)
     next = { ...item, inMs }
   }
-  if (start === s && next.inMs === item.inMs && next.durationMs === item.durationMs) return project
+  if (start === s && next.inMs === item.inMs && next.durationMs === item.durationMs && next.phaseMs === item.phaseMs) return project
+  // Las marcas de sitio y tamaño van en tiempo del elemento: se corren para quedarse en su sitio del vídeo.
+  if (next.look && next.look.keyframes.length > 0 && start !== s) next = { ...next, look: { ...next.look, keyframes: shiftKeyframes(next.look.keyframes, s - start) } }
   next = { ...next, anchor: anchorForItem(project, next, start, timing) }
   return updateItem(project, itemId, () => next)
 }
@@ -489,7 +583,7 @@ export function trimItemStart(project: Project, itemId: string, newStartMs: numb
  */
 export function trimItemEnd(project: Project, itemId: string, newEndMs: number, timing = projectTiming(project)): Project {
   const n = neighbours(project, itemId, timing)
-  if (!n) return project
+  if (!n || n.self.item.source.type === 'clip') return project
   const { item, startMs: s } = n.self
   const end = Math.round(Math.max(Math.min(newEndMs, n.nextStart), s + MIN_ITEM_MS))
   let next: TrackItem
@@ -508,7 +602,8 @@ export function trimItemEnd(project: Project, itemId: string, newEndMs: number, 
 /** Parte un elemento en `atMs` (tiempo del vídeo). La segunda parte sigue por donde iba. */
 export function splitItem(project: Project, itemId: string, atMs: number, newId: string, timing = projectTiming(project)): Project {
   const found = findItem(project, itemId)
-  if (!found) return project
+  // «El vídeo de este trozo» se parte partiendo el trozo.
+  if (!found || found.item.source.type === 'clip') return project
   const r = resolveOne(project, found.track, found.trackIndex, found.item, timing)
   const at = Math.round(atMs)
   if (at < r.startMs + MIN_ITEM_MS || at > r.shownEndMs - MIN_ITEM_MS) return project
@@ -519,12 +614,23 @@ export function splitItem(project: Project, itemId: string, atMs: number, newId:
     : { ...item, outMs: item.inMs + elapsed, fadeOutMs: 0 }
   const restLength = item.durationMs === null ? null : r.endMs - at
   let second: TrackItem = itemHasFreeLength(item)
-    ? { ...item, id: newId, durationMs: restLength, phaseMs: item.repeat ? mod(item.phaseMs + elapsed, itemLoopMs(item)) : 0, fadeInMs: 0 }
+    ? {
+        ...item,
+        id: newId,
+        durationMs: restLength,
+        // Si repite, por dónde va la vuelta; un collage, por dónde va (sin vueltas).
+        phaseMs: item.repeat ? mod(item.phaseMs + elapsed, itemLoopMs(item)) : item.source.type === 'collage' ? item.phaseMs + elapsed : 0,
+        fadeInMs: 0,
+      }
     : { ...item, id: newId, inMs: item.inMs + elapsed, fadeInMs: 0 }
-  second = { ...second, look: item.look ? { ...item.look, box: { ...item.look.box } } : null, anchor: anchorForItem(project, second, at, timing) }
+  // Las marcas de sitio y tamaño: cada mitad se queda con las suyas (ver splitKeyframes).
+  const marks = item.look ? splitKeyframes(item.look.keyframes, elapsed) : null
+  const firstLook = item.look && marks ? { ...item.look, box: { ...item.look.box }, keyframes: marks.first } : null
+  second = { ...second, look: item.look && marks ? { ...item.look, box: { ...item.look.box }, keyframes: marks.second } : null, anchor: anchorForItem(project, second, at, timing) }
+  const firstPart: TrackItem = { ...first, look: firstLook }
   return updateTrack(project, found.track.id, (t) => {
     const items = t.items.slice()
-    items.splice(found.itemIndex, 1, first, second)
+    items.splice(found.itemIndex, 1, firstPart, second)
     return { ...t, items }
   })
 }
@@ -537,14 +643,14 @@ export type DuplicateResult = { ok: true; project: Project; trackId: string; sta
  */
 export function duplicateItem(project: Project, itemId: string, newId: string, newTrack: { id: string; name?: string }, timing = projectTiming(project)): DuplicateResult {
   const found = findItem(project, itemId)
-  if (!found) return { ok: false }
+  if (!found || found.item.source.type === 'clip') return { ok: false }
   const r = resolveOne(project, found.track, found.trackIndex, found.item, timing)
   const length = r.shownEndMs - r.startMs
   const copy: TrackItem = {
     ...found.item,
     id: newId,
     durationMs: itemHasFreeLength(found.item) ? Math.max(MIN_ITEM_MS, length) : null,
-    look: found.item.look ? { ...found.item.look, box: { ...found.item.look.box } } : null,
+    look: found.item.look ? copyLook(found.item.look) : null,
   }
   const start = r.endMs
   if (start > timing.totalMs - MIN_ITEM_MS) return { ok: false }
@@ -569,14 +675,19 @@ export function setItemVolume(project: Project, itemId: string, volume: number):
   return updateItem(project, itemId, (i) => (i.volume === v ? i : { ...i, volume: v }))
 }
 
-/** «Entrada suave» / «Salida suave»: encendidas, con la duración fija de su tipo. */
-export function setItemFade(project: Project, itemId: string, which: 'in' | 'out', on: boolean): Project {
+/**
+ * Cómo aparece o desaparece: una duración (0 = de golpe) y una curva. Con `true` / `false`, el interruptor de
+ * antes («suave» lineal con la duración de su tipo, o de golpe).
+ */
+export function setItemFade(project: Project, itemId: string, which: 'in' | 'out', fade: boolean | { ms: number; easing: Easing }): Project {
   const found = findItem(project, itemId)
   if (!found) return project
-  const ms = on ? SOFT_FADE_MS[found.track.kind] : 0
+  const choice = typeof fade === 'boolean' ? { ms: fade ? SOFT_FADE_MS[found.track.kind] : 0, easing: 'linear' as Easing } : fade
+  const ms = Math.max(0, Math.round(Number.isFinite(choice.ms) ? choice.ms : 0))
+  const easing: Easing = isEasing(choice.easing) ? choice.easing : 'linear'
   return updateItem(project, itemId, (i) => {
-    if (which === 'in') return i.fadeInMs === ms ? i : { ...i, fadeInMs: ms }
-    return i.fadeOutMs === ms ? i : { ...i, fadeOutMs: ms }
+    if (which === 'in') return i.fadeInMs === ms && i.fadeInEasing === easing ? i : { ...i, fadeInMs: ms, fadeInEasing: easing }
+    return i.fadeOutMs === ms && i.fadeOutEasing === easing ? i : { ...i, fadeOutMs: ms, fadeOutEasing: easing }
   })
 }
 
@@ -588,7 +699,7 @@ export function setItemRepeat(project: Project, itemId: string, repeat: boolean,
   const n = neighbours(project, itemId, timing)
   if (!n) return project
   const { item, startMs: s } = n.self
-  if (item.still || item.repeat === repeat) return project
+  if (item.still || item.repeat === repeat || item.source.type === 'clip' || item.source.type === 'collage') return project
   let next: TrackItem
   if (repeat) {
     // Un efecto repite su fichero entero (así no hay que guardar la vuelta en memoria al guardar el vídeo).
@@ -657,11 +768,38 @@ export function snapMove(points: readonly number[], startMs: number, lengthMs: n
 }
 
 // ---------------------------------------------------------------------------
+// Tamaño y sitio con marcas (ver keyframes.ts)
+
+/** Cambia cómo se ve un efecto con una función sobre su aspecto (mismo proyecto si no cambia). */
+export function updateEffectLook(project: Project, itemId: string, fn: (look: EffectLook) => EffectLook): Project {
+  return updateItem(project, itemId, (i) => {
+    if (!i.look) return i
+    const look = fn(i.look)
+    return look === i.look ? i : { ...i, look }
+  })
+}
+
+/**
+ * Instante del elemento (ms desde su principio) que corresponde a `atMs` del vídeo, sujeto a su tramo: lo que
+ * edita «Tamaño y sitio» con la línea en `atMs`. null si el elemento no está.
+ */
+export function itemLocalMs(project: Project, itemId: string, atMs: number, timing = projectTiming(project)): number | null {
+  const found = findItem(project, itemId)
+  if (!found) return null
+  const r = resolveOne(project, found.track, found.trackIndex, found.item, timing)
+  return Math.round(Math.min(Math.max(0, atMs - r.startMs), Math.max(0, r.shownEndMs - r.startMs)))
+}
+
+// ---------------------------------------------------------------------------
 // Resúmenes para la interfaz
 
 /** Rutas de fichero (no de la biblioteca) que usan las pistas. */
 export function trackFilePaths(project: Project): string[] {
-  return [...new Set(allItems(project).flatMap((i) => (i.source.type === 'file' ? [i.source.path] : [])))]
+  return [
+    ...new Set(
+      allItems(project).flatMap((i) => (i.source.type === 'file' ? [i.source.path] : i.collage ? i.collage.cells.flatMap((c) => (c.source ? [c.source.path] : [])) : [])),
+    ),
+  ]
 }
 
 /** Ids de la biblioteca que usan las pistas. */
@@ -669,12 +807,12 @@ export function libraryAssetIds(project: Project): string[] {
   return [...new Set(allItems(project).flatMap((i) => (i.source.type === 'library' ? [i.source.assetId] : [])))]
 }
 
-/** Cuántos sonidos y efectos lleva pegados cada trozo (para la tira de tarjetas). */
+/** Cuántos sonidos y efectos lleva pegados cada trozo (se ve en su bloque de la fila «Vídeo»). */
 export function attachedCounts(project: Project): Map<string, { sounds: number; effects: number }> {
   const map = new Map<string, { sounds: number; effects: number }>()
   for (const t of project.tracks) {
     for (const i of t.items) {
-      if (!i.anchor.clipId) continue
+      if (!i.anchor.clipId || i.source.type === 'clip') continue
       const c = map.get(i.anchor.clipId) ?? { sounds: 0, effects: 0 }
       if (t.kind === 'sound') c.sounds++
       else c.effects++

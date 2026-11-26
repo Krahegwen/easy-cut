@@ -12,8 +12,10 @@ import {
   serializeProject,
   setInOut,
   splitClip,
+  trimClip,
   type Project,
   type TrackItem,
+  syncMediaPool,
 } from './project'
 import { fakeAudio, fakeMedia } from './test-helpers'
 import {
@@ -27,6 +29,7 @@ import {
   findFreeStart,
   findItem,
   insertItem,
+  isSoloSound,
   itemFadeAt,
   itemSourceTimeAt,
   itemsAround,
@@ -47,6 +50,7 @@ import {
   splitItem,
   trimItemEnd,
   trimItemStart,
+  toggleSoloSound,
   type NewItem,
 } from './tracks'
 
@@ -113,6 +117,28 @@ describe('anclajes', () => {
     expect(times(p).ding).toEqual([18_000, 20_000])
   })
 
+  it('al recortar el principio del trozo ancla, lo pegado sigue a su imagen (y vuelve al alargarlo)', () => {
+    // ding a 4 s de b (14 s del vídeo); late a 8 s de b (18 s); lo de c va con c.
+    let p = put(base(), sound('ding'), 'sound', 14_000)
+    p = put(p, sound('late', 1000), 'sound', 18_000)
+    p = put(p, sound('onc'), 'sound', 25_000, 'sound-2')
+    p = trimClip(p, 'b', 'start', 3000)
+    // b dura 7 s (10–17): ding sigue sobre el mismo momento de b (1 s de su nuevo principio).
+    expect(findItem(p, 'ding')!.item.anchor).toEqual({ clipId: 'b', offsetMs: 1000 })
+    expect(times(p)).toMatchObject({ ding: [11_000, 13_000], late: [15_000, 16_000], onc: [22_000, 24_000] })
+    // Si se recorta más allá de su momento, se sujeta al principio del trozo, con el offset guardado.
+    p = trimClip(p, 'b', 'start', 2000)
+    expect(findItem(p, 'ding')!.item.anchor.offsetMs).toBe(-1000)
+    expect(times(p).ding).toEqual([10_000, 12_000])
+    // Al alargarlo otra vez por delante, todo vuelve a su sitio.
+    p = trimClip(p, 'b', 'start', -5000)
+    expect(times(p)).toMatchObject({ ding: [14_000, 16_000], late: [18_000, 19_000], onc: [25_000, 27_000] })
+    expect(findItem(p, 'ding')!.item.anchor).toEqual({ clipId: 'b', offsetMs: 4000 })
+    // Se guarda y se lee con el offset negativo.
+    const q = trimClip(p, 'b', 'start', 6000)
+    expect(findItem(parseProject(serializeProject(q)), 'ding')!.item.anchor.offsetMs).toBe(-2000)
+  })
+
   it('al partir el trozo, el elemento se queda con la parte donde cae su inicio', () => {
     let p = put(base(), sound('early'), 'sound', 11_000)
     p = put(p, sound('late'), 'sound', 17_000)
@@ -173,13 +199,16 @@ describe('anclajes', () => {
 })
 
 describe('pistas', () => {
-  it('nombres, límites y orden de apilado', () => {
+  it('nombres, sin límite de pistas y orden de apilado', () => {
     let p = base()
     expect(defaultTrackName(p, 'sound')).toBe('Sonidos')
     p = addTrack(p, createTrack('sound', 's1', defaultTrackName(p, 'sound')))
     expect(defaultTrackName(p, 'sound')).toBe('Sonidos 2')
-    for (let i = 2; i <= 6; i++) p = addTrack(p, createTrack('sound', `s${i}`, defaultTrackName(p, 'sound')))
-    expect(p.tracks.filter((t) => t.kind === 'sound')).toHaveLength(4)
+    for (let i = 2; i <= 12; i++) p = addTrack(p, createTrack('sound', `s${i}`, defaultTrackName(p, 'sound')))
+    expect(p.tracks.filter((t) => t.kind === 'sound')).toHaveLength(12)
+    expect(p.tracks.at(-1)!.name).toBe('Sonidos 12')
+    // El mismo id dos veces no crea otra pista.
+    expect(addTrack(p, createTrack('sound', 's3', 'Otra'))).toBe(p)
     p = addTrack(p, createTrack('effect', 'e1', 'Efectos'))
     p = addTrack(p, createTrack('effect', 'e2', 'Efectos 2'))
     // La nueva de efectos va encima de las que había.
@@ -198,7 +227,7 @@ describe('pistas', () => {
     expect(setMainMuted(p, false)).toBe(p)
   })
 
-  it('«Poner aquí»: la primera pista con sitio; si no, una nueva; si no caben más, a continuación', () => {
+  it('«Poner aquí»: la primera pista con sitio; si no, una nueva (sin límite); en una pista dada, a continuación', () => {
     let p = put(base(), sound('a1'), 'sound', 5000, 't1')
     // Pisa a a1: va a una pista nueva.
     const r = insertItem(p, sound('a2'), 'sound', 6000, { id: 't2' })
@@ -207,13 +236,40 @@ describe('pistas', () => {
     // En un sitio libre, a la primera pista.
     const r2 = insertItem(p, sound('a3'), 'sound', 20_000, { id: 't3' })
     expect(r2.ok && r2.trackId).toBe('t1')
-    // Llenas las cuatro pistas en el 5 s: el quinto va a continuación en la primera.
-    p = put(p, sound('a4'), 'sound', 5000, 't3')
-    p = put(p, sound('a5'), 'sound', 5000, 't4')
-    const r3 = insertItem(p, sound('a6'), 'sound', 5500, { id: 't5' })
-    expect(r3.ok && [r3.trackId, r3.startMs, r3.shifted]).toEqual(['t1', 7000, true])
+    // Con diez pistas llenas en el 5 s, el siguiente va a una pista nueva (ya no hay tope).
+    for (let i = 3; i <= 10; i++) p = put(p, sound(`a${i + 1}`), 'sound', 5000, `t${i}`)
+    expect(p.tracks).toHaveLength(10)
+    const r3 = insertItem(p, sound('a99'), 'sound', 5500, { id: 't11' })
+    expect(r3.ok && [r3.trackId, r3.startMs, r3.newTrack, r3.project.tracks.length]).toEqual(['t11', 5500, true, 11])
+    // Pidiendo una pista concreta, si no cabe, a continuación en ella.
+    const r4 = insertItem(p, sound('a98'), 'sound', 5500, { id: 'no' }, { trackId: 't1' })
+    expect(r4.ok && [r4.trackId, r4.startMs, r4.shifted]).toEqual(['t1', 7000, true])
     // Sin trozos no se puede poner nada.
     expect(insertItem(createProject(), sound('z'), 'sound', 0, { id: 'x' })).toEqual({ ok: false, reason: 'empty-video' })
+  })
+})
+
+describe('escuchar una sola fila', () => {
+  it('silencia las demás de un toque y, otra vez, vuelve a sonar todo', () => {
+    let p = addTrack(addTrack(base(), createTrack('sound', 's1', 'Música')), createTrack('sound', 's2', 'Voces'))
+    p = addTrack(p, createTrack('effect', 'e1', 'Efectos'))
+    expect(isSoloSound(p, 's1')).toBe(false)
+    const solo = toggleSoloSound(p, 's1')
+    expect(isSoloSound(solo, 's1')).toBe(true)
+    // Orden de las pistas: e1 (los efectos, encima), s1, s2.
+    expect([solo.mainMuted, ...solo.tracks.map((t) => t.muted)]).toEqual([true, false, false, true])
+    // Otra vez: todo suena (también lo que estaba silenciado antes).
+    const back = toggleSoloSound(setTrackMuted(solo, 's2', true), 's1')
+    expect([back.mainMuted, ...back.tracks.map((t) => t.muted)]).toEqual([false, false, false, false])
+    // La fila «Vídeo» también vale; una de efectos no.
+    const main = toggleSoloSound(p, 'main')
+    expect([main.mainMuted, ...main.tracks.filter((t) => t.kind === 'sound').map((t) => t.muted)]).toEqual([false, true, true])
+    expect(isSoloSound(main, 'main')).toBe(true)
+    expect(toggleSoloSound(p, 'e1')).toBe(p)
+    // Si estaba silenciada, «solo esta» la hace sonar.
+    expect(isSoloSound(toggleSoloSound(setTrackMuted(p, 's1', true), 's1'), 's1')).toBe(true)
+    // Sin más filas de sonido no hay «solo».
+    expect(isSoloSound(base(), 'main')).toBe(false)
   })
 })
 
@@ -386,7 +442,7 @@ describe('guardar y leer (versión 3)', () => {
     p = put(p, createItem({ id: 'logo', kind: 'effect', source: { type: 'file', path: 'C:\\logo.png' }, name: 'logo', sourceDurationMs: 0, still: true, hasAudio: false }), 'effect', 1000, 'e')
     p = setTrackMuted(setMainMuted(p, true), 'mus', true)
     const back = parseProject(serializeProject(p))
-    expect(back).toEqual(p)
+    expect(back).toEqual(syncMediaPool(p))
     const logo = findItem(back, 'logo')!.item
     expect([logo.still, logo.durationMs, logo.look!.fit]).toEqual([true, 4000, 'contain'])
   })
@@ -398,7 +454,7 @@ describe('guardar y leer (versión 3)', () => {
       project: { aspect: '16:9', clips: [{ id: 'a', sourcePath: 'a.mp4', sourceDurationMs: 5000, sourceHasVideo: true, segments: [{ startMs: 0, endMs: 5000 }], picture: { kind: 'own' } }], mainMuted: true, tracks: [{ id: 'x', kind: 'sound', items: [] }] },
     })
     const p = parseProject(v2)
-    expect(p.version).toBe(3)
+    expect(p.version).toBe(7)
     expect(p.tracks).toEqual([])
     expect(p.mainMuted).toBe(false)
   })
@@ -427,6 +483,15 @@ describe('guardar y leer (versión 3)', () => {
     expect(p.tracks[0]!.items.map((i) => i.id)).toEqual(['ok'])
     expect(p.tracks[0]!.items[0]).toMatchObject({ inMs: 0, outMs: 3000, volume: 1.5, fadeInMs: 1000, look: null, repeat: false, durationMs: null })
     expect(p.tracks[1]!.items[0]).toMatchObject({ still: true, durationMs: null, look: { mix: 'normal', opacity: 1, box: { x: 1, y: 0.5, scale: 0.05 }, fit: 'cover' } })
+  })
+
+  it('se leen todas las pistas, sin tope (antes, 4 de sonido y 3 de efectos)', () => {
+    let p = base()
+    for (let i = 0; i < 9; i++) p = addTrack(p, createTrack('sound', `s${i}`, defaultTrackName(p, 'sound')))
+    for (let i = 0; i < 6; i++) p = addTrack(p, createTrack('effect', `e${i}`, defaultTrackName(p, 'effect')))
+    const back = parseProject(serializeProject(p))
+    expect(back.tracks.map((t) => t.id)).toEqual(p.tracks.map((t) => t.id))
+    expect(back.tracks).toHaveLength(15)
   })
 
   it('los tiempos de guardado (fotogramas enteros) mueven lo pegado con su trozo', () => {

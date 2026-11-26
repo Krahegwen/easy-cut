@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-output-file-size"
+description = "Enables the output_file_size command without any pre-configured scope."
+commands.allow = ["output_file_size"]
+
+[[permission]]
+identifier = "deny-output-file-size"
+description = "Denies the output_file_size command without any pre-configured scope."
+commands.deny = ["output_file_size"]

@@ -1,34 +1,53 @@
 <script setup lang="ts">
-// Vista de pistas: regla de tiempo, filas proporcionales al tiempo y el cabezal que las cruza todas. Arriba,
-// las pistas de efectos (la de más arriba se ve encima); en medio, la fila «Vídeo» con los trozos (se eligen y
-// se reordenan arrastrando, como en la tira); debajo, las de sonido con su forma de onda. Los elementos se
-// arrastran (también a otra pista del mismo tipo), se recortan o alargan por sus asas y se pegan con imanes
-// (principio y final de los trozos, el cabezal y los demás elementos) dibujando una línea guía.
+// Vista de pistas (la única de «Tu vídeo»): regla de tiempo, filas proporcionales al tiempo y el cabezal que
+// las cruza todas. Arriba, las pistas de efectos (la de más arriba se ve encima); en medio, la fila «Vídeo» con
+// los trozos (se eligen, se reordenan arrastrando y se recortan o alargan por sus asas; cada uno con sus
+// indicadores) y, al final, «Añadir vídeos o sonidos» y «Grabarme»; debajo, las de sonido con su forma de onda,
+// y al pie, los botones para crear pistas nuevas. Los elementos se arrastran (también a otra pista del mismo
+// tipo), se recortan o alargan por sus asas y se pegan con imanes (principio y final de los trozos, el cabezal
+// y los demás elementos) dibujando una línea guía. Con muchas pistas, se desplaza hacia abajo.
+// Transiciones: cada trozo se coloca donde empieza (con solape, montado sobre el anterior) y el tramo compartido se
+// ve rayado («el paso»); en cada junta, un botón pequeño («Cómo se pasa al trozo N», también con U desde el trozo
+// elegido) abre el desplegable, y el borde del paso se arrastra para montar más o menos (con su texto en vivo).
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  ASPECT_VALUES,
+  emptyCells,
+  attachedCounts,
   clipInOut,
+  describeEntry,
+  formatTransitionSeconds,
+  makeEntry,
+  setTransition,
   formatClock,
   formatDuration,
+  formatDurationChange,
   itemLoopMs,
   projectTiming,
   resolveTracks,
   snapMove,
   snapPoints,
   snapTime,
+  visibleMarks,
+  findClipVideoItem,
+  type BoxKeyframe,
   type Clip,
   type ResolvedItem,
   type Track,
 } from '../../domain'
+import { reapplyPauses } from '../../lib/pauses'
 import { library, store, tracks } from '../../store'
 import AppIcon from '../AppIcon.vue'
 import KeyHint from '../KeyHint.vue'
+import LayoutIcon from '../LayoutIcon.vue'
 import ThumbImage from '../ThumbImage.vue'
 import TrackHeader from './TrackHeader.vue'
 
-const props = defineProps<{ playheadMs: number; playing: boolean }>()
-const emit = defineEmits<{ seek: [ms: number] }>()
+const props = defineProps<{ playheadMs: number; playing: boolean; transitionOpenFor?: string | null }>()
+const emit = defineEmits<{ seek: [ms: number]; add: []; record: []; transition: [clipId: string] }>()
 
 const project = computed(() => store.project.value)
+const frameAspect = computed(() => ASPECT_VALUES[project.value.aspect])
 const timing = computed(() => projectTiming(project.value))
 const totalMs = computed(() => Math.max(1, timing.value.totalMs))
 const effectTracks = computed(() => project.value.tracks.filter((t) => t.kind === 'effect'))
@@ -51,11 +70,18 @@ const HEADER = computed(() => (viewWidth.value < 1000 ? 168 : 196))
 /** Píxeles por segundo. null = «Ver todo» (se ajusta al ancho). */
 const zoom = ref<number | null>(null)
 const ZOOMS = [2, 3, 5, 8, 12, 20, 32, 50, 80, 128, 200]
-const fitPx = computed(() => Math.max(0.5, (viewWidth.value - HEADER.value - 40) / (totalMs.value / 1000)))
-const pxPerSec = computed(() => zoom.value ?? fitPx.value)
+/**
+ * Sitio al final de la fila «Vídeo» para «Añadir vídeos o sonidos» y «Grabarme»: con «Ver todo» se ven justo
+ * detrás del último trozo; con zoom, se quedan pegados al borde derecho de la vista.
+ */
+const END_ROOM = 300
+const fitPx = computed(() => Math.max(0.5, (viewWidth.value - HEADER.value - END_ROOM - 12) / (totalMs.value / 1000)))
+/** Escala congelada mientras se recorta un trozo (con «Ver todo», la regla cambiaría bajo el puntero). */
+const frozenPx = ref<number | null>(null)
+const pxPerSec = computed(() => zoom.value ?? frozenPx.value ?? fitPx.value)
 const x = (ms: number) => (ms / 1000) * pxPerSec.value
 const ms = (px: number) => (px / pxPerSec.value) * 1000
-const contentWidth = computed(() => Math.max(viewWidth.value - HEADER.value, x(totalMs.value) + 40))
+const contentWidth = computed(() => Math.max(viewWidth.value - HEADER.value, x(totalMs.value) + END_ROOM + 12))
 
 function zoomBy(direction: 1 | -1, anchorMs = props.playheadMs) {
   const current = pxPerSec.value
@@ -163,6 +189,60 @@ function clipThumbStyle(c: Clip) {
   return url ? { backgroundImage: `url("${url}")` } : {}
 }
 
+type ClipPicture = 'own' | 'sound' | 'cover' | 'lost' | 'cover-lost'
+/** Lo que enseña el bloque: su imagen, la del vídeo de encima, «solo se oye» o el aviso de original perdido. */
+function clipPicture(c: Clip): ClipPicture {
+  if (store.missing.value[c.sourcePath]) return 'lost'
+  if (c.picture.kind === 'cover') return store.coverMissing(c) ? 'cover-lost' : 'cover'
+  return c.picture.kind === 'none' || !c.sourceHasVideo ? 'sound' : 'own'
+}
+type BadgeId = 'speed' | 'mute' | 'pauses' | 'cover' | 'sound' | 'attached' | 'fades' | 'corner' | 'entry'
+interface Badge {
+  id: BadgeId
+  icon: 'speed' | 'mute' | 'pauses' | 'cover-video' | 'wave' | 'tracks' | 'fade-in' | 'corner' | 'motion' | 'transition'
+  text: string
+}
+const attached = computed(() => attachedCounts(project.value))
+/** Indicadores de cada trozo (lo que decían sus tarjetas): velocidad, sin sonido, sin pausas, imagen, pegados. */
+function clipBadges(c: Clip): Badge[] {
+  const out: Badge[] = []
+  if (c.speed !== 1) out.push({ id: 'speed', icon: 'speed', text: c.speed < 1 ? 'Despacio' : c.speed === 4 ? 'Muy rápido' : 'Rápido' })
+  if (c.muted || c.speed === 4) out.push({ id: 'mute', icon: 'mute', text: 'Sin sonido' })
+  if (c.segments.length > 1) out.push({ id: 'pauses', icon: 'pauses', text: 'Sin pausas' })
+  const pic = clipPicture(c)
+  if (pic === 'cover') out.push({ id: 'cover', icon: 'cover-video', text: 'Vídeo encima' })
+  if (pic === 'sound') out.push({ id: 'sound', icon: 'wave', text: 'Solo se oye' })
+  const own = findClipVideoItem(project.value, c.id)
+  if (own?.item.look) {
+    const moves = own.item.look.keyframes.length >= 2
+    out.push({ id: 'corner', icon: moves ? 'motion' : 'corner', text: moves ? 'Su vídeo va y viene de una esquina' : 'Su vídeo encima, en una pista' })
+  }
+  if (c.fadeInMs > 0 || c.fadeOutMs > 0) {
+    const text = c.fadeInMs > 0 && c.fadeOutMs > 0 ? 'Aparece y desaparece poco a poco' : c.fadeInMs > 0 ? 'Aparece poco a poco' : 'Desaparece poco a poco'
+    out.push({ id: 'fades', icon: 'fade-in', text })
+  }
+  const i = project.value.clips.indexOf(c)
+  const join = timing.value.joins[i]
+  if (join && c.entry) out.push({ id: 'entry', icon: 'transition', text: `Entra con ${describeEntry(c.entry, join.duration).toLowerCase()}` })
+  const a = attached.value.get(c.id)
+  if (a) {
+    const parts: string[] = []
+    if (a.sounds) parts.push(a.sounds === 1 ? '1 sonido' : `${a.sounds} sonidos`)
+    if (a.effects) parts.push(a.effects === 1 ? '1 efecto' : `${a.effects} efectos`)
+    out.push({ id: 'attached', icon: 'tracks', text: `Lleva pegado ${parts.join(' y ')}` })
+  }
+  return out
+}
+function lostText(c: Clip): string | null {
+  const pic = clipPicture(c)
+  return pic === 'lost' ? 'No encuentro este vídeo' : pic === 'cover-lost' ? 'No encuentro el vídeo de encima' : null
+}
+/** Nombre accesible (y lo que leen las pruebas): número, duración, aviso e indicadores. */
+function clipLabel(c: Clip, i: number): string {
+  const extra = [lostText(c), ...clipBadges(c).map((b) => b.text)].filter((t): t is string => !!t).map((t) => t.toLowerCase())
+  return `Trozo ${i + 1}, dura ${formatDuration(timing.value.lengths[i]!)}${extra.length ? `: ${extra.join(', ')}` : ''}`
+}
+
 const clipDrag = ref<{ id: string; startX: number; x: number; active: boolean; target: number } | null>(null)
 const clipBlocks = ref<HTMLElement | null>(null)
 
@@ -207,6 +287,61 @@ function clipCancel() {
   window.removeEventListener('pointerup', clipUp)
   window.removeEventListener('pointercancel', clipCancel)
 }
+// ------------------------------------------------------------------ fila «Vídeo»: recortar por las asas
+
+/**
+ * Tirar del asa del principio o del final de un trozo lo acorta o lo alarga (hasta donde dé el original); los
+ * siguientes se recolocan. Se ve al momento, con el texto de cuánto duran el trozo y el vídeo, y entra en el
+ * historial al soltar (un solo paso). Con pausas quitadas, se vuelven a quitar en lo que se alarga.
+ */
+const clipTrim = ref<{ id: string; edge: 'start' | 'end'; startX: number; active: boolean; beforeClipMs: number; beforeTotalMs: number } | null>(null)
+
+function clipHandleDown(c: Clip, edge: 'start' | 'end', e: PointerEvent) {
+  if (e.button !== 0) return
+  e.stopPropagation()
+  e.preventDefault()
+  tracks.select(null)
+  store.select(c.id)
+  const i = project.value.clips.indexOf(c)
+  if (zoom.value === null) frozenPx.value = fitPx.value
+  clipTrim.value = { id: c.id, edge, startX: e.clientX, active: false, beforeClipMs: timing.value.lengths[i] ?? 0, beforeTotalMs: timing.value.totalMs }
+  window.addEventListener('pointermove', clipTrimMove)
+  window.addEventListener('pointerup', clipTrimUp)
+  window.addEventListener('pointercancel', clipTrimCancel)
+}
+function clipTrimMove(e: PointerEvent) {
+  const t = clipTrim.value
+  if (!t) return
+  if (!t.active && Math.abs(e.clientX - t.startX) > 3) t.active = true
+  if (!t.active) return
+  const id = t.id
+  tracks.previewClipTrim(id, t.edge, Math.round(ms(e.clientX - t.startX)), (p) => reapplyPauses(p, id))
+}
+function clipTrimUp() {
+  const t = clipTrim.value
+  stopClipTrim()
+  if (t?.active) store.commitPreview()
+}
+function clipTrimCancel() {
+  stopClipTrim()
+  store.cancelPreview()
+}
+function stopClipTrim() {
+  clipTrim.value = null
+  frozenPx.value = null
+  window.removeEventListener('pointermove', clipTrimMove)
+  window.removeEventListener('pointerup', clipTrimUp)
+  window.removeEventListener('pointercancel', clipTrimCancel)
+}
+/** «Trozo 2: 10 s → 8 s · Vídeo: 36 s → 34 s» mientras se recorta. */
+const trimLive = computed(() => {
+  const t = clipTrim.value
+  if (!t?.active) return null
+  const i = project.value.clips.findIndex((c) => c.id === t.id)
+  if (i < 0) return null
+  return `Trozo ${i + 1}: ${formatDurationChange(t.beforeClipMs, timing.value.lengths[i]!)} · Vídeo: ${formatDurationChange(t.beforeTotalMs, timing.value.totalMs)}`
+})
+
 /** Dónde se dibuja la marca de «aquí caerá» al reordenar (px desde el principio). */
 const clipDropX = computed(() => {
   const d = clipDrag.value
@@ -214,6 +349,82 @@ const clipDropX = computed(() => {
   const others = project.value.clips.map((c, i) => ({ c, i })).filter((o) => o.c.id !== d.id)
   const before = others[d.target]
   return before ? x(timing.value.starts[before.i]!) : x(totalMs.value)
+})
+
+// ------------------------------------------------------------------ juntas: transiciones entre trozos
+
+/** Cada junta (entre el trozo i − 1 y el i): dónde está el botón, el paso (rayado) y si se puede arrastrar. */
+const joinsView = computed(() =>
+  project.value.clips.slice(1).map((c, k) => {
+    const i = k + 1
+    const j = timing.value.joins[i] ?? null
+    const start = timing.value.starts[i]!
+    const zone = j ? (j.overlap ? { from: start, to: start + j.overlapUnits } : { from: start - j.tail, to: start + j.head }) : null
+    const centerMs = j?.overlap ? start + j.overlapUnits / 2 : start
+    const label = `Cómo se pasa al trozo ${i + 1}: ${describeEntry(c.entry && j ? c.entry : null, j?.duration).toLowerCase()}`
+    return { clip: c, prev: project.value.clips[i - 1]!, i, join: j, zone, centerMs, label }
+  }),
+)
+
+/** El trozo que entra desde el elegido (para la U dibujada en su junta). */
+const nextOfSelected = computed(() => {
+  const i = project.value.clips.findIndex((c) => c.id === store.selectedClipId.value)
+  return i >= 0 && i + 1 < project.value.clips.length ? project.value.clips[i + 1]!.id : null
+})
+
+/**
+ * Arrastrar el borde del paso (el principio del que entra) monta más o menos: hacia la izquierda, más paso; hacia
+ * la derecha, menos. Se ve al momento con el texto de cuánto dura el paso y el vídeo, y entra al soltar (un paso).
+ */
+const joinDrag = ref<{ clipId: string; startX: number; active: boolean; beforeMs: number; beforeTotalMs: number; entry: NonNullable<Clip['entry']> } | null>(null)
+
+function joinEdgeDown(c: Clip, e: PointerEvent) {
+  if (e.button !== 0 || !c.entry) return
+  e.stopPropagation()
+  e.preventDefault()
+  const i = project.value.clips.indexOf(c)
+  if (zoom.value === null) frozenPx.value = fitPx.value
+  joinDrag.value = { clipId: c.id, startX: e.clientX, active: false, beforeMs: timing.value.joins[i]?.duration ?? 0, beforeTotalMs: timing.value.totalMs, entry: c.entry }
+  window.addEventListener('pointermove', joinEdgeMove)
+  window.addEventListener('pointerup', joinEdgeUp)
+  window.addEventListener('pointercancel', joinEdgeCancel)
+}
+function joinEdgeMove(e: PointerEvent) {
+  const d = joinDrag.value
+  if (!d) return
+  if (!d.active && Math.abs(e.clientX - d.startX) > 3) d.active = true
+  if (!d.active) return
+  // Se parte del paso que se ve (lo pedido puede ser más que lo que cabe).
+  const want = Math.round((d.beforeMs + ms(d.startX - e.clientX)) / 50) * 50
+  const entry = makeEntry(d.entry.kind, want, d.entry.overlap)
+  const id = d.clipId
+  store.preview((p) => setTransition(p, id, entry))
+}
+function joinEdgeUp() {
+  const d = joinDrag.value
+  stopJoinDrag()
+  if (d?.active) store.commitPreview()
+}
+function joinEdgeCancel() {
+  stopJoinDrag()
+  store.cancelPreview()
+}
+function stopJoinDrag() {
+  joinDrag.value = null
+  frozenPx.value = null
+  window.removeEventListener('pointermove', joinEdgeMove)
+  window.removeEventListener('pointerup', joinEdgeUp)
+  window.removeEventListener('pointercancel', joinEdgeCancel)
+}
+/** «Paso al trozo 3: 1 s → 1,5 s · Vídeo: 36 s → 35,5 s» mientras se arrastra. */
+const joinLive = computed(() => {
+  const d = joinDrag.value
+  if (!d?.active) return null
+  const i = project.value.clips.findIndex((c) => c.id === d.clipId)
+  if (i < 0) return null
+  const now = timing.value.joins[i]?.duration ?? 0
+  const step = (a: number, b: number) => (Math.abs(a - b) < 50 ? formatTransitionSeconds(b) : `${formatTransitionSeconds(a)} → ${formatTransitionSeconds(b)}`)
+  return `Paso al trozo ${i + 1}: ${step(d.beforeMs, now)} · Vídeo: ${formatDurationChange(d.beforeTotalMs, timing.value.totalMs)}`
 })
 
 // ------------------------------------------------------------------ elementos: arrastrar y recortar
@@ -234,6 +445,8 @@ function itemDown(r: ResolvedItem, mode: DragMode, e: PointerEvent) {
   if (e.button !== 0) return
   e.stopPropagation()
   tracks.select(r.item.id)
+  // «El vídeo de este trozo» va con su trozo: se elige, pero no se arrastra.
+  if (r.item.source.type === 'clip') return
   dragState.value = { id: r.item.id, mode, startX: e.clientX, startY: e.clientY, origStart: r.startMs, origEnd: r.endMs, trackId: r.track.id, active: false, fits: true }
   window.addEventListener('pointermove', itemMove)
   window.addEventListener('pointerup', itemUp)
@@ -294,6 +507,49 @@ function stopItemDrag() {
   window.removeEventListener('pointercancel', itemCancel)
 }
 
+// ------------------------------------------------------------------ marcas de tamaño y sitio
+
+/** Las marcas que se ven de un efecto (rombos sobre su bloque). */
+function marksOf(r: ResolvedItem): BoxKeyframe[] {
+  return r.item.look ? visibleMarks(r.item.look, r.shownEndMs - r.startMs) : []
+}
+function isPickedMark(r: ResolvedItem, k: BoxKeyframe): boolean {
+  const p = tracks.pickedMark.value
+  return !!p && p.itemId === r.item.id && p.atMs === k.atMs
+}
+
+const markDrag = ref<{ itemId: string; from: number; startX: number; startMs: number; lengthMs: number; to: number; active: boolean } | null>(null)
+
+/** Un rombo: pulsarlo lleva la línea a la marca (y la deja «a mano»); arrastrarlo la mueve en el tiempo. */
+function markDown(r: ResolvedItem, k: BoxKeyframe, e: PointerEvent) {
+  if (e.button !== 0) return
+  e.stopPropagation()
+  e.preventDefault()
+  tracks.select(r.item.id)
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  markDrag.value = { itemId: r.item.id, from: k.atMs, startX: e.clientX, startMs: r.startMs, lengthMs: r.shownEndMs - r.startMs, to: k.atMs, active: false }
+}
+function markMove(e: PointerEvent) {
+  const d = markDrag.value
+  if (!d) return
+  if (!d.active && Math.abs(e.clientX - d.startX) > 4) d.active = true
+  if (!d.active) return
+  d.to = Math.round(Math.min(d.lengthMs, Math.max(0, d.from + ms(e.clientX - d.startX))))
+  tracks.previewMoveMark(d.itemId, d.from, d.to)
+}
+function markUp() {
+  const d = markDrag.value
+  markDrag.value = null
+  if (!d) return
+  if (d.active) {
+    store.commitPreview()
+    tracks.pickedMark.value = { itemId: d.itemId, atMs: d.to }
+    return
+  }
+  tracks.pickedMark.value = { itemId: d.itemId, atMs: d.from }
+  emit('seek', d.startMs + d.from)
+}
+
 // ------------------------------------------------------------------ cómo se dibuja cada elemento
 
 function blockStyle(r: ResolvedItem) {
@@ -337,7 +593,17 @@ function waveStyle(r: ResolvedItem) {
   return { backgroundImage: `url("${url}")`, backgroundSize: `${full}px 100%`, backgroundPositionX: `${-x(item.inMs)}px`, backgroundRepeat: 'no-repeat' }
 }
 function effectThumbPath(r: ResolvedItem): string | null {
+  if (r.item.source.type === 'clip') {
+    const clipId = r.item.source.clipId
+    return project.value.clips.find((c) => c.id === clipId)?.sourcePath ?? null
+  }
   return library.itemPath(r.item)
+}
+/** El nombre de un elemento en su bloque: «Tu vídeo (trozo 2)» para el vídeo de un trozo. */
+function itemLabel(r: ResolvedItem): string {
+  if (r.item.source.type !== 'clip') return r.item.name
+  const clipId = r.item.source.clipId
+  return `Tu vídeo (trozo ${project.value.clips.findIndex((c) => c.id === clipId) + 1})`
 }
 
 const lostPaths = computed(() => new Set(store.missingItems.value.map((i) => i.id)))
@@ -359,6 +625,7 @@ onBeforeUnmount(() => {
   observer?.disconnect()
   stopItemDrag()
   clipCancel()
+  stopClipTrim()
 })
 
 defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
@@ -370,6 +637,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
     data-testid="tracks-view"
     :data-px-per-sec="Math.round(pxPerSec * 100) / 100"
     :data-drag-render-ms="lastDragRenderMs"
+    :data-view-width="viewWidth"
     :style="{ '--header': `${HEADER}px` }"
   >
     <div ref="scroller" class="scroller" data-testid="tracks-scroller" @wheel="onWheel">
@@ -410,44 +678,141 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
               :title="r.item.name"
               @pointerdown="itemDown(r, 'move', $event)"
             >
-              <span class="thumb">
+              <span v-if="r.item.collage" class="thumb collage-thumb">
+                <LayoutIcon :layout-id="r.item.collage.layoutId" :aspect="frameAspect" :width="36" />
+              </span>
+              <span v-else class="thumb">
                 <img v-if="r.item.still && effectThumbPath(r)" :src="store.mediaSrc(effectThumbPath(r)!)" alt="" draggable="false" />
                 <ThumbImage v-else-if="effectThumbPath(r)" :path="effectThumbPath(r)!" :time-ms="Math.min(1000, r.item.sourceDurationMs / 2)" :height="64" />
               </span>
               <span class="label">
                 <AppIcon v-if="r.item.repeat" name="repeat" :size="15" />
-                {{ r.item.name }}
+                <AppIcon v-if="r.item.collage" name="collage" :size="15" />
+                {{ itemLabel(r) }}
+                <span v-if="r.item.collage && emptyCells(r.item.collage).length" class="collage-warn" data-testid="collage-missing">· {{ emptyCells(r.item.collage).length === 1 ? 'Falta un vídeo' : `Faltan ${emptyCells(r.item.collage).length} vídeos` }}</span>
               </span>
               <span v-if="r.item.fadeInMs" class="fade in" :style="{ width: fadeWidth(r.item.fadeInMs) }" />
               <span v-if="r.item.fadeOutMs" class="fade out" :style="{ width: fadeWidth(r.item.fadeOutMs) }" />
               <span v-if="overflowStyle(r)" class="overflow" :style="overflowStyle(r)!" title="Esto pasa del final del vídeo: se corta al guardar" />
-              <span class="handle start" data-testid="item-handle-start" @pointerdown="itemDown(r, 'start', $event)" />
-              <span class="handle end" data-testid="item-handle-end" @pointerdown="itemDown(r, 'end', $event)" />
+              <template v-if="r.item.source.type !== 'clip'">
+                <span class="handle start" data-testid="item-handle-start" @pointerdown="itemDown(r, 'start', $event)" />
+                <span class="handle end" data-testid="item-handle-end" @pointerdown="itemDown(r, 'end', $event)" />
+              </template>
+              <span
+                v-for="k in marksOf(r)"
+                :key="k.atMs"
+                class="mark"
+                :class="{ picked: isPickedMark(r, k) }"
+                :style="{ left: `${x(k.atMs)}px` }"
+                data-testid="item-mark"
+                :data-at-ms="k.atMs"
+                :title="`Marca de tamaño y sitio a los ${formatClock(r.startMs + k.atMs)}: pulsa para ir a ella, arrástrala para moverla`"
+                @pointerdown="markDown(r, k, $event)"
+                @pointermove="markMove"
+                @pointerup="markUp"
+                @pointercancel="markUp"
+              />
             </div>
           </div>
         </template>
 
         <!-- Fila «Vídeo»: los trozos -->
-        <TrackHeader main />
-        <div ref="clipBlocks" class="row video-row" :class="{ off: project.mainMuted }" data-testid="video-row">
+        <TrackHeader main class="video-sticky" />
+        <div ref="clipBlocks" class="row video-row" :class="{ off: project.mainMuted, empty: project.clips.length === 0 }" data-testid="video-row">
           <button
             v-for="(c, i) in project.clips"
             :key="c.id"
             class="clip-block"
-            :class="{ selected: c.id === store.selectedClipId.value && !tracks.selectedItemId.value, missing: !!store.missing.value[c.sourcePath], dragging: clipDrag?.active && clipDrag.id === c.id }"
-            :style="{ left: `${x(timing.starts[i]!)}px`, width: `${Math.max(6, x(timing.lengths[i]!))}px` }"
+            :class="{
+              selected: c.id === store.selectedClipId.value && !tracks.selectedItemId.value,
+              missing: clipPicture(c) === 'lost' || clipPicture(c) === 'cover-lost',
+              dragging: clipDrag?.active && clipDrag.id === c.id,
+              trimming: clipTrim?.active && clipTrim.id === c.id,
+              narrow: x(timing.lengths[i]!) < 64,
+            }"
+            :style="{ left: `${x(timing.starts[i]!)}px`, width: `${Math.max(6, x(timing.lengths[i]!))}px`, '--lead': `${x(timing.overlaps[i] ?? 0)}px`, '--tail': `${x(timing.overlaps[i + 1] ?? 0)}px` }"
             type="button"
             :data-clip-id="c.id"
             :data-testid="`clip-block-${i + 1}`"
-            :aria-label="`Trozo ${i + 1}, dura ${formatDuration(timing.lengths[i]!)}`"
+            :data-picture="clipPicture(c)"
+            :data-badges="clipBadges(c).map((b) => b.id).join(' ')"
+            :aria-label="clipLabel(c, i)"
+            :title="clipLabel(c, i)"
             @pointerdown="clipDown(c, $event)"
           >
             <span class="clip-thumb" :style="clipThumbStyle(c)">
-              <AppIcon v-if="!clipShowsThumb(c)" :name="store.missing.value[c.sourcePath] ? 'warning' : 'wave'" :size="22" />
+              <AppIcon v-if="!clipShowsThumb(c)" :name="lostText(c) ? 'warning' : 'wave'" :size="22" />
             </span>
             <span class="clip-number">{{ i + 1 }}</span>
+            <span v-if="lostText(c)" class="clip-lost" data-testid="clip-lost">{{ lostText(c) }}</span>
+            <span class="clip-badges" aria-hidden="true">
+              <span v-for="b in clipBadges(c)" :key="b.id" class="clip-badge" :class="`b-${b.id}`" :title="b.text"><AppIcon :name="b.icon" :size="14" /></span>
+            </span>
+            <span class="clip-duration" data-testid="clip-duration">{{ formatDuration(timing.lengths[i]!) }}</span>
+            <span class="clip-handle start" data-testid="clip-handle-start" title="Tira para que empiece antes o después" @pointerdown="clipHandleDown(c, 'start', $event)" />
+            <span class="clip-handle end" data-testid="clip-handle-end" title="Tira para que termine antes o después" @pointerdown="clipHandleDown(c, 'end', $event)" />
           </button>
+          <!-- El paso de un trozo a otro: rayado sobre los dos (con solape) o en la junta (a negro / a blanco). -->
+          <template v-for="jv in joinsView" :key="`join-${jv.clip.id}`">
+            <span
+              v-if="jv.zone"
+              class="join-zone"
+              :class="{ overlap: jv.join?.overlap, shrunk: jv.join?.shrunk }"
+              :style="{ left: `${x(jv.zone.from)}px`, width: `${Math.max(2, x(jv.zone.to - jv.zone.from))}px` }"
+              :data-join-index="jv.i + 1"
+              :data-from-ms="Math.round(jv.zone.from)"
+              :data-to-ms="Math.round(jv.zone.to)"
+              data-testid="join-zone"
+              aria-hidden="true"
+            >
+              <span
+                v-if="jv.join?.overlap"
+                class="join-edge"
+                title="Tira para montar más o menos"
+                :data-testid="`join-edge-${jv.i + 1}`"
+                @pointerdown="joinEdgeDown(jv.clip, $event)"
+              />
+              <!-- El asa del final del trozo que sale, que con solape queda debajo del que entra: se dibuja encima. -->
+              <span
+                v-if="jv.join?.overlap"
+                class="join-out-handle"
+                title="Tira para que el trozo de antes termine antes o después"
+                :data-testid="`join-out-handle-${jv.i + 1}`"
+                :data-clip-id="jv.prev.id"
+                @pointerdown="clipHandleDown(jv.prev, 'end', $event)"
+              />
+            </span>
+            <button
+              class="join-btn"
+              :class="{ on: !!jv.join, picked: transitionOpenFor === jv.clip.id }"
+              type="button"
+              :style="{ left: `${x(jv.centerMs)}px` }"
+              :aria-label="jv.label"
+              :title="jv.label"
+              :data-testid="`join-btn-${jv.i + 1}`"
+              :data-clip-id="jv.clip.id"
+              @pointerdown.stop
+              @click="emit('transition', jv.clip.id)"
+            >
+              <AppIcon name="transition" :size="14" />
+              <KeyHint v-if="nextOfSelected === jv.clip.id && !tracks.selectedItemId.value" k="U" />
+            </button>
+          </template>
           <span v-if="clipDropX !== null" class="drop-mark" :style="{ left: `${clipDropX}px` }" />
+          <!-- Al final de la fila (o, con zoom, pegados al borde derecho): lo que eran las tarjetas del final. -->
+          <div class="row-end" :style="{ marginLeft: `${x(project.clips.length ? timing.totalMs : 0) + 8}px` }" data-testid="video-row-end">
+            <button class="end-btn add" type="button" data-testid="add-more" @click="emit('add')">
+              <AppIcon name="plus" :size="22" />
+              <span class="end-text">Añadir vídeos o sonidos</span>
+            </button>
+            <button class="end-btn record" type="button" data-testid="record-more" @click="emit('record')">
+              <AppIcon name="camera" :size="22" />
+              <span class="end-text">Grabarme</span>
+            </button>
+            <p v-if="project.clips.length === 0" class="empty-invite" data-testid="empty-invite">
+              Tu vídeo está vacío: añade el primer vídeo o sonido, o grábate. También puedes soltarlos aquí.
+            </p>
+          </div>
         </div>
 
         <!-- Pistas de sonido -->
@@ -482,6 +847,26 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
           </div>
         </template>
 
+        <!-- Pistas nuevas a mano (sin límite) y cómo pasar algo de una pista a otra -->
+        <div class="add-row" data-testid="add-track-row">
+          <div class="add-row-inner" :style="{ width: `${viewWidth - 2}px` }">
+            <button class="add-track" type="button" :disabled="project.clips.length === 0" data-testid="add-sound-track" @click="tracks.addTrack('sound')">
+              <AppIcon name="add-row" :size="18" />
+              Pista de sonido
+            </button>
+            <button class="add-track fx" type="button" :disabled="project.clips.length === 0" data-testid="add-effect-track" @click="tracks.addTrack('effect')">
+              <AppIcon name="add-row" :size="18" />
+              Pista de efectos
+            </button>
+            <button class="add-track fx" type="button" :disabled="project.clips.length === 0" title="Varios vídeos a la vez, cada uno en su hueco" data-testid="add-collage" @click="tracks.collageDialog.value = true">
+              <AppIcon name="collage" :size="18" />
+              Collage
+              <KeyHint k="C" />
+            </button>
+            <span class="add-hint muted">Para pasar un sonido o un efecto a otra pista, arrástralo hasta ella (o elígelo y pulsa ↑ o ↓).</span>
+          </div>
+        </div>
+
         <!-- Cabezal, guía de los imanes y el final del vídeo, sobre todas las filas -->
         <div class="overlay-col">
           <span class="end-shade" :style="{ left: `${x(totalMs)}px` }" />
@@ -490,26 +875,38 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
         </div>
       </div>
     </div>
+    <div v-if="trimLive" class="trim-live" data-testid="clip-trim-live" role="status">{{ trimLive }}</div>
+    <div v-if="joinLive" class="trim-live" data-testid="join-live" role="status">{{ joinLive }}</div>
   </section>
 </template>
 
 <style scoped>
+.collage-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #2a323b;
+}
+.collage-warn {
+  font-weight: 600;
+  color: #ffd27a;
+}
 .tracks-view {
-  --row: 46px;
-  --video-row: 56px;
+  --row: 50px;
+  --video-row: 64px;
   --ruler: 32px;
+  --add-row: 40px;
   position: relative;
-  flex: 0 1 auto;
-  /* Al menos la regla, la fila «Vídeo» y una pista: el resto se desplaza. */
-  min-height: calc(var(--ruler) + var(--video-row) + var(--row) + 14px);
+  /* Ocupa todo el alto que deja el divisor; con muchas pistas, se desplaza (la regla y las cabeceras, fijas). */
+  flex: 1 1 auto;
+  min-height: calc(var(--ruler) + var(--video-row) + 14px);
   display: flex;
   flex-direction: column;
 }
 .scroller {
   overflow: auto;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-height: 0;
-  max-height: 330px;
   scrollbar-width: thin;
   border-top: 1px solid var(--border);
   background: var(--surface-2);
@@ -524,7 +921,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
   position: sticky;
   left: 0;
   top: 0;
-  z-index: 6;
+  z-index: 9; /* por encima de las cabeceras, que pasan por debajo al desplazar */
   height: var(--ruler);
   display: flex;
   align-items: center;
@@ -605,9 +1002,136 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
   opacity: 0.4;
   filter: grayscale(0.7);
 }
+/*
+ * La fila «Vídeo» (y su cabecera) nunca se sale de la vista al desplazar hacia abajo con muchas pistas: se
+ * queda pegada bajo la regla o encima del pie. El pie (pistas nuevas), siempre abajo.
+ */
 .video-row {
+  position: sticky;
+  top: var(--ruler);
+  bottom: var(--add-row);
+  z-index: 3;
   height: var(--video-row);
   background: #eef1f4;
+  display: flex;
+  align-items: center;
+}
+.grid .video-sticky {
+  top: var(--ruler);
+  bottom: var(--add-row);
+  z-index: 7;
+}
+/* «Añadir vídeos o sonidos» y «Grabarme», detrás del último trozo; con zoom, pegados al borde derecho. */
+.row-end {
+  position: sticky;
+  right: 8px;
+  z-index: 3;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.end-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: calc(var(--video-row) - 12px);
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 2px dashed var(--border-strong);
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 650;
+  font-size: 15px;
+  line-height: 1.15;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+}
+.end-btn.add .end-text {
+  width: 104px;
+  white-space: normal;
+}
+.end-btn:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.empty-invite {
+  max-width: 520px;
+  margin-left: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--text-muted);
+}
+.add-row {
+  position: sticky;
+  bottom: 0;
+  z-index: 7;
+  grid-column: 1 / -1;
+  height: var(--add-row);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.add-row-inner {
+  position: sticky;
+  left: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  overflow: hidden;
+}
+.add-track {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: calc(var(--add-row) - 10px);
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1.5px solid #3c8f9b;
+  background: var(--surface);
+  color: #1f6670;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.add-track.fx {
+  border-color: #7b56b0;
+  color: #5b3590;
+}
+.add-track:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.add-track:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.add-hint {
+  min-width: 0;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trim-live {
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  padding: 3px 12px;
+  border-radius: 8px;
+  background: var(--text);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 650;
+  white-space: nowrap;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
 }
 .item {
   position: absolute;
@@ -712,6 +1236,31 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
   background: repeating-linear-gradient(135deg, rgb(255 255 255 / 0.75) 0 6px, rgb(255 255 255 / 0.4) 6px 12px);
   pointer-events: auto;
 }
+.mark {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  transform: rotate(45deg);
+  border-radius: 2px;
+  background: #fff;
+  border: 2.5px solid #5b3d8a;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  cursor: ew-resize;
+  z-index: 3;
+  touch-action: none;
+}
+/* Zona para cogerlo más grande que el dibujo. */
+.mark::before {
+  content: '';
+  position: absolute;
+  inset: -7px;
+}
+.mark.picked {
+  background: #f2b632;
+  border-color: #1d2b36;
+}
 .handle {
   position: absolute;
   top: 0;
@@ -761,6 +1310,105 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
 .clip-block.dragging {
   opacity: 0.45;
 }
+.clip-block.trimming {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.clip-lost {
+  position: absolute;
+  left: calc(44px + var(--lead, 0px));
+  right: calc(14px + var(--tail, 0px));
+  top: 6px;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.15;
+  color: var(--warn);
+  text-align: left;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  pointer-events: none;
+}
+.clip-badges {
+  position: absolute;
+  right: calc(13px + var(--tail, 0px));
+  top: 4px;
+  display: flex;
+  gap: 2px;
+  pointer-events: none;
+}
+.clip-badge {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 0.94);
+  color: var(--accent-hover);
+}
+.clip-badge.b-attached,
+.clip-badge.b-cover {
+  color: #5b3590;
+}
+.clip-duration {
+  position: absolute;
+  left: calc(13px + var(--lead, 0px));
+  bottom: 4px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 0.72);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 19px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.clip-block.missing .clip-badges,
+.clip-block.narrow .clip-badges,
+.clip-block.narrow .clip-lost {
+  display: none;
+}
+/* Asas para recortar o alargar el trozo desde las pistas. */
+.clip-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  z-index: 2;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.clip-handle.start {
+  left: 0;
+}
+.clip-handle.end {
+  right: 0;
+}
+.clip-handle::after {
+  content: '';
+  position: absolute;
+  top: 30%;
+  bottom: 30%;
+  left: 4px;
+  width: 4px;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.55);
+}
+.clip-block.selected .clip-handle::after,
+.clip-block:hover .clip-handle::after,
+.clip-block.trimming .clip-handle::after {
+  background: var(--accent);
+  box-shadow: 0 0 0 1.5px #fff;
+}
+.clip-block.narrow .clip-handle {
+  width: 8px;
+}
+.clip-block.narrow .clip-handle::after {
+  left: 2px;
+}
 .clip-thumb {
   position: absolute;
   inset: 0;
@@ -775,7 +1423,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
 }
 .clip-number {
   position: absolute;
-  left: 4px;
+  left: calc(13px + var(--lead, 0px));
   top: 4px;
   min-width: 24px;
   height: 24px;
@@ -793,6 +1441,101 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
   background: var(--accent);
   color: #fff;
 }
+/* El paso de un trozo a otro: rayado encima de los bloques (que no tape lo que se pulsa). */
+.join-zone {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  z-index: 2;
+  border-radius: 6px;
+  pointer-events: none;
+  background: repeating-linear-gradient(135deg, rgb(255 255 255 / 0.5) 0 4px, rgb(255 255 255 / 0) 4px 9px);
+  box-shadow: inset 0 0 0 2px rgb(255 255 255 / 0.85);
+}
+.join-zone:not(.overlap) {
+  background: repeating-linear-gradient(135deg, rgb(255 255 255 / 0.28) 0 3px, rgb(255 255 255 / 0) 3px 9px);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.5);
+}
+.join-zone.shrunk {
+  box-shadow: inset 0 0 0 2px var(--warn);
+}
+.join-edge {
+  /* Arriba del borde: abajo queda el asa del trozo para recortarlo. */
+  position: absolute;
+  left: -7px;
+  top: 0;
+  height: 48%;
+  width: 14px;
+  cursor: ew-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+.join-edge::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 3px;
+  bottom: 3px;
+  width: 4px;
+  border-radius: 2px;
+  background: #fff;
+}
+/* Abajo del borde derecho del paso (el final del que sale); arriba del izquierdo, el agarre del paso. */
+.join-out-handle {
+  position: absolute;
+  right: -6px;
+  top: 52%;
+  bottom: 0;
+  width: 12px;
+  cursor: ew-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+.join-out-handle::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 2px;
+  bottom: 6px;
+  width: 4px;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.85);
+}
+.join-btn {
+  /* Pequeño y arriba del todo: debajo quedan las asas de los dos trozos para recortarlos. */
+  position: absolute;
+  top: 0;
+  z-index: 4;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+  min-width: 22px;
+  padding: 0 3px;
+  font-size: 11px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm, 0 1px 2px rgb(0 0 0 / 0.2));
+}
+.join-btn :deep(.key-hint) {
+  font-size: 10px;
+  height: 15px;
+  min-width: 15px;
+}
+.join-btn:hover,
+.join-btn.picked {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.join-btn.on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
 .drop-mark {
   position: absolute;
   top: 2px;
@@ -806,7 +1549,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
 .overlay-col {
   position: absolute;
   top: 0;
-  bottom: 0;
+  bottom: var(--add-row);
   left: var(--header);
   right: 0;
   pointer-events: none;
@@ -837,14 +1580,15 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
 }
 @media (max-height: 860px) {
   .tracks-view {
-    --row: 40px;
-    --video-row: 48px;
+    --row: 44px;
+    --video-row: 56px;
     --ruler: 30px;
-  }
-  .scroller {
-    max-height: 260px;
+    --add-row: 36px;
   }
   .thumb {
     width: 44px;
+  }
+  .end-btn {
+    font-size: 14px;
   }
 }</style>

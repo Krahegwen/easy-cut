@@ -14,6 +14,7 @@ import { buildProbeArgs, parseProbeOutput, ProbeError } from '../domain/probe'
 import type { MediaInfo, TimeRange } from '../domain/project'
 import { createProgressParser } from '../domain/progress'
 import { buildSilenceDetectArgs, parseSilenceDetectOutput } from '../domain/silence'
+import { buildKeyframeProbeArgs, parseKeyframes } from '../domain/trim'
 import { recordingExtension, recordingOutputExtension } from '../domain/recording'
 import {
   buildAudioRecordingTranscodeArgs,
@@ -27,6 +28,7 @@ import {
 import {
   CancelledError,
   joinWindowsPath,
+  type CacheCleanupReport,
   type DownloadProgress,
   type FileDropHandlers,
   type NativeBridge,
@@ -34,6 +36,7 @@ import {
   type ProcessResult,
   type ProgressCallback,
   type RunningProcess,
+  type StoredProject,
   type Thumbnail,
   type ThumbnailRequest,
 } from './bridge'
@@ -200,10 +203,18 @@ export function createTauriBridge(): NativeBridge {
         defaultFolder: options.defaultFolder ?? null,
         sounds: options.sounds ?? false,
         forTracks: options.forTracks ?? false,
+        title: options.title ?? null,
       })
     },
 
     probe: (path, options) => probe(path, undefined, options?.still ?? false),
+
+    async keyframes(path, aroundMs, fromStart = false) {
+      const output = await runTool('ffprobe', buildKeyframeProbeArgs(path, aroundMs, fromStart), newJobId('keyframes'))
+      throwIfCancelled(output)
+      if (output.exitCode !== 0) throw new ProbeError(`No se han podido leer los fotogramas clave: ${lastLine(output.stderr) || 'error desconocido'}`)
+      return parseKeyframes(output.stdout)
+    },
 
     exists: (path) => invoke<boolean>('path_exists', { path }),
 
@@ -307,18 +318,30 @@ export function createTauriBridge(): NativeBridge {
     joinPath: (...parts) => joinWindowsPath(...parts),
 
     deletePartialOutput: (path) => invoke<void>('delete_partial_output', { path }),
+    outputFileSize: (path) => invoke<number | null>('output_file_size', { path }),
+    appendSaveLog: (line) => invoke<void>('append_save_log', { line }),
 
     openFile: (path) => invoke<void>('open_file', { path }),
     revealInFolder: (path) => invoke<void>('reveal_in_folder', { path }),
     copyFileToClipboard: (path) => invoke<void>('copy_file_to_clipboard', { path }),
     clipboardSequence: () => invoke<number>('clipboard_sequence'),
     clipboardFiles: () => invoke<{ sequence: number; paths: string[] }>('clipboard_files'),
+    setWindowFullscreen: (on) => invoke<boolean>('set_window_fullscreen', { on }),
 
     saveAutosave: (json) => invoke<void>('save_autosave', { json }),
     loadAutosave: () => invoke<string | null>('load_autosave'),
     clearAutosave: () => invoke<void>('clear_autosave'),
 
-    saveProject: (json, path) => invoke<string | null>('save_project', { json, path: path ?? null }),
+    listProjects: () => invoke<StoredProject[]>('list_projects'),
+    readProject: (id) => invoke<string | null>('read_project', { id }),
+    writeProject: (id, json) => invoke<void>('write_project', { id, json }),
+    deleteProject: (id) => invoke<void>('delete_project', { id }),
+    restoreProjectBackup: (id) => invoke<string>('restore_project_backup', { id }),
+    readProjectHistory: (id) => invoke<string | null>('read_project_history', { id }),
+    writeProjectHistory: (id, json) => invoke<void>('write_project_history', { id, json }),
+    cleanCache: (sources, libraryFiles, force) => invoke<CacheCleanupReport>('clean_cache', { sources: [...sources], libraryFiles: [...libraryFiles], force: force ?? false }),
+
+    saveProject: (json, path, suggestedName) => invoke<string | null>('save_project', { json, path: path ?? null, suggestedName: suggestedName ?? null }),
     loadProject: (path) => invoke<{ path: string; json: string } | null>('load_project', { path: path ?? null }),
 
     async saveRecording(data, suggestedName, onProgress) {
@@ -451,11 +474,13 @@ export function createTauriBridge(): NativeBridge {
       void getCurrentWebview()
         .onDragDropEvent((event) => {
           const payload = event.payload
-          if (payload.type === 'enter') handlers.onHover?.(true)
+          // Tauri da la posición en píxeles físicos: a píxeles CSS, para compararla con el DOM.
+          const at = (p: { x: number; y: number }) => ({ x: p.x / window.devicePixelRatio, y: p.y / window.devicePixelRatio })
+          if (payload.type === 'enter' || payload.type === 'over') handlers.onHover?.(true, at(payload.position))
           else if (payload.type === 'leave') handlers.onHover?.(false)
           else if (payload.type === 'drop') {
             handlers.onHover?.(false)
-            handlers.onDrop(payload.paths)
+            handlers.onDrop(payload.paths, at(payload.position))
           }
         })
         .then((fn) => {

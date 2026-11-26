@@ -1,16 +1,45 @@
 <script setup lang="ts">
 // «Añadir sonidos y efectos»: la biblioteca (Sonidos / Efectos, por categorías y con buscador) y «De mi
-// ordenador». Se prueba antes de poner: los sonidos suenan al pulsar su tarjeta; los efectos se ven en su
-// tarjeta (en bucle) y, con «Probar sobre mi vídeo», en la vista previa. «Poner aquí» lo pone donde está la línea.
+// ordenador». Se prueba antes de poner: los sonidos suenan con su botón o dejando el ratón un momento encima
+// (src/lib/hover-preview.ts); los efectos se mueven en su tarjeta con el ratón encima o el foco (quietos si no)
+// y, con «Probar sobre mi vídeo», en la vista previa. «Poner aquí» lo pone donde está la línea.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { countByCategory, formatClock, formatDuration, libraryFetchMessage, searchLibrary, type LibraryAsset, type LibraryCategory, type LibraryIcon } from '../../domain'
+import {
+  baseName,
+  countByCategory,
+  describeMediaEntry,
+  describeUsage,
+  formatDuration,
+  libraryFetchMessage,
+  mediaUsage,
+  NO_USAGE,
+  poolActions,
+  MAX_COLLAGE_CELLS,
+  poolForDisplay,
+  searchLibrary,
+  usageTotal,
+  type LibraryAsset,
+  type LibraryCategory,
+  type LibraryIcon,
+  type MediaEntry,
+} from '../../domain'
+import { createHoverPreview, hoverSoundPlan } from '../../lib/hover-preview'
 import { LAYER_PRIORITY } from '../../lib/shortcuts'
+import { CancelledError } from '../../native/bridge'
 import { useShortcuts } from '../../lib/use-shortcuts'
 import { library, store, tracks } from '../../store'
 import AppIcon from '../AppIcon.vue'
 import type { IconName } from '../icons'
 import KeyHint from '../KeyHint.vue'
 import CreditsDialog from './CreditsDialog.vue'
+import LibraryWhere from './LibraryWhere.vue'
+
+/**
+ * Con el vídeo reproduciéndose en la vista previa, pasar el ratón no hace sonar nada (se mezclaría con el vídeo
+ * y no se oiría bien ninguno de los dos); el botón sí. Los efectos y los vídeos de «De mi ordenador» no suenan,
+ * así que sí se mueven.
+ */
+const props = defineProps<{ previewPlaying?: boolean }>()
 
 const tab = computed(() => tracks.libraryTab.value)
 const query = ref('')
@@ -27,6 +56,8 @@ const categoryName = computed(() => categories.value.find((c) => c.id === catego
 
 watch(tab, () => {
   category.value = null
+  hover.release()
+  focusFx.value = null
   stopSound()
 })
 
@@ -62,37 +93,82 @@ function iconOf(id: string): IconName {
   return c ? ICONS[c.icon] : 'star'
 }
 
-// ------------------------------------------------------------------ probar un sonido
+// ------------------------------------------------------------------ probar un sonido (botón o pasando el ratón)
+
+// Lo que suena se identifica con una clave: «a:<id>» (biblioteca) o «p:<ruta>» («De mi ordenador»).
+const assetKey = (a: LibraryAsset) => `a:${a.id}`
+const poolKey = (m: MediaEntry) => `p:${m.path}`
 
 const audio = ref<HTMLAudioElement | null>(null)
-const playingId = ref<string | null>(null)
+const playingKey = ref<string | null>(null)
+/** Vídeo de «De mi ordenador» que se está viendo en su miniatura (sin sonido si es por pasar el ratón). */
+const poolVideo = ref<{ path: string; muted: boolean } | null>(null)
+
+async function playSrc(key: string, src: string) {
+  stopSound()
+  const el = audio.value
+  if (!el) return
+  el.src = src
+  playingKey.value = key
+  await el.play()
+}
+
 async function toggleSound(a: LibraryAsset) {
-  if (playingId.value === a.id) {
+  const key = assetKey(a)
+  hover.claim(key)
+  if (playingKey.value === key) {
     stopSound()
     return
   }
   stopSound()
   try {
     const path = await library.ensureAsset(a)
-    const el = audio.value
-    if (!el) return
-    el.src = store.mediaSrc(path)
-    playingId.value = a.id
-    await el.play()
+    await playSrc(key, store.mediaSrc(path))
   } catch (e) {
-    playingId.value = null
-    store.showError(libraryFetchMessage(a.name, e), e)
+    playingKey.value = null
+    if (!(e instanceof CancelledError)) store.showError(libraryFetchMessage(a.name, e), e)
   }
 }
 function stopSound() {
   const el = audio.value
   if (el && !el.paused) el.pause()
-  playingId.value = null
+  playingKey.value = null
+  poolVideo.value = null
+}
+
+/** Botón de una tarjeta de «De mi ordenador»: un sonido suena; un vídeo se ve (con su sonido) en la miniatura. */
+async function togglePool(m: MediaEntry) {
+  const key = poolKey(m)
+  hover.claim(key)
+  if (playingKey.value === key) {
+    stopSound()
+    return
+  }
+  stopSound()
+  if (m.kind === 'video') {
+    playingKey.value = key
+    poolVideo.value = { path: m.path, muted: false }
+    return
+  }
+  try {
+    await playSrc(key, store.mediaSrc(m.path))
+  } catch (e) {
+    playingKey.value = null
+    console.warn('[easy-cut] no se ha podido escuchar', m.path, e)
+  }
 }
 
 // ------------------------------------------------------------------ vistas previas de los efectos
 
+// Quietas en un fotograma, pintado en un <canvas>; se mueve (con su <video>) la que tiene el ratón encima (tras
+// el retardo) o el foco del teclado. Medido con scripts/library-perf.mjs: todas moviéndose, el renderer gastaba
+// la mitad más y la página pintaba a la mitad de fotogramas; y un <video> en pausa a la vista seguía costando en
+// cada fotograma (con 14 tarjetas, el hilo principal del 16 % al 47 % mientras se reproduce el vídeo).
+const POSTER_AT = 0.45
 const previews = ref<Record<string, string>>({})
+const previewEls = new Map<string, HTMLVideoElement>()
+const hoverFx = ref<string | null>(null)
+const focusFx = ref<string | null>(null)
 watch(
   [tab, results],
   () => {
@@ -106,14 +182,129 @@ watch(
   },
   { immediate: true },
 )
+function registerPreview(id: string, el: unknown) {
+  if (el instanceof HTMLVideoElement) previewEls.set(id, el)
+  else previewEls.delete(id)
+}
+const posterEls = new Map<string, HTMLCanvasElement>()
+function registerPoster(id: string, el: unknown) {
+  if (el instanceof HTMLCanvasElement) posterEls.set(id, el)
+  else posterEls.delete(id)
+}
+/** Copia al canvas el fotograma de la vista previa (solo si está quieta: se ve el canvas, no el vídeo). */
+function drawPoster(id: string, v: HTMLVideoElement) {
+  const c = posterEls.get(id)
+  if (!c || isMoving(id) || !v.videoWidth) return
+  if (c.width !== v.videoWidth || c.height !== v.videoHeight) {
+    c.width = v.videoWidth
+    c.height = v.videoHeight
+  }
+  const ctx = c.getContext('2d')
+  if (!ctx) return
+  ctx.clearRect(0, 0, c.width, c.height)
+  ctx.drawImage(v, 0, 0)
+}
+function toPoster(v: HTMLVideoElement) {
+  if (Number.isFinite(v.duration) && v.duration > 0) v.currentTime = v.duration * POSTER_AT
+}
+function isMoving(id: string): boolean {
+  return hoverFx.value === id || focusFx.value === id
+}
+function syncPreview(id: string) {
+  const v = previewEls.get(id)
+  if (!v) return
+  if (isMoving(id)) {
+    v.currentTime = 0
+    void v.play().catch(() => {})
+  } else {
+    v.pause()
+    toPoster(v)
+  }
+}
+watch([hoverFx, focusFx], ([h, f], [oh, of]) => {
+  for (const id of new Set([h, f, oh, of])) if (id) syncPreview(id)
+})
+
+// ------------------------------------------------------------------ pasar el ratón por encima
+
+const hover = createHoverPreview<string>({
+  allowed: (key) => !(props.previewPlaying && soundKey(key)),
+  async start(key, signal) {
+    if (key.startsWith('fx:')) {
+      hoverFx.value = key.slice(3)
+      return
+    }
+    if (key.startsWith('p:')) {
+      const m = pool.value.find((x) => x.path === key.slice(2))
+      if (!m || isLost(m.path) || m.kind === 'image') return
+      stopSound()
+      if (m.kind === 'video') {
+        playingKey.value = key
+        poolVideo.value = { path: m.path, muted: true }
+      } else if (m.kind === 'sound') await playSrc(key, store.mediaSrc(m.path))
+      return
+    }
+    const a = library.asset(key.slice(2))
+    if (!a) return
+    const plan = hoverSoundPlan(a, library.isDownloaded(a))
+    if (plan === 'skip') return
+    // Si lo trae esta prueba (y no otra cosa que ya lo estuviera trayendo), al salir antes de que suene se cancela.
+    const ownFetch = plan === 'fetch' && library.downloadProgress(a) === null
+    if (ownFetch) signal.addEventListener('abort', () => signal.reason !== 'claimed' && library.cancel(a.file))
+    try {
+      const path = await library.ensureAsset(a)
+      if (signal.aborted) return
+      await playSrc(key, store.mediaSrc(path))
+    } catch (e) {
+      if (!(e instanceof CancelledError)) console.warn(`[easy-cut] no se ha podido probar ${a.id}`, e)
+    }
+  },
+  stop(key) {
+    if (key.startsWith('fx:')) {
+      if (hoverFx.value === key.slice(3)) hoverFx.value = null
+    } else if (playingKey.value === key) stopSound()
+  },
+})
+
+/** ¿Suena? (los efectos no; un vídeo de «De mi ordenador» se ve sin sonido). */
+function soundKey(key: string): boolean {
+  if (key.startsWith('a:')) return true
+  if (key.startsWith('p:')) return pool.value.find((m) => m.path === key.slice(2))?.kind === 'sound'
+  return false
+}
+
+/** Solo el ratón (o el lápiz): un toque en una pantalla táctil no es «pasar por encima». */
+function onEnter(e: PointerEvent, key: string) {
+  if (e.pointerType === 'mouse' || e.pointerType === 'pen') hover.enter(key)
+}
+function onLeave(e: PointerEvent, key: string) {
+  if (e.pointerType === 'mouse' || e.pointerType === 'pen') hover.leave(key)
+}
+/** El foco del teclado en una tarjeta de efecto la mueve (no suena nada); en un sonido, nada. */
+function onFocusIn(a: LibraryAsset) {
+  if (a.kind === 'effect') focusFx.value = a.id
+}
+function onFocusOut(a: LibraryAsset, e: FocusEvent) {
+  const card = e.currentTarget as HTMLElement
+  if (focusFx.value === a.id && !card.contains(e.relatedTarget as Node | null)) focusFx.value = null
+}
+
+watch(
+  () => props.previewPlaying,
+  (p) => {
+    if (p && hover.active !== null && soundKey(hover.active)) hover.release()
+  },
+)
 
 async function put(a: LibraryAsset) {
+  hover.release()
   stopSound()
   if (tracks.trying.value?.asset.id === a.id) tracks.trying.value = null
   await tracks.addAsset(a, tracks.playheadMs.value)
 }
 
 function close() {
+  hover.release()
   stopSound()
   tracks.closeLibrary()
 }
@@ -131,10 +322,65 @@ useShortcuts({
   ],
 })
 
-onBeforeUnmount(stopSound)
+onBeforeUnmount(() => {
+  hover.release()
+  stopSound()
+})
 
 function progressOf(a: LibraryAsset): number | null {
   return library.downloadProgress(a)
+}
+
+// ------------------------------------------------------------------ «De mi ordenador»: lo ya traído
+
+const pool = computed(() => (tab.value === 'computer' ? poolForDisplay(store.project.value) : []))
+
+// «Hacer un collage con estos»: se marcan de 2 a 4 vídeos o fotos y se pone un collage donde está la línea, con la
+// distribución que mejor encaja con su forma.
+const collagePick = ref<string[] | null>(null)
+const collageable = (m: MediaEntry) => m.kind !== 'sound' && !isLost(m.path)
+const canCollage = computed(() => store.project.value.clips.length > 0 && pool.value.filter(collageable).length >= 2)
+function toggleCollagePick(path: string) {
+  const list = collagePick.value
+  if (!list) return
+  collagePick.value = list.includes(path) ? list.filter((p) => p !== path) : list.length >= MAX_COLLAGE_CELLS ? list : [...list, path]
+}
+async function makeCollage() {
+  const list = collagePick.value
+  if (!list || list.length < 2) return
+  collagePick.value = null
+  await tracks.createCollageFrom(list, tracks.playheadMs.value)
+}
+const usage = computed(() => mediaUsage(store.project.value))
+function usesOf(path: string): number {
+  return usageTotal(usage.value.get(path) ?? NO_USAGE)
+}
+function usageText(path: string): string {
+  return describeUsage(usage.value.get(path) ?? NO_USAGE)
+}
+function isLost(path: string): boolean {
+  return !!store.missing.value[path]
+}
+const poolThumbs = ref<Record<string, string | null>>({})
+watch(
+  pool,
+  (list) => {
+    for (const m of list) {
+      if (m.path in poolThumbs.value || m.kind === 'sound' || isLost(m.path)) continue
+      if (m.kind === 'image') {
+        poolThumbs.value = { ...poolThumbs.value, [m.path]: store.mediaSrc(m.path) }
+        continue
+      }
+      poolThumbs.value = { ...poolThumbs.value, [m.path]: null }
+      void store.thumbnail(m.path, Math.min(1000, Math.round(m.durationMs / 2)), 96).then((t) => {
+        poolThumbs.value = { ...poolThumbs.value, [m.path]: t?.url ?? null }
+      })
+    }
+  },
+  { immediate: true },
+)
+function poolThumb(m: MediaEntry): string | null {
+  return isLost(m.path) ? null : (poolThumbs.value[m.path] ?? null)
 }
 </script>
 
@@ -188,16 +434,36 @@ function progressOf(a: LibraryAsset): number | null {
           v-for="a in results"
           :key="a.id"
           class="asset"
-          :class="{ playing: playingId === a.id, trying: tracks.trying.value?.asset.id === a.id }"
+          :class="{ playing: playingKey === assetKey(a) || isMoving(a.id), trying: tracks.trying.value?.asset.id === a.id }"
           :data-asset-id="a.id"
+          :data-moving="isMoving(a.id) ? '1' : '0'"
           data-testid="library-asset"
+          @pointerenter="onEnter($event, a.kind === 'sound' ? assetKey(a) : `fx:${a.id}`)"
+          @pointerleave="onLeave($event, a.kind === 'sound' ? assetKey(a) : `fx:${a.id}`)"
+          @focusin="onFocusIn(a)"
+          @focusout="onFocusOut(a, $event)"
         >
-          <button v-if="a.kind === 'sound'" class="listen" type="button" :aria-label="playingId === a.id ? `Parar «${a.name}»` : `Escuchar «${a.name}»`" :data-testid="`library-listen-${a.id}`" @click="toggleSound(a)">
-            <AppIcon :name="playingId === a.id ? 'stop' : 'play'" :size="22" />
+          <button v-if="a.kind === 'sound'" class="listen" type="button" :aria-label="playingKey === assetKey(a) ? `Parar «${a.name}»` : `Escuchar «${a.name}»`" :data-testid="`library-listen-${a.id}`" @click="toggleSound(a)">
+            <AppIcon :name="playingKey === assetKey(a) ? 'stop' : 'play'" :size="22" />
           </button>
           <div v-else class="preview">
             <img v-if="a.still && previews[a.id]" :src="previews[a.id]" alt="" draggable="false" />
-            <video v-else-if="previews[a.id]" :src="previews[a.id]" muted loop autoplay playsinline disablepictureinpicture />
+            <template v-else-if="previews[a.id]">
+              <!-- Quieta, un fotograma pintado en un canvas: un <video> en pausa a la vista seguía costando cada fotograma. -->
+              <canvas v-show="!isMoving(a.id)" :ref="(el) => registerPoster(a.id, el)" class="poster" data-testid="library-poster" />
+              <video
+                v-show="isMoving(a.id)"
+                :ref="(el) => registerPreview(a.id, el)"
+                :src="previews[a.id]"
+                muted
+                loop
+                playsinline
+                preload="auto"
+                disablepictureinpicture
+                @loadedmetadata="isMoving(a.id) ? syncPreview(a.id) : toPoster($event.target as HTMLVideoElement)"
+                @seeked="drawPoster(a.id, $event.target as HTMLVideoElement)"
+              />
+            </template>
             <span v-else class="spinner" />
           </div>
           <div class="info">
@@ -234,22 +500,113 @@ function progressOf(a: LibraryAsset): number | null {
     </template>
 
     <div v-else class="computer" data-testid="library-computer">
-      <p>Sonidos (MP3, M4A, WAV…), vídeos o imágenes (PNG, JPG): un logo, una pegatina, un marco.</p>
-      <button class="btn primary large" type="button" data-testid="library-pick-files" @click="tracks.pickFiles(tracks.playheadMs.value)">
-        <AppIcon name="folder" />
-        Elegir del ordenador
-      </button>
-      <p class="muted">
-        También puedes soltarlos aquí o pegarlos con <KeyHint k="Ctrl V" />. Se ponen donde está la línea: los sonidos en una pista de sonido; los vídeos y las imágenes, en una de efectos.
-      </p>
+      <div class="computer-head">
+        <button class="btn primary" type="button" data-testid="library-pick-files" @click="tracks.pickFiles(tracks.playheadMs.value)">
+          <AppIcon name="folder" />
+          Elegir del ordenador
+        </button>
+        <p class="muted small-text">
+          Sonidos, vídeos o imágenes (un logo, una pegatina…). También puedes soltarlos aquí o pegarlos con <KeyHint k="Ctrl V" />
+        </p>
+      </div>
+      <div v-if="pool.length" class="pool-title-row">
+        <h3 class="pool-title">Ya traídos a este vídeo</h3>
+        <button v-if="!collagePick" class="btn small" type="button" :disabled="!canCollage" title="Marca de 2 a 4 vídeos o fotos y se ponen a la vez, cada uno en su hueco" data-testid="pool-collage-start" @click="collagePick = []">
+          <AppIcon name="collage" />
+          Hacer un collage
+        </button>
+      </div>
+      <div v-if="collagePick" class="collage-pick card" data-testid="pool-collage-bar">
+        <span>Marca de 2 a 4 vídeos o fotos: van a la vez, cada uno en su hueco ({{ collagePick.length }} marcados).</span>
+        <button class="btn small primary" type="button" :disabled="collagePick.length < 2" data-testid="pool-collage-make" @click="makeCollage">
+          <AppIcon name="collage" />
+          Hacer un collage con estos
+        </button>
+        <button class="btn small quiet" type="button" data-testid="pool-collage-cancel" @click="collagePick = null">Cancelar</button>
+      </div>
+      <p v-else class="muted pool-empty" data-testid="pool-empty">Aquí saldrán los vídeos, sonidos e imágenes que traigas a este vídeo, para volver a usarlos.</p>
+      <ul v-if="pool.length" class="pool" data-testid="pool-list">
+        <li
+          v-for="m in pool"
+          :key="m.path"
+          class="pool-item"
+          :class="{ lost: isLost(m.path), playing: playingKey === poolKey(m) }"
+          :data-path="m.path"
+          :data-kind="m.kind"
+          :data-uses="usesOf(m.path)"
+          data-testid="pool-item"
+          @pointerenter="onEnter($event, poolKey(m))"
+          @pointerleave="onLeave($event, poolKey(m))"
+        >
+          <!-- Un sonido o un vídeo se prueban con su botón (o dejando el ratón encima); una imagen ya se ve. -->
+          <button
+            v-if="m.kind !== 'image' && !isLost(m.path)"
+            class="pool-pic playable"
+            :class="m.kind"
+            type="button"
+            :aria-label="playingKey === poolKey(m) ? `Parar «${baseName(m.path)}»` : m.kind === 'sound' ? `Escuchar «${baseName(m.path)}»` : `Ver «${baseName(m.path)}»`"
+            data-testid="pool-listen"
+            @click="togglePool(m)"
+          >
+            <video
+              v-if="poolVideo?.path === m.path"
+              :src="store.mediaSrc(m.path)"
+              :muted="poolVideo.muted"
+              autoplay
+              playsinline
+              disablepictureinpicture
+              data-testid="pool-video"
+              @ended="stopSound"
+            />
+            <img v-else-if="poolThumb(m)" :src="poolThumb(m)!" alt="" draggable="false" />
+            <AppIcon v-else :name="m.kind === 'sound' ? 'music' : 'film'" :size="24" />
+            <span class="pool-play" aria-hidden="true"><AppIcon :name="playingKey === poolKey(m) ? 'stop' : 'play'" :size="16" /></span>
+          </button>
+          <span v-else class="pool-pic" :class="m.kind" aria-hidden="true">
+            <img v-if="poolThumb(m)" :src="poolThumb(m)!" alt="" draggable="false" />
+            <AppIcon v-else :name="isLost(m.path) ? 'warning' : m.kind === 'sound' ? 'music' : m.kind === 'image' ? 'image' : 'film'" :size="24" />
+          </span>
+          <span class="pool-info">
+            <strong class="asset-name" :title="m.path">{{ baseName(m.path) }}</strong>
+            <span class="meta muted">
+              <span class="meta-text">{{ describeMediaEntry(m) }} · <span data-testid="pool-uses">{{ usageText(m.path) }}</span></span>
+            </span>
+            <span v-if="isLost(m.path)" class="pool-lost" data-testid="pool-lost">No lo encuentro: puede que se haya movido o borrado.</span>
+          </span>
+          <span class="pool-buttons">
+            <label v-if="collagePick && collageable(m)" class="pool-check" data-testid="pool-collage-check">
+              <input type="checkbox" :checked="collagePick.includes(m.path)" :disabled="!collagePick.includes(m.path) && collagePick.length >= MAX_COLLAGE_CELLS" @change="toggleCollagePick(m.path)" />
+              Para el collage
+            </label>
+            <button v-if="isLost(m.path)" class="btn small primary" type="button" data-testid="pool-relink" @click="store.relink(m.path)">
+              <AppIcon name="relink" />
+              Buscarlo
+            </button>
+            <template v-else>
+              <button v-if="poolActions(m).clip" class="btn small" type="button" :title="`Añadir «${baseName(m.path)}» al final del vídeo, como un trozo`" data-testid="pool-as-clip" @click="tracks.addPoolClip(m.path)">
+                <AppIcon name="plus" />
+                Trozo
+              </button>
+              <button v-if="poolActions(m).effect" class="btn small" type="button" :title="`Poner «${baseName(m.path)}» encima del vídeo, donde está la línea`" data-testid="pool-as-effect" @click="tracks.addPoolItem(m.path, 'effect')">
+                <AppIcon name="light" />
+                Encima
+              </button>
+              <button v-if="poolActions(m).sound" class="btn small" type="button" :title="`Poner el sonido de «${baseName(m.path)}» en una pista, donde está la línea`" data-testid="pool-as-sound" @click="tracks.addPoolItem(m.path, 'sound')">
+                <AppIcon name="sound" />
+                Sonido
+              </button>
+            </template>
+          </span>
+        </li>
+      </ul>
     </div>
 
     <footer class="foot">
       <span v-if="tracks.adding.value" class="adding"><span class="spinner" /> Trayendo «{{ tracks.adding.value }}»…</span>
-      <span v-else class="where muted" data-testid="library-where">«Poner aquí» lo pone donde está la línea: {{ formatClock(tracks.playheadMs.value) }}</span>
+      <LibraryWhere v-else />
       <button class="link" type="button" data-testid="library-credits" @click="creditsOpen = true">Créditos de la biblioteca</button>
     </footer>
-    <audio ref="audio" @ended="playingId = null" />
+    <audio ref="audio" :data-playing="playingKey ?? ''" data-testid="library-audio" @ended="playingKey = null" />
     <CreditsDialog v-if="creditsOpen" @close="creditsOpen = false" />
   </aside>
 </template>
@@ -439,6 +796,7 @@ function progressOf(a: LibraryAsset): number | null {
   background-size: 16px 16px;
 }
 .preview video,
+.preview canvas,
 .preview img {
   width: 100%;
   height: 100%;
@@ -497,12 +855,163 @@ function progressOf(a: LibraryAsset): number | null {
 }
 .computer {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 18px 16px;
+  gap: 8px;
+  padding: 10px 12px 0;
   font-size: 16px;
+}
+.computer-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.computer-head .btn {
+  flex: none;
+}
+.small-text {
+  font-size: 14px;
+  line-height: 1.3;
+}
+.pool-title {
+  font-size: 15px;
+  margin-top: 2px;
+}
+.pool-empty {
+  font-size: 15px;
+}
+.pool {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 12px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pool-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    'pic info'
+    'buttons buttons';
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 8px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+}
+.pool-item.lost {
+  border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
+  background: var(--warn-soft);
+}
+.pool-pic {
+  grid-area: pic;
+  width: 72px;
+  height: 40px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #1c2229;
+  color: #c7d3de;
+  display: grid;
+  place-items: center;
+}
+.pool-pic.sound {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.pool-pic img,
+.pool-pic video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.pool-pic.playable {
+  position: relative;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.pool-pic.playable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* El botón de reproducir se ve siempre (no hace falta pasar el ratón para saber que se puede escuchar). */
+.pool-play {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+}
+.pool-item.playing {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.pool-pic.image img {
+  object-fit: contain;
+}
+.pool-info {
+  grid-area: info;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.pool-info .asset-name {
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  font-size: 15px;
+}
+.pool-lost {
+  font-size: 14px;
+  color: var(--warn);
+  font-weight: 600;
+}
+.pool-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.collage-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+.pool-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pool-check input {
+  width: 20px;
+  height: 20px;
+}
+.pool-buttons {
+  grid-area: buttons;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.pool-buttons .btn.small {
+  min-height: 36px;
 }
 .foot {
   display: flex;
@@ -559,12 +1068,39 @@ function progressOf(a: LibraryAsset): number | null {
     padding: 4px 8px;
   }
 }
-@media (max-height: 760px) {
-  .filters {
-    padding-top: 6px;
+/*
+ * Ventana baja: la biblioteca comparte alto con las pistas (va junto a la vista previa), así que lo de arriba
+ * se aprieta para dejar sitio a la lista: buscador y categoría en una sola fila, y menos aire.
+ */
+@media (max-height: 860px) {
+  .head {
+    padding-top: 4px;
+    padding-bottom: 0;
+  }
+  .btn.small {
+    min-height: 36px;
   }
   .tab {
+    min-height: 36px;
+  }
+  .filters {
+    flex-wrap: nowrap;
+    padding: 6px 12px 4px;
+  }
+  .search {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .category {
+    flex: 0 1 168px;
+    min-width: 0;
+  }
+  .search,
+  .category {
     min-height: 38px;
+  }
+  .foot {
+    padding: 4px 14px;
   }
 }
 </style>
