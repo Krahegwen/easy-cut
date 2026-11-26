@@ -18,14 +18,18 @@ import {
   serializeProject,
   setInOut,
   setTransition,
+  shrunkJoinNotice,
   splitClip,
   trimClip,
   type Project,
 } from './project'
 import { fakeMedia } from './test-helpers'
+import { buildPlaybackPlan, incomingSourceMs, joinAt, locatePlayback, overlapExitOf } from './playback'
 import { createItem, createTrack, addTrack, insertItem, resolveTracks } from './tracks'
 import {
+  clipVideoJoinFades,
   describeEntry,
+  dipFades,
   edgeFades,
   joinStyleAt,
   kindsFor,
@@ -305,5 +309,43 @@ describe('cómo se ve cada instante', () => {
     const join = resolveJoins([{ entry: null, length: 5000, firstRange: 5000 }, { entry: fade1s, length: 5000, firstRange: 5000 }])[1]!
     expect(edgeFades(fades, join, null)).toMatchObject({ fadeInMs: 0, fadeOutMs: 1000 })
     expect(edgeFades(fades, null, join)).toMatchObject({ fadeInMs: 1000, fadeOutMs: 0 })
+  })
+
+  it('sin solape, el sonido baja y sube lo que dura cada mitad; «el vídeo de este trozo», lo que dura el paso', () => {
+    const fades = { fadeInMs: 0, fadeOutMs: 2000, fadeInEasing: 'linear' as const, fadeOutEasing: 'smooth' as const }
+    const dip = resolveJoins([{ entry: null, length: 5000, firstRange: 5000 }, { entry: makeEntry('dip-black', 1000), length: 5000, firstRange: 5000 }])[1]!
+    expect(dipFades(fades, null, dip)).toEqual({ fadeInMs: 0, fadeOutMs: 500, fadeInEasing: 'linear', fadeOutEasing: 'linear' })
+    expect(clipVideoJoinFades(dip, null)).toMatchObject({ fadeInMs: 500, fadeOutMs: 0 })
+    const ov = resolveJoins([{ entry: null, length: 5000, firstRange: 5000 }, { entry: fade1s, length: 5000, firstRange: 5000 }])[1]!
+    expect(clipVideoJoinFades(null, ov)).toMatchObject({ fadeInMs: 0, fadeOutMs: 1000 })
+    expect(dipFades(fades, null, ov).fadeOutMs).toBe(0)
+  })
+})
+
+describe('vista previa (plan de reproducción)', () => {
+  it('con solape, los tramos se pisan y el reloj es el del que sale', () => {
+    const plan = buildPlaybackPlan(setTransition(base(), 'b', fade1s))
+    expect(plan.durationMs).toBe(29_000)
+    expect(plan.joins).toHaveLength(1)
+    expect(plan.spans[1]!.projectStartMs).toBe(9000)
+    // En el paso, el tramo activo es el del que sale.
+    expect(plan.spans[locatePlayback(plan, 9500)!.spanIndex]!.clipId).toBe('a')
+    expect(overlapExitOf(plan, 0)!.clipIndex).toBe(1)
+    expect(overlapExitOf(plan, 1)).toBeNull()
+    expect(incomingSourceMs(plan, 1, 9250)).toBe(250)
+    expect(incomingSourceMs(plan, 1, 8000)).toBe(0)
+    expect(joinAt(plan, 9500)!.style.progress).toBeCloseTo(0.5)
+    expect(joinAt(plan, 8000)).toBeNull()
+  })
+
+  it('el aviso de un paso que encoge', () => {
+    let p = setTransition(base(), 'b', makeEntry('dissolve', 2000))
+    const q = applyKeepSegments(p, 'b', [{ startMs: 0, endMs: 600 }, { startMs: 1000, endMs: 10_000 }])
+    expect(shrunkJoinNotice(p, q)).toBe('El paso al trozo 2 ahora dura 0,6 s (antes 2 s): no cabe más.')
+    expect(shrunkJoinNotice(p, p)).toBeNull()
+    // Cambiar la entrada a mano no es encoger.
+    expect(shrunkJoinNotice(p, setTransition(p, 'b', makeEntry('dissolve', 500)))).toBeNull()
+    const r = applyKeepSegments(p, 'b', [{ startMs: 0, endMs: 100 }, { startMs: 1000, endMs: 10_000 }])
+    expect(shrunkJoinNotice(p, r)).toBe('El paso al trozo 2 ya no cabe: ahora es un corte seco (antes duraba 2 s).')
   })
 })

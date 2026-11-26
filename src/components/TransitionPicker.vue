@@ -220,7 +220,7 @@ const summary = computed(() => {
         >
           {{ FADE_LENGTH_LABELS[l] }} <span class="secs">{{ formatTransitionSeconds(TRANSITION_DURATIONS[l]) }}</span>
         </button>
-        <span class="arrows"><KeyHint k="←" /><KeyHint k="→" /></span>
+        <span v-if="draft" class="arrows"><KeyHint k="←" /><KeyHint k="→" /></span>
       </div>
       <label v-if="draft && isDip(draft.kind)" class="overlap" data-testid="transition-overlap">
         <input type="checkbox" :checked="draft.overlap" @change="toggleOverlap" />
