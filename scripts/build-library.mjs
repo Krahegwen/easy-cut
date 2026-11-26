@@ -23,6 +23,7 @@ import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { expandSelection, importAsset, levelAndEncode, readSelection, writeWavChannels } from './library-import.mjs'
 import { loadParticleSprites, PARTICLE_PACK } from './library-particles.mjs'
+import { renderSticker, STICKERS } from './library-stickers.mjs'
 
 const { values: opts } = parseArgs({
   options: {
@@ -996,6 +997,9 @@ const CATEGORIES = [
   { id: 'tiempo', kind: 'effect', name: 'Tiempo', icon: 'snow' },
   { id: 'amor', kind: 'effect', name: 'Amor', icon: 'heart' },
   { id: 'marcos', kind: 'effect', name: 'Marcos', icon: 'frame' },
+  // Icono ya conocido a propósito: una app instalada con un catálogo de revisión mayor que traiga un icono que
+  // no conoce lo daría por no válido y seguiría con el empaquetado (sin las pegatinas).
+  { id: 'pegatinas', kind: 'effect', name: 'Pegatinas', icon: 'star' },
 ]
 
 function fileEntry(path) {
@@ -1119,6 +1123,107 @@ for (const def of STILLS) {
   console.log(`imagen ${def.id}: ${(statSync(out).size / 1e6).toFixed(2)} MB`)
 }
 
+// Pegatinas (scripts/library-stickers.mjs): PNG cuadradas con transparencia y, las animadas, WebM VP9 con alfa.
+// Vista previa de 256×256 (cuadrada: la tarjeta la encaja con `contain`).
+const STICKER_SIZE = 1024
+const STICKER_PREVIEW = 256
+const stickerSheet = []
+for (const def of STICKERS) {
+  if (skipOwn(def.id)) {
+    const k = kept({ ...def, category: 'pegatinas' }, 'effect')
+    if (k) assets.push(k)
+    continue
+  }
+  const t0 = Date.now()
+  const size = `${STICKER_SIZE}x${STICKER_SIZE}`
+  let out
+  let preview
+  let durationMs = 0
+  if (def.animated) {
+    const frames = Math.round(def.animated.seconds * FPS)
+    durationMs = Math.round(def.animated.seconds * 1000)
+    out = join(DIST, `${def.id}.webm`)
+    const vp9 = ['-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-b:v', '0', '-row-mt', '1', '-auto-alt-ref', '0', '-deadline', 'good', '-cpu-used', '2']
+    await ffmpeg(['-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', size, '-r', String(FPS), '-i', '-', ...vp9, '-crf', '30', '-an', out], async (stdin) => {
+      // t de 0 a (frames−1)/frames: el siguiente sería el primero (enlaza sin salto).
+      for (let f = 0; f < frames; f++) await writeAll(stdin, renderSticker(def, STICKER_SIZE, f / frames))
+      stdin.end()
+    })
+    preview = join(DIST, `${def.id}.preview.webm`)
+    await ffmpeg(['-c:v', 'libvpx-vp9', '-i', out, '-vf', `scale=${STICKER_PREVIEW}:${STICKER_PREVIEW}:flags=area`, ...vp9, '-crf', '36', '-an', preview])
+  } else {
+    out = join(DIST, `${def.id}.png`)
+    await ffmpeg(['-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', size, '-i', '-', '-frames:v', '1', '-compression_level', '9', out], async (stdin) => {
+      await writeAll(stdin, renderSticker(def, STICKER_SIZE, 0))
+      stdin.end()
+    })
+    preview = join(DIST, `${def.id}.preview.png`)
+    await ffmpeg(['-i', out, '-vf', `scale=${STICKER_PREVIEW}:${STICKER_PREVIEW}:flags=area`, '-compression_level', '9', preview])
+  }
+  if (opts.review) stickerSheet.push(def)
+  assets.push({
+    ...baseEntry({ ...def, category: 'pegatinas' }, 'effect'),
+    durationMs,
+    format: def.animated ? 'webm' : 'png',
+    width: STICKER_SIZE,
+    height: STICKER_SIZE,
+    hasAudio: false,
+    hasAlpha: true,
+    ...(def.animated ? {} : { still: true }),
+    ...fileEntry(out),
+    preview: fileEntry(preview),
+    defaults: def.defaults,
+  })
+  console.log(`pegatina ${def.id}: ${((Date.now() - t0) / 1000).toFixed(1)} s, ${(statSync(out).size / 1e3).toFixed(0)} kB`)
+}
+if (stickerSheet.length) await stickerReview(stickerSheet)
+
+/**
+ * Hoja de revisión de las pegatinas (review/pegatinas.png): cada una sobre un fondo claro, uno oscuro y un
+ * vídeo de prueba (barras de color), a 240 px; las animadas, en cuatro momentos de la vuelta (review/<id>.png).
+ */
+async function stickerReview(defs) {
+  const S = 240
+  const backgrounds = [
+    () => [236, 239, 243],
+    () => [28, 34, 41],
+    (x, y) => {
+      // Un trozo de «vídeo»: barras de color con un degradado, para ver cómo queda encima de algo con detalle.
+      const bars = [[230, 230, 230], [230, 200, 40], [40, 190, 210], [50, 180, 60], [200, 50, 190], [210, 40, 40], [40, 60, 200]]
+      const c = bars[Math.floor((x / S) * bars.length)]
+      const k = 0.55 + 0.45 * (1 - y / S)
+      return c.map((v) => v * k)
+    },
+  ]
+  async function sheet(cells, cols, path) {
+    const rows = Math.ceil(cells.length / cols)
+    const Wd = cols * S
+    const Hd = rows * S * backgrounds.length
+    const img = Buffer.alloc(Wd * Hd * 3)
+    cells.forEach((px, idx) => {
+      backgrounds.forEach((bg, band) => {
+        const ox = (idx % cols) * S
+        const oy = (Math.floor(idx / cols) * backgrounds.length + band) * S
+        for (let y = 0; y < S; y++) {
+          for (let x = 0; x < S; x++) {
+            const i = (y * S + x) * 4
+            const a = px[i + 3] / 255
+            const b = bg(x, y)
+            const o = ((oy + y) * Wd + ox + x) * 3
+            for (let c = 0; c < 3; c++) img[o + c] = Math.round(px[i + c] * a + b[c] * (1 - a))
+          }
+        }
+      })
+    })
+    await ffmpeg(['-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${Wd}x${Hd}`, '-i', '-', '-frames:v', '1', path], async (stdin) => {
+      await writeAll(stdin, img)
+      stdin.end()
+    })
+  }
+  await sheet(defs.map((d) => renderSticker(d, S, 0)), 5, join(REVIEW, 'pegatinas.png'))
+  for (const d of defs.filter((x) => x.animated)) await sheet([0, 0.25, 0.5, 0.75].map((t) => renderSticker(d, S, t)), 4, join(REVIEW, `${d.id}.png`))
+}
+
 for (const def of SOUNDS) {
   if (skipOwn(def.id)) {
     const k = kept(def, 'sound')
@@ -1177,7 +1282,7 @@ for (const e of thirdParty) {
 
 // Efectos en el orden del script; sonidos por categoría y, dentro, en el orden de third-party.json (los propios
 // donde los coloca su marca `own`; si no tienen, al final de su categoría).
-const effectOrder = [...EFFECTS, ...STILLS].map((d) => d.id)
+const effectOrder = [...EFFECTS, ...STILLS, ...STICKERS].map((d) => d.id)
 const soundOrder = thirdParty.map((e) => e.own ?? e.id)
 const catIndex = new Map(CATEGORIES.map((c, i) => [c.id, i]))
 const rank = (a) => (a.kind === 'effect' ? effectOrder.indexOf(a.id) : soundOrder.includes(a.id) ? soundOrder.indexOf(a.id) : 10_000)

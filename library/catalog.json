@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "revision": 7,
+  "revision": 8,
   "baseUrl": "https://github.com/Krahegwen/easy-cut/releases/download/library-v1/",
   "ownLicense": "CC0-1.0",
   "categories": [
@@ -117,6 +117,12 @@
       "kind": "effect",
       "name": "Marcos",
       "icon": "frame"
+    },
+    {
+      "id": "pegatinas",
+      "kind": "effect",
+      "name": "Pegatinas",
+      "icon": "star"
     }
   ],
   "assets": [
@@ -634,6 +640,922 @@
         "look": {
           "mix": "normal",
           "fit": "cover"
+        }
+      }
+    },
+    {
+      "id": "pegatina-estrella",
+      "kind": "effect",
+      "name": "Estrella dorada",
+      "category": "pegatinas",
+      "description": "Pegatina de una estrella amarilla con borde blanco, para destacar algo",
+      "tags": [
+        "pegatina",
+        "estrella",
+        "destacar",
+        "premio",
+        "oro"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-estrella.png",
+      "sha256": "f692be9486a3fa9368a7fe997e5f90a88679d0a186af28fda477699013c0f265",
+      "bytes": 96201,
+      "preview": {
+        "file": "pegatina-estrella.preview.png",
+        "sha256": "1c50d43435a05adf04446a1556d84ab9f3c8bae172c72ef3c16eeda12a5dbac2",
+        "bytes": 17956
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.8,
+            "y": 0.28,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-corazon",
+      "kind": "effect",
+      "name": "Corazón rojo",
+      "category": "pegatinas",
+      "description": "Pegatina de un corazón rojo brillante, para lo que te encanta",
+      "tags": [
+        "pegatina",
+        "corazón",
+        "amor",
+        "me gusta",
+        "rojo"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-corazon.png",
+      "sha256": "4956b3f67239732b4e6e4164544113f63b71b00202138164758df3c1ac2152ef",
+      "bytes": 79398,
+      "preview": {
+        "file": "pegatina-corazon.preview.png",
+        "sha256": "2915c16da607b2f81513020591bf78ddfe0b3bb0a62a2a1934672fe94888c4c2",
+        "bytes": 13059
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.8,
+            "y": 0.28,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-flecha-derecha",
+      "kind": "effect",
+      "name": "Flecha hacia la derecha",
+      "category": "pegatinas",
+      "description": "Flecha naranja que señala a la derecha: ponla a la izquierda de lo que quieres enseñar",
+      "tags": [
+        "pegatina",
+        "flecha",
+        "señalar",
+        "mira",
+        "derecha"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-flecha-derecha.png",
+      "sha256": "950196d8264370082bbcd1c983dae01bf50b08652d0d3314e43f677d16bb4dff",
+      "bytes": 59245,
+      "preview": {
+        "file": "pegatina-flecha-derecha.preview.png",
+        "sha256": "208492fb7e134183497778ea423de2fe92b71903e66f0da29b23bc4f127877ac",
+        "bytes": 8362
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.3,
+            "y": 0.5,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-flecha-izquierda",
+      "kind": "effect",
+      "name": "Flecha hacia la izquierda",
+      "category": "pegatinas",
+      "description": "Flecha naranja que señala a la izquierda: ponla a la derecha de lo que quieres enseñar",
+      "tags": [
+        "pegatina",
+        "flecha",
+        "señalar",
+        "mira",
+        "izquierda"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-flecha-izquierda.png",
+      "sha256": "26c9fcfed5facb00913091f9a3a821819190bdc4ce3a5433e197415718034864",
+      "bytes": 60610,
+      "preview": {
+        "file": "pegatina-flecha-izquierda.preview.png",
+        "sha256": "339f85a3fa7a2bc0e3abd5e0e0c49e574d4cb78ef086adf8a421998899b80b10",
+        "bytes": 8244
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.7,
+            "y": 0.5,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-flecha-abajo",
+      "kind": "effect",
+      "name": "Flecha hacia abajo",
+      "category": "pegatinas",
+      "description": "Flecha naranja que señala hacia abajo: ponla encima de lo que quieres enseñar",
+      "tags": [
+        "pegatina",
+        "flecha",
+        "señalar",
+        "mira",
+        "abajo"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-flecha-abajo.png",
+      "sha256": "8f653aad5d38a2e1b8e4c9c3fa3448866eaf816e5a45ea67cc7c7e4f55513f74",
+      "bytes": 61618,
+      "preview": {
+        "file": "pegatina-flecha-abajo.preview.png",
+        "sha256": "3480495dde97edce36f28424c30dcb71746bc410a8ebd453da4debbddd7d17f4",
+        "bytes": 7866
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.5,
+            "y": 0.22,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-flecha-rebota",
+      "kind": "effect",
+      "name": "Flecha que rebota hacia abajo",
+      "category": "pegatinas",
+      "description": "Flecha naranja animada que bota señalando hacia abajo (se repite sin saltos)",
+      "tags": [
+        "pegatina",
+        "flecha",
+        "señalar",
+        "mira",
+        "abajo",
+        "animada",
+        "movimiento"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 1000,
+      "format": "webm",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "file": "pegatina-flecha-rebota.webm",
+      "sha256": "f324a2f508de7a1f3a95c5b604a82b5c0458800652c54d414769f8e348498783",
+      "bytes": 48010,
+      "preview": {
+        "file": "pegatina-flecha-rebota.preview.webm",
+        "sha256": "e357c4fb95e5dec3b05140e928aad25b24b23fc1e034dc8e3f797ea89b1fe174",
+        "bytes": 10094
+      },
+      "defaults": {
+        "repeat": true,
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.5,
+            "y": 0.22,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-bocadillo-puntos",
+      "kind": "effect",
+      "name": "Bocadillo con puntos suspensivos",
+      "category": "pegatinas",
+      "description": "Bocadillo de cómic blanco con tres puntos, como si alguien estuviera pensando o escribiendo",
+      "tags": [
+        "pegatina",
+        "bocadillo",
+        "cómic",
+        "pensar",
+        "hablar",
+        "puntos"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-bocadillo-puntos.png",
+      "sha256": "3ee53aa9d486495b7fd57643da846f3cf095845e9febbe21feef6a53c8c4fb69",
+      "bytes": 91236,
+      "preview": {
+        "file": "pegatina-bocadillo-puntos.preview.png",
+        "sha256": "c75d62f0a06211c95ce513747d07e6b0caaf3b7b9c0f6027c9c388d6311b3707",
+        "bytes": 17548
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.72,
+            "y": 0.26,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-bocadillo-exclamacion",
+      "kind": "effect",
+      "name": "Bocadillo con exclamación",
+      "category": "pegatinas",
+      "description": "Bocadillo de cómic blanco con un «!» rojo, para una sorpresa o un aviso",
+      "tags": [
+        "pegatina",
+        "bocadillo",
+        "cómic",
+        "sorpresa",
+        "aviso",
+        "exclamación"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-bocadillo-exclamacion.png",
+      "sha256": "3a0183215c20128c81e1244f136412c2a1a2bf436dbaed4dd923790d68653512",
+      "bytes": 89652,
+      "preview": {
+        "file": "pegatina-bocadillo-exclamacion.preview.png",
+        "sha256": "6abe1188a069ec49d623d0b5514ab12d3476fb91d59af72dd69d701f3d779a37",
+        "bytes": 17046
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.72,
+            "y": 0.26,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-pulgar-arriba",
+      "kind": "effect",
+      "name": "Pulgar arriba (me gusta)",
+      "category": "pegatinas",
+      "description": "Mano amarilla con el pulgar hacia arriba: «me gusta», «bien hecho»",
+      "tags": [
+        "pegatina",
+        "pulgar",
+        "me gusta",
+        "bien",
+        "ok",
+        "mano",
+        "like"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-pulgar-arriba.png",
+      "sha256": "21d49a881991842f2c340605e20eb0eee2071315c39bd8e6ba36ce97c02bf22f",
+      "bytes": 52047,
+      "preview": {
+        "file": "pegatina-pulgar-arriba.preview.png",
+        "sha256": "23a3372713a5a33265d5d0a3628ff0390cf8f1488d581eef88a96c5196b0b523",
+        "bytes": 10000
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.8,
+            "y": 0.7,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-exclamacion",
+      "kind": "effect",
+      "name": "Signo de exclamación rojo",
+      "category": "pegatinas",
+      "description": "Un «!» rojo grande, para avisar de algo importante",
+      "tags": [
+        "pegatina",
+        "exclamación",
+        "aviso",
+        "importante",
+        "atención"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-exclamacion.png",
+      "sha256": "a13daa78f236070e7b7f20097458df23cba6cbc1def852933a60bb1659677cf4",
+      "bytes": 62675,
+      "preview": {
+        "file": "pegatina-exclamacion.preview.png",
+        "sha256": "30abce5435ae30285f4162063fdc0c91dfbafc0502eb101a3054ae87753af3fe",
+        "bytes": 10256
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.82,
+            "y": 0.3,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-interrogacion",
+      "kind": "effect",
+      "name": "Signo de interrogación azul",
+      "category": "pegatinas",
+      "description": "Un «?» azul grande, para una pregunta o una duda",
+      "tags": [
+        "pegatina",
+        "interrogación",
+        "pregunta",
+        "duda",
+        "qué"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-interrogacion.png",
+      "sha256": "befe0bb1b5921046126c93d12f797af108b2b67c563a258db56e6101ff7ec700",
+      "bytes": 88760,
+      "preview": {
+        "file": "pegatina-interrogacion.preview.png",
+        "sha256": "15c9cc8b838b9a35cc010c874b17bdc03a96d0379faff9c62e0ac79d7cdcc9f9",
+        "bytes": 16370
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.82,
+            "y": 0.3,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-bien",
+      "kind": "effect",
+      "name": "Bien (marca verde)",
+      "category": "pegatinas",
+      "description": "Círculo verde con una marca blanca: correcto, hecho, sí",
+      "tags": [
+        "pegatina",
+        "bien",
+        "correcto",
+        "hecho",
+        "sí",
+        "check",
+        "vale"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-bien.png",
+      "sha256": "bc2d0a4ac835e23b2beadba90ff16733906bfadb26b574f434cf4d72c3100a1c",
+      "bytes": 90492,
+      "preview": {
+        "file": "pegatina-bien.preview.png",
+        "sha256": "dc427aaf221f56d0cf0bbb62cb169ae3d5ce7c35237848624e897bbaaf307dbf",
+        "bytes": 17533
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.8,
+            "y": 0.28,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-mal",
+      "kind": "effect",
+      "name": "Mal (equis roja)",
+      "category": "pegatinas",
+      "description": "Círculo rojo con una equis blanca: incorrecto, no, error",
+      "tags": [
+        "pegatina",
+        "mal",
+        "incorrecto",
+        "no",
+        "error",
+        "equis"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-mal.png",
+      "sha256": "183c0cbe10bd92829046874ce22e037f76d2939fb4af5016b71a167498bdea53",
+      "bytes": 88435,
+      "preview": {
+        "file": "pegatina-mal.preview.png",
+        "sha256": "2ea960058137d67d538c9aaca59d2679d01a481f623f811bc080c14a3586b8d3",
+        "bytes": 17483
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.8,
+            "y": 0.28,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-circulo",
+      "kind": "effect",
+      "name": "Círculo rojo para señalar",
+      "category": "pegatinas",
+      "description": "Un círculo rojo como hecho a mano, para rodear lo que quieres que se vea",
+      "tags": [
+        "pegatina",
+        "círculo",
+        "rodear",
+        "señalar",
+        "marcar",
+        "aquí"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-circulo.png",
+      "sha256": "61f1ee109f49d0c27ec7886e6af7ce7e432f1efdf01d1f4114be248dda1d866c",
+      "bytes": 106130,
+      "preview": {
+        "file": "pegatina-circulo.preview.png",
+        "sha256": "0627e65542c5d356cd920c334829c868e9073539824e3ee5491a7f94c0a80f34",
+        "bytes": 20676
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.62,
+            "y": 0.45,
+            "scale": 0.32
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-destellos",
+      "kind": "effect",
+      "name": "Destellos amarillos",
+      "category": "pegatinas",
+      "description": "Tres destellos de cuatro puntas, para que algo brille",
+      "tags": [
+        "pegatina",
+        "destellos",
+        "brillo",
+        "nuevo",
+        "limpio",
+        "magia"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-destellos.png",
+      "sha256": "e874264cba425c42bddf1c009e46bae8468a7173667ab6d7b11ec8556cf703d0",
+      "bytes": 114996,
+      "preview": {
+        "file": "pegatina-destellos.preview.png",
+        "sha256": "0c74ea11906d1f98890a62d61f07ab260853053aa44c06342a848a3edfa852e2",
+        "bytes": 20342
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.78,
+            "y": 0.28,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-corona",
+      "kind": "effect",
+      "name": "Corona dorada",
+      "category": "pegatinas",
+      "description": "Corona de oro con joyas, para el rey o la reina de la casa",
+      "tags": [
+        "pegatina",
+        "corona",
+        "rey",
+        "reina",
+        "campeón",
+        "oro"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-corona.png",
+      "sha256": "5e117faae3c67fcb1232c7c65ca54404aadaf3a69184e4b2aaf53d6f6010a0b8",
+      "bytes": 65646,
+      "preview": {
+        "file": "pegatina-corona.preview.png",
+        "sha256": "ba6dcb7bca1febab4c96fbb6e2611662a28bebee13061554a7d0e42eb5475cac",
+        "bytes": 12080
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.5,
+            "y": 0.2,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-bombilla",
+      "kind": "effect",
+      "name": "Bombilla encendida (idea)",
+      "category": "pegatinas",
+      "description": "Bombilla amarilla encendida: «¡tengo una idea!»",
+      "tags": [
+        "pegatina",
+        "bombilla",
+        "idea",
+        "luz",
+        "pensar",
+        "truco"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-bombilla.png",
+      "sha256": "0354f3a9be438d4227a87348f555704e49a4cb149cb9fe5176f84cdc75b17245",
+      "bytes": 87574,
+      "preview": {
+        "file": "pegatina-bombilla.preview.png",
+        "sha256": "f9e770bebad19125dcf75a67a8046687bb6db56ead8613d20323b6d6fb1ba16e",
+        "bytes": 16325
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.8,
+            "y": 0.28,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-notas",
+      "kind": "effect",
+      "name": "Notas musicales",
+      "category": "pegatinas",
+      "description": "Dos corcheas moradas unidas, para cuando suena música",
+      "tags": [
+        "pegatina",
+        "música",
+        "notas",
+        "canción",
+        "bailar",
+        "cantar"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-notas.png",
+      "sha256": "f231d141a01170c40fa8e22b4549074db16690f08aa0e1c67c5a259992503916",
+      "bytes": 60131,
+      "preview": {
+        "file": "pegatina-notas.preview.png",
+        "sha256": "7a6494a540bfe214dd97860b51a59246499d59ac4f8bf12573fd0be37ae6ec78",
+        "bytes": 11149
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.8,
+            "y": 0.28,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-globo",
+      "kind": "effect",
+      "name": "Globo rojo",
+      "category": "pegatinas",
+      "description": "Un globo rojo con su cordel, para cumpleaños y fiestas",
+      "tags": [
+        "pegatina",
+        "globo",
+        "cumpleaños",
+        "fiesta",
+        "celebración"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 0,
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "still": true,
+      "file": "pegatina-globo.png",
+      "sha256": "989fcea15d274a4beecc00995ddba226a0f83a8762f23b52086614139f7f5455",
+      "bytes": 82566,
+      "preview": {
+        "file": "pegatina-globo.preview.png",
+        "sha256": "718f06c90919f6208f8cb056dd94960a059798662046659fdb03ce4fdf9ff066",
+        "bytes": 15125
+      },
+      "defaults": {
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.82,
+            "y": 0.32,
+            "scale": 0.25
+          }
+        }
+      }
+    },
+    {
+      "id": "pegatina-corazon-late",
+      "kind": "effect",
+      "name": "Corazón que late",
+      "category": "pegatinas",
+      "description": "Corazón rojo animado que late dos veces por segundo (se repite sin saltos)",
+      "tags": [
+        "pegatina",
+        "corazón",
+        "amor",
+        "me gusta",
+        "animada",
+        "movimiento",
+        "latido"
+      ],
+      "license": "own",
+      "author": "Proyecto Easy Cut",
+      "sourceUrl": "https://github.com/Krahegwen/easy-cut/blob/main/scripts/build-library.mjs",
+      "attribution": null,
+      "durationMs": 1000,
+      "format": "webm",
+      "width": 1024,
+      "height": 1024,
+      "hasAudio": false,
+      "hasAlpha": true,
+      "file": "pegatina-corazon-late.webm",
+      "sha256": "a1f9ccaf4d45854fd666f98e834be79f7d929d2ddfec81f336e40e960c0377b4",
+      "bytes": 51387,
+      "preview": {
+        "file": "pegatina-corazon-late.preview.webm",
+        "sha256": "42fc8be23122245b5475aca56467e808b56fe17c85a025aff47fdb785d0aa23a",
+        "bytes": 10980
+      },
+      "defaults": {
+        "repeat": true,
+        "durationMs": 3000,
+        "look": {
+          "mix": "normal",
+          "fit": "contain",
+          "box": {
+            "x": 0.8,
+            "y": 0.28,
+            "scale": 0.25
+          }
         }
       }
     },

@@ -72,6 +72,8 @@ node scripts/build-library.mjs --review
 
 `--only confeti,ding` rehace solo esos; `--import-only` rehace solo la tanda de terceros; `--review` deja en `dist/review/` hojas de contacto de cada efecto, el espectro y la forma de onda de cada sonido y `sound-levels.json` (lo medido en cada uno), para revisarlos antes de publicar. Al regenerar pueden cambiar los SHA-256 (depende de la versión de ffmpeg): hay que volver a subir los ficheros a la release. La revisión del catálogo sube sola cuando algo cambia.
 
+Las **pegatinas** (categoría «Pegatinas», `scripts/library-stickers.mjs`) también son propias: dibujos con funciones de distancia (estrella, corazón, flechas, bocadillos, pulgar arriba, «!», «?», bien/mal, círculo para señalar, destellos, corona, bombilla, notas, globo) con contorno blanco y sombra suave, para que se vean igual sobre claro y sobre oscuro. PNG de 1024×1024 con alfa (imagen fija) o, las animadas, WebM VP9 con alfa de un segundo que enlaza sin salto; vista previa cuadrada de 256 px. De serie entran pequeñas (`box.scale` 0,25), fuera del centro, en mezcla normal con `fit: contain` y durante 3 s. Con `--review`, `dist/review/pegatinas.png` las enseña sobre claro, oscuro y unas barras de color (y `review/<id>.png`, cuatro momentos de cada animada).
+
 El efecto «Llamas en la parte de abajo» usa los sprites del Particle Pack de Kenney (CC0): sin `sources/kenney/particle-pack/` se queda el que ya hay.
 
 ## Tanda de terceros (`third-party.json`)

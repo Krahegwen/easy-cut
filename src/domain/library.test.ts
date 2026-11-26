@@ -132,6 +132,28 @@ describe('el catálogo del repo (library/catalog.json)', () => {
     // También por la descripción.
     expect(ids('doscientas')).toEqual(['aplausos-auditorio'])
   })
+
+  it('las pegatinas: pequeñas, con transparencia, mezcla normal, fuera del centro y unos segundos', () => {
+    const c = repoCatalog as LibraryCatalog
+    const stickers = searchLibrary(c, 'effect', '', 'pegatinas')
+    expect(stickers.length).toBeGreaterThanOrEqual(12)
+    for (const a of stickers) {
+      expect(a.hasAlpha, a.id).toBe(true)
+      expect(a.preview, a.id).toBeDefined()
+      expect(a.description, a.id).toBeTruthy()
+      const look = a.defaults.look!
+      expect(look.mix, a.id).toBe('normal')
+      expect(look.fit, a.id).toBe('contain')
+      expect(look.box!.scale!, a.id).toBeLessThanOrEqual(0.35)
+      expect(look.box!.x !== 0.5 || look.box!.y !== 0.5, a.id).toBe(true)
+      expect(a.defaults.durationMs, a.id).toBeGreaterThanOrEqual(2000)
+      expect(a.defaults.durationMs!, a.id).toBeLessThanOrEqual(6000)
+    }
+    // Alguna animada (WebM con alfa, se repite) y el resto imágenes fijas.
+    expect(stickers.some((a) => a.format === 'webm' && a.defaults.repeat)).toBe(true)
+    expect(stickers.filter((a) => a.still).length).toBeGreaterThanOrEqual(10)
+    expect(searchLibrary(c, 'effect', 'pulgar').map((a) => a.id)).toContain('pegatina-pulgar-arriba')
+  })
 })
 
 describe('nombres', () => {
