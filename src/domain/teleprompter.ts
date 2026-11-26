@@ -368,6 +368,58 @@ export function advanceUnits(units: number, elapsedMs: number, wpm: number, tota
   return Math.min(totalUnits, units + (elapsedMs * wpm) / 60_000)
 }
 
+// ================================================================== por dónde va la lectura, palabra a palabra
+
+/** Los trozos de todos los párrafos seguidos, en el orden en que se pintan (índice = posición en el texto). */
+export function flattenTokens(script: Pick<Script, 'paragraphs'>): ScriptToken[] {
+  return script.paragraphs.flatMap((p) => p.tokens)
+}
+
+/**
+ * Por dónde va la lectura: los trozos `0 … read - 1` ya se han leído y `current` es el que toca ahora
+ * (siempre `read`, o -1 si no toca ninguno: en la pausa entre párrafos o al acabar el texto).
+ */
+export interface WordCursor {
+  read: number
+  current: number
+}
+
+/**
+ * Qué trozo toca leer con el avance `units`. Un trozo se ha leído cuando el avance llega a su final; toca
+ * mientras el avance está dentro de él. La puntuación suelta (0 palabras, como «—») se da por leída en
+ * cuanto se llega a ella. Búsqueda binaria: el final de los trozos nunca baja.
+ */
+export function wordCursorAt(tokens: readonly Pick<ScriptToken, 'unitStart' | 'units'>[], units: number): WordCursor {
+  const u = Number.isFinite(units) ? Math.max(0, units) : 0
+  let lo = 0
+  let hi = tokens.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    const t = tokens[mid]!
+    if (t.unitStart + t.units <= u) lo = mid + 1
+    else hi = mid
+  }
+  const next = tokens[lo]
+  return { read: lo, current: next && next.unitStart <= u ? lo : -1 }
+}
+
+export type WordState = 'read' | 'current' | 'ahead'
+
+export function wordStateAt(cursor: WordCursor, index: number): WordState {
+  if (index === cursor.current) return 'current'
+  return index < cursor.read ? 'read' : 'ahead'
+}
+
+/**
+ * Trozos cuyo estado puede haber cambiado de un cursor a otro (`from` incluido, `to` excluido), o null si
+ * no ha cambiado nada. Así al pintar solo se tocan esos: uno o dos por palabra, aunque el texto sea largo.
+ */
+export function cursorDirtyRange(prev: WordCursor, next: WordCursor): { from: number; to: number } | null {
+  if (prev.read === next.read && prev.current === next.current) return null
+  // `current`, si lo hay, es igual a `read`: con los dos `read` (y uno más) quedan cubiertos.
+  return { from: Math.min(prev.read, next.read), to: Math.max(prev.read, next.read) + 1 }
+}
+
 // ================================================================== ¿vas bien o vas tarde?
 
 export type ProgressTone = 'normal' | 'warn' | 'danger'

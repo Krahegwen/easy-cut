@@ -2,6 +2,8 @@
 // Pantalla limpia del teleprompter (ensayar o grabar): el texto pasa de abajo arriba por la parte alta,
 // con la línea de lectura marcada, al ritmo elegido. El avance se calcula por palabras (dominio) y se
 // pinta moviendo un único bloque con translateY desde requestAnimationFrame (fluido con textos largos).
+// Por dónde debería ir la lectura se pinta palabra a palabra (ya leído, la de ahora, por leer): el dominio
+// dice qué palabra toca y aquí solo se cambian las clases de los trozos que cambian (uno o dos por palabra).
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import {
   advanceUnits,
@@ -12,6 +14,8 @@ import {
   clockStart,
   COUNTDOWN_SECONDS,
   createClock,
+  cursorDirtyRange,
+  flattenTokens,
   formatClock,
   formatDuration,
   groupIntoLines,
@@ -20,9 +24,13 @@ import {
   readingProgress,
   rewindUnits,
   scrollYAt,
+  wordCursorAt,
+  wordStateAt,
   type MeasuredToken,
   type PrompterLine,
   type Script,
+  type ScriptToken,
+  type WordCursor,
 } from '../../domain'
 import { useShortcuts } from '../../lib/use-shortcuts'
 import AppIcon from '../AppIcon.vue'
@@ -71,6 +79,10 @@ let raf = 0
 let lines: PrompterLine[] = []
 let readingY = 0
 let finishedAtElapsed: number | null = null
+// Palabra a palabra: los trozos en orden, su <span> y el último cursor pintado (null = pintarlos todos).
+let tokens: ScriptToken[] = []
+let wordEls: HTMLElement[] = []
+let cursor: WordCursor | null = null
 
 const shownElapsed = ref(0)
 const shownUnits = ref(0)
@@ -105,12 +117,16 @@ function measure() {
   const el = block.value
   const st = stage.value
   if (!el || !st) return
-  const tokens: MeasuredToken[] = []
-  for (const span of el.querySelectorAll<HTMLElement>('[data-u]')) {
-    tokens.push({ top: span.offsetTop, height: span.offsetHeight, unitStart: Number(span.dataset.u) })
+  const measured: MeasuredToken[] = []
+  wordEls = [...el.querySelectorAll<HTMLElement>('[data-u]')]
+  for (const span of wordEls) {
+    measured.push({ top: span.offsetTop, height: span.offsetHeight, unitStart: Number(span.dataset.u) })
   }
-  lines = groupIntoLines(tokens)
+  lines = groupIntoLines(measured)
   readingY = Math.round(st.clientHeight * READING_FRACTION)
+  // Los <span> pueden ser otros (texto nuevo): se repintan todos una vez.
+  tokens = flattenTokens(props.script)
+  cursor = null
   paint()
 }
 
@@ -119,6 +135,25 @@ function paint() {
   if (!el) return
   const y = scrollYAt(lines, props.script.totalUnits, units)
   el.style.transform = `translate3d(0, ${Math.round((readingY - y) * 10) / 10}px, 0)`
+  paintWords(el)
+}
+
+/** Cambia las clases solo de los trozos cuyo estado ha cambiado desde el último fotograma (casi siempre ninguno). */
+function paintWords(el: HTMLElement) {
+  const next = wordCursorAt(tokens, units)
+  const range = cursor ? cursorDirtyRange(cursor, next) : { from: 0, to: wordEls.length }
+  if (!range) return
+  const to = Math.min(range.to, wordEls.length, tokens.length)
+  for (let i = range.from; i < to; i++) {
+    const state = wordStateAt(next, i)
+    const span = wordEls[i]!
+    span.classList.toggle('w-read', state === 'read')
+    span.classList.toggle('w-current', state === 'current')
+  }
+  cursor = next
+  // Para las pruebas: la palabra que toca (-1 en una pausa de párrafo o al acabar) y cuántas van leídas.
+  el.dataset.currentWord = String(next.current)
+  el.dataset.wordsRead = String(next.read)
 }
 
 // ------------------------------------------------------------------ bucle de animación
@@ -138,7 +173,7 @@ function frame(now: number) {
   }
   lastFrame = now
   const elapsed = clockElapsed(clock, now)
-  if (root.value) (root.value as unknown as { prompterState: unknown }).prompterState = { units, elapsedMs: elapsed, wpm: liveWpm.value, phase: phase.value, at: now }
+  if (root.value) (root.value as unknown as { prompterState: unknown }).prompterState = { units, elapsedMs: elapsed, wpm: liveWpm.value, phase: phase.value, at: now, word: cursor?.current ?? -1, wordsRead: cursor?.read ?? 0 }
   if (now - lastUi > 100) {
     lastUi = now
     shownElapsed.value = elapsed
@@ -364,6 +399,12 @@ defineExpose({ togglePause, finish, phase })
 
 <style scoped>
 .run {
+  /* Lo que se lee: ya leído (apagado), la palabra de ahora (el color de las marcas de la línea de lectura,
+     subrayada para no depender solo del color) y por leer. Contraste sobre #0b0d10: 6,7:1, 10,5:1 y 17,7:1. */
+  --prompter-mark: #f0b43c;
+  --word-ahead: #f6f4ee;
+  --word-read: #9298a0;
+  --word-current: var(--prompter-mark);
   position: fixed;
   inset: 0;
   z-index: 30;
@@ -398,6 +439,26 @@ defineExpose({ togglePause, finish, phase })
 }
 .para {
   margin: 0 0 0.7em;
+  color: var(--word-ahead);
+}
+/* Solo color y subrayado: nada que cambie el ancho (el peso movería las palabras de línea). */
+.block .w-read {
+  color: var(--word-read);
+}
+.block .w-current {
+  color: var(--word-current);
+  text-decoration: underline;
+  text-decoration-color: rgb(240 180 60 / 0.75);
+  text-decoration-thickness: 0.07em;
+  text-underline-offset: 0.16em;
+}
+.block [data-u] {
+  transition: color 120ms linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  .block [data-u] {
+    transition: none;
+  }
 }
 /* Lo ya leído se apaga; el degradado termina antes de la línea que se está leyendo. */
 .fade-top {
@@ -431,11 +492,11 @@ defineExpose({ togglePause, finish, phase })
 }
 .mark.left {
   left: max(16px, calc(13% - 54px));
-  border-left: 26px solid #f0b43c;
+  border-left: 26px solid var(--prompter-mark);
 }
 .mark.right {
   right: max(16px, calc(13% - 54px));
-  border-right: 26px solid #f0b43c;
+  border-right: 26px solid var(--prompter-mark);
 }
 .countdown {
   position: absolute;
