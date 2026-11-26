@@ -53,6 +53,7 @@ import {
   setTrackHidden as setTrackHiddenInProject,
   setTrackMuted as setTrackMutedInProject,
   splitClip,
+  inSharedJoin,
   splitItem,
   toggleSoloSound,
   trimClip,
@@ -601,7 +602,12 @@ export function createTracksStore(editor: EditorStore, library: LibraryStore) {
     const i = p.clips.findIndex((c) => c.id === clipId)
     if (i < 0) return null
     const id = defaultIdFactory()
-    const next = splitClip(p, clipId, atMs - clipStartTimes(p)[i]!, id)
+    const local = atMs - clipStartTimes(p)[i]!
+    if (inSharedJoin(p, clipId, local)) {
+      editor.showToast('Aquí no se puede partir: es el paso de un trozo a otro.')
+      return null
+    }
+    const next = splitClip(p, clipId, local, id)
     if (next === p) {
       editor.showToast('Pon la línea dentro del trozo (no en su principio ni en su final) para partirlo.')
       return null

@@ -898,6 +898,29 @@ export function setTransition(project: Project, clipId: string, entry: ClipEntry
   return updateClip(project, clipId, (clip) => (sameClipEntry(clip.entry, next) ? clip : { ...clip, entry: next }))
 }
 
+/**
+ * Si un cambio (recortar, quitar pausas, quitar un trozo…) ha encogido el paso de algún trozo sin tocar su entrada,
+ * la frase que lo dice («El paso al trozo 3 ahora dura 0,4 s (antes 1 s): no cabe más.»). null si ninguno encoge.
+ */
+export function shrunkJoinNotice(before: Project, after: Project): string | null {
+  const a = clipTimeline(before)
+  const b = clipTimeline(after)
+  for (let i = 1; i < after.clips.length; i++) {
+    const clip = after.clips[i]!
+    const j = before.clips.findIndex((c) => c.id === clip.id)
+    if (j < 1 || !clip.entry || !sameClipEntry(before.clips[j]!.entry, clip.entry)) continue
+    // Que entre desde el mismo trozo (si no, es otra junta).
+    if (before.clips[j - 1]!.id !== after.clips[i - 1]!.id) continue
+    const was = a.joins[j]?.duration ?? 0
+    const now = b.joins[i]?.duration ?? 0
+    if (was <= 0 || now >= was - 1) continue
+    const s = (ms: number) => `${String(Math.round(ms / 100) / 10).replace('.', ',')} s`
+    if (now <= 0) return `El paso al trozo ${i + 1} ya no cabe: ahora es un corte seco (antes duraba ${s(was)}).`
+    return `El paso al trozo ${i + 1} ahora dura ${s(now)} (antes ${s(was)}): no cabe más.`
+  }
+  return null
+}
+
 /** Gira el trozo 90° (1 = horario, -1 = antihorario). */
 export function rotateClip(project: Project, clipId: string, direction: 1 | -1 = 1): Project {
   return updateClip(project, clipId, (clip) => ({

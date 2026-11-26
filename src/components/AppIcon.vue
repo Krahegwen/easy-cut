@@ -101,6 +101,7 @@ const ICONS: Record<IconName, string> = {
   drum: '<ellipse cx="12" cy="9" rx="7.5" ry="3"/><path d="M4.5 9v6.5c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V9"/><path d="M8 12.2v6M16 12.2v6M14.5 2.5 18 6.5M9.5 2.5 6 6.5"/>',
   up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
   down: '<path d="M12 5v14M6 13l6 6 6-6"/>',
+  transition: '<rect x="2.5" y="6" width="11" height="12" rx="1.5"/><rect x="10.5" y="6" width="11" height="12" rx="1.5" fill="currentColor" fill-opacity="0.35"/>',
   drag: '<circle cx="9" cy="7" r="1.2" fill="currentColor"/><circle cx="15" cy="7" r="1.2" fill="currentColor"/><circle cx="9" cy="12" r="1.2" fill="currentColor"/><circle cx="15" cy="12" r="1.2" fill="currentColor"/><circle cx="9" cy="17" r="1.2" fill="currentColor"/><circle cx="15" cy="17" r="1.2" fill="currentColor"/>',
 }
 

@@ -6,10 +6,17 @@
 // y al pie, los botones para crear pistas nuevas. Los elementos se arrastran (también a otra pista del mismo
 // tipo), se recortan o alargan por sus asas y se pegan con imanes (principio y final de los trozos, el cabezal
 // y los demás elementos) dibujando una línea guía. Con muchas pistas, se desplaza hacia abajo.
+// Transiciones: cada trozo se coloca donde empieza (con solape, montado sobre el anterior) y el tramo compartido se
+// ve rayado («el paso»); en cada junta, un botón pequeño («Cómo se pasa al trozo N», también con U desde el trozo
+// elegido) abre el desplegable, y el borde del paso se arrastra para montar más o menos (con su texto en vivo).
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   attachedCounts,
   clipInOut,
+  describeEntry,
+  formatTransitionSeconds,
+  makeEntry,
+  setTransition,
   formatClock,
   formatDuration,
   formatDurationChange,
@@ -33,8 +40,8 @@ import KeyHint from '../KeyHint.vue'
 import ThumbImage from '../ThumbImage.vue'
 import TrackHeader from './TrackHeader.vue'
 
-const props = defineProps<{ playheadMs: number; playing: boolean }>()
-const emit = defineEmits<{ seek: [ms: number]; add: []; record: [] }>()
+const props = defineProps<{ playheadMs: number; playing: boolean; transitionOpenFor?: string | null }>()
+const emit = defineEmits<{ seek: [ms: number]; add: []; record: []; transition: [clipId: string] }>()
 
 const project = computed(() => store.project.value)
 const timing = computed(() => projectTiming(project.value))
@@ -185,10 +192,10 @@ function clipPicture(c: Clip): ClipPicture {
   if (c.picture.kind === 'cover') return store.coverMissing(c) ? 'cover-lost' : 'cover'
   return c.picture.kind === 'none' || !c.sourceHasVideo ? 'sound' : 'own'
 }
-type BadgeId = 'speed' | 'mute' | 'pauses' | 'cover' | 'sound' | 'attached' | 'fades' | 'corner'
+type BadgeId = 'speed' | 'mute' | 'pauses' | 'cover' | 'sound' | 'attached' | 'fades' | 'corner' | 'entry'
 interface Badge {
   id: BadgeId
-  icon: 'speed' | 'mute' | 'pauses' | 'cover-video' | 'wave' | 'tracks' | 'fade-in' | 'corner' | 'motion'
+  icon: 'speed' | 'mute' | 'pauses' | 'cover-video' | 'wave' | 'tracks' | 'fade-in' | 'corner' | 'motion' | 'transition'
   text: string
 }
 const attached = computed(() => attachedCounts(project.value))
@@ -210,6 +217,9 @@ function clipBadges(c: Clip): Badge[] {
     const text = c.fadeInMs > 0 && c.fadeOutMs > 0 ? 'Aparece y desaparece poco a poco' : c.fadeInMs > 0 ? 'Aparece poco a poco' : 'Desaparece poco a poco'
     out.push({ id: 'fades', icon: 'fade-in', text })
   }
+  const i = project.value.clips.indexOf(c)
+  const join = timing.value.joins[i]
+  if (join && c.entry) out.push({ id: 'entry', icon: 'transition', text: `Entra con ${describeEntry(c.entry, join.duration).toLowerCase()}` })
   const a = attached.value.get(c.id)
   if (a) {
     const parts: string[] = []
@@ -335,6 +345,82 @@ const clipDropX = computed(() => {
   const others = project.value.clips.map((c, i) => ({ c, i })).filter((o) => o.c.id !== d.id)
   const before = others[d.target]
   return before ? x(timing.value.starts[before.i]!) : x(totalMs.value)
+})
+
+// ------------------------------------------------------------------ juntas: transiciones entre trozos
+
+/** Cada junta (entre el trozo i − 1 y el i): dónde está el botón, el paso (rayado) y si se puede arrastrar. */
+const joinsView = computed(() =>
+  project.value.clips.slice(1).map((c, k) => {
+    const i = k + 1
+    const j = timing.value.joins[i] ?? null
+    const start = timing.value.starts[i]!
+    const zone = j ? (j.overlap ? { from: start, to: start + j.overlapUnits } : { from: start - j.tail, to: start + j.head }) : null
+    const centerMs = j?.overlap ? start + j.overlapUnits / 2 : start
+    const label = `Cómo se pasa al trozo ${i + 1}: ${describeEntry(c.entry && j ? c.entry : null, j?.duration).toLowerCase()}`
+    return { clip: c, i, join: j, zone, centerMs, label }
+  }),
+)
+
+/** El trozo que entra desde el elegido (para la U dibujada en su junta). */
+const nextOfSelected = computed(() => {
+  const i = project.value.clips.findIndex((c) => c.id === store.selectedClipId.value)
+  return i >= 0 && i + 1 < project.value.clips.length ? project.value.clips[i + 1]!.id : null
+})
+
+/**
+ * Arrastrar el borde del paso (el principio del que entra) monta más o menos: hacia la izquierda, más paso; hacia
+ * la derecha, menos. Se ve al momento con el texto de cuánto dura el paso y el vídeo, y entra al soltar (un paso).
+ */
+const joinDrag = ref<{ clipId: string; startX: number; active: boolean; beforeMs: number; beforeTotalMs: number; entry: NonNullable<Clip['entry']> } | null>(null)
+
+function joinEdgeDown(c: Clip, e: PointerEvent) {
+  if (e.button !== 0 || !c.entry) return
+  e.stopPropagation()
+  e.preventDefault()
+  const i = project.value.clips.indexOf(c)
+  if (zoom.value === null) frozenPx.value = fitPx.value
+  joinDrag.value = { clipId: c.id, startX: e.clientX, active: false, beforeMs: timing.value.joins[i]?.duration ?? 0, beforeTotalMs: timing.value.totalMs, entry: c.entry }
+  window.addEventListener('pointermove', joinEdgeMove)
+  window.addEventListener('pointerup', joinEdgeUp)
+  window.addEventListener('pointercancel', joinEdgeCancel)
+}
+function joinEdgeMove(e: PointerEvent) {
+  const d = joinDrag.value
+  if (!d) return
+  if (!d.active && Math.abs(e.clientX - d.startX) > 3) d.active = true
+  if (!d.active) return
+  // Se parte del paso que se ve (lo pedido puede ser más que lo que cabe).
+  const want = Math.round((d.beforeMs + ms(d.startX - e.clientX)) / 50) * 50
+  const entry = makeEntry(d.entry.kind, want, d.entry.overlap)
+  const id = d.clipId
+  store.preview((p) => setTransition(p, id, entry))
+}
+function joinEdgeUp() {
+  const d = joinDrag.value
+  stopJoinDrag()
+  if (d?.active) store.commitPreview()
+}
+function joinEdgeCancel() {
+  stopJoinDrag()
+  store.cancelPreview()
+}
+function stopJoinDrag() {
+  joinDrag.value = null
+  frozenPx.value = null
+  window.removeEventListener('pointermove', joinEdgeMove)
+  window.removeEventListener('pointerup', joinEdgeUp)
+  window.removeEventListener('pointercancel', joinEdgeCancel)
+}
+/** «Paso al trozo 3: 1 s → 1,5 s · Vídeo: 36 s → 35,5 s» mientras se arrastra. */
+const joinLive = computed(() => {
+  const d = joinDrag.value
+  if (!d?.active) return null
+  const i = project.value.clips.findIndex((c) => c.id === d.clipId)
+  if (i < 0) return null
+  const now = timing.value.joins[i]?.duration ?? 0
+  const step = (a: number, b: number) => (Math.abs(a - b) < 50 ? formatTransitionSeconds(b) : `${formatTransitionSeconds(a)} → ${formatTransitionSeconds(b)}`)
+  return `Paso al trozo ${i + 1}: ${step(d.beforeMs, now)} · Vídeo: ${formatDurationChange(d.beforeTotalMs, timing.value.totalMs)}`
 })
 
 // ------------------------------------------------------------------ elementos: arrastrar y recortar
@@ -635,7 +721,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
               trimming: clipTrim?.active && clipTrim.id === c.id,
               narrow: x(timing.lengths[i]!) < 64,
             }"
-            :style="{ left: `${x(timing.starts[i]!)}px`, width: `${Math.max(6, x(timing.lengths[i]!))}px` }"
+            :style="{ left: `${x(timing.starts[i]!)}px`, width: `${Math.max(6, x(timing.lengths[i]!))}px`, '--lead': `${x(timing.overlaps[i] ?? 0)}px`, '--tail': `${x(timing.overlaps[i + 1] ?? 0)}px` }"
             type="button"
             :data-clip-id="c.id"
             :data-testid="`clip-block-${i + 1}`"
@@ -657,6 +743,43 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
             <span class="clip-handle start" data-testid="clip-handle-start" title="Tira para que empiece antes o después" @pointerdown="clipHandleDown(c, 'start', $event)" />
             <span class="clip-handle end" data-testid="clip-handle-end" title="Tira para que termine antes o después" @pointerdown="clipHandleDown(c, 'end', $event)" />
           </button>
+          <!-- El paso de un trozo a otro: rayado sobre los dos (con solape) o en la junta (a negro / a blanco). -->
+          <template v-for="jv in joinsView" :key="`join-${jv.clip.id}`">
+            <span
+              v-if="jv.zone"
+              class="join-zone"
+              :class="{ overlap: jv.join?.overlap, shrunk: jv.join?.shrunk }"
+              :style="{ left: `${x(jv.zone.from)}px`, width: `${Math.max(2, x(jv.zone.to - jv.zone.from))}px` }"
+              :data-join-index="jv.i + 1"
+              :data-from-ms="Math.round(jv.zone.from)"
+              :data-to-ms="Math.round(jv.zone.to)"
+              data-testid="join-zone"
+              aria-hidden="true"
+            >
+              <span
+                v-if="jv.join?.overlap"
+                class="join-edge"
+                title="Tira para montar más o menos"
+                :data-testid="`join-edge-${jv.i + 1}`"
+                @pointerdown="joinEdgeDown(jv.clip, $event)"
+              />
+            </span>
+            <button
+              class="join-btn"
+              :class="{ on: !!jv.join, picked: transitionOpenFor === jv.clip.id }"
+              type="button"
+              :style="{ left: `${x(jv.centerMs)}px` }"
+              :aria-label="jv.label"
+              :title="jv.label"
+              :data-testid="`join-btn-${jv.i + 1}`"
+              :data-clip-id="jv.clip.id"
+              @pointerdown.stop
+              @click="emit('transition', jv.clip.id)"
+            >
+              <AppIcon name="transition" :size="16" />
+              <KeyHint v-if="nextOfSelected === jv.clip.id && !tracks.selectedItemId.value" k="U" />
+            </button>
+          </template>
           <span v-if="clipDropX !== null" class="drop-mark" :style="{ left: `${clipDropX}px` }" />
           <!-- Al final de la fila (o, con zoom, pegados al borde derecho): lo que eran las tarjetas del final. -->
           <div class="row-end" :style="{ marginLeft: `${x(project.clips.length ? timing.totalMs : 0) + 8}px` }" data-testid="video-row-end">
@@ -730,6 +853,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
       </div>
     </div>
     <div v-if="trimLive" class="trim-live" data-testid="clip-trim-live" role="status">{{ trimLive }}</div>
+    <div v-if="joinLive" class="trim-live" data-testid="join-live" role="status">{{ joinLive }}</div>
   </section>
 </template>
 
@@ -1159,8 +1283,8 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
 }
 .clip-lost {
   position: absolute;
-  left: 44px;
-  right: 14px;
+  left: calc(44px + var(--lead, 0px));
+  right: calc(14px + var(--tail, 0px));
   top: 6px;
   font-size: 13px;
   font-weight: 650;
@@ -1175,7 +1299,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
 }
 .clip-badges {
   position: absolute;
-  right: 13px;
+  right: calc(13px + var(--tail, 0px));
   top: 4px;
   display: flex;
   gap: 2px;
@@ -1196,7 +1320,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
 }
 .clip-duration {
   position: absolute;
-  left: 13px;
+  left: calc(13px + var(--lead, 0px));
   bottom: 4px;
   padding: 0 6px;
   border-radius: 6px;
@@ -1266,7 +1390,7 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
 }
 .clip-number {
   position: absolute;
-  left: 13px;
+  left: calc(13px + var(--lead, 0px));
   top: 4px;
   min-width: 24px;
   height: 24px;
@@ -1281,6 +1405,74 @@ defineExpose({ zoomBy, fitAll, canZoomIn, canZoomOut, pxPerSec })
   pointer-events: none;
 }
 .clip-block.selected .clip-number {
+  background: var(--accent);
+  color: #fff;
+}
+/* El paso de un trozo a otro: rayado encima de los bloques (que no tape lo que se pulsa). */
+.join-zone {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  z-index: 2;
+  border-radius: 6px;
+  pointer-events: none;
+  background: repeating-linear-gradient(135deg, rgb(255 255 255 / 0.5) 0 4px, rgb(255 255 255 / 0) 4px 9px);
+  box-shadow: inset 0 0 0 2px rgb(255 255 255 / 0.85);
+}
+.join-zone:not(.overlap) {
+  background: repeating-linear-gradient(135deg, rgb(255 255 255 / 0.28) 0 3px, rgb(255 255 255 / 0) 3px 9px);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.5);
+}
+.join-zone.shrunk {
+  box-shadow: inset 0 0 0 2px var(--warn);
+}
+.join-edge {
+  /* Arriba del borde: abajo queda el asa del trozo para recortarlo. */
+  position: absolute;
+  left: -7px;
+  top: 0;
+  height: 48%;
+  width: 14px;
+  cursor: ew-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+.join-edge::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 3px;
+  bottom: 3px;
+  width: 4px;
+  border-radius: 2px;
+  background: #fff;
+}
+.join-btn {
+  position: absolute;
+  top: 2px;
+  z-index: 4;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 26px;
+  min-width: 26px;
+  padding: 0 4px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 13px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm, 0 1px 2px rgb(0 0 0 / 0.2));
+}
+.join-btn:hover,
+.join-btn.picked {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.join-btn.on {
+  border-color: var(--accent);
   background: var(--accent);
   color: #fff;
 }

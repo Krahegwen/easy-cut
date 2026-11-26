@@ -52,6 +52,7 @@ import {
   serializeHistoryFile,
   serializeProject,
   setCover,
+  shrunkJoinNotice,
   setTargetDuration,
   siblingCandidates,
   sortProjectSummaries,
@@ -238,8 +239,12 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
    */
   function commit(next: Project) {
     transient.value = null
+    const before = history.value.present
     history.value = pushState(history.value, syncMediaPool(next, media.value))
     keepSelectionValid()
+    // Si un cambio ha encogido el paso de un trozo a otro (no cabe), se dice, con «Deshacer».
+    const shrunk = shrunkJoinNotice(before, history.value.present)
+    if (shrunk) showToast(shrunk, { label: 'Deshacer', run: undo })
   }
 
   /**
