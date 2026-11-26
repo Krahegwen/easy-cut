@@ -2,6 +2,17 @@
 
 Cada versión publicada, de la más nueva a la más antigua. La sección de una versión es la que sale en «Novedades» de su release en GitHub y en el aviso de la app, así que se escribe para quien usa Easy Cut: en llano y sin detalles técnicos.
 
+## Sin publicar
+
+- **«Tu vídeo» se ve siempre en pistas.** Los trozos van en la fila «Vídeo», cada uno del largo que dura, con sus indicadores (más rápido, sin sonido, sin pausas, vídeo encima, «Solo se oye», lo que lleva pegado) y el aviso si no se encuentra su vídeo. Ya no hay tira de tarjetas ni botón para cambiar entre las dos.
+- «Añadir vídeos o sonidos» y «Grabarme» están al final de la fila «Vídeo». Con el vídeo vacío, una invitación a añadir el primero.
+- **Recortar un trozo sin entrar en «Arreglar este trozo»:** tira del borde de un trozo para que empiece o termine antes o después (hasta donde dé el vídeo original); los siguientes se recolocan solos y se ve en vivo cuánto duran el trozo y el vídeo. Sin arrastrar: con el trozo elegido, «Empieza aquí» (E), «Termina aquí» (T) y «Partir» (P) actúan donde está la línea. Lo que lleva pegado sigue a su imagen.
+- Las pistas ocupan todo el ancho de la ventana, y la vista previa se puede hacer más pequeña o más grande: arrastrando la barra que las separa o con «Pequeña», «Mediana» y «Grande». Se acuerda de cómo la dejaste.
+- **Pistas nuevas a mano** («Pista de sonido», «Pista de efectos»), y ya **sin límite** de pistas. Para pasar un sonido o un efecto de una pista a otra, se arrastra hasta ella. Con muchas pistas, se desplazan hacia abajo y la fila «Vídeo» se queda a la vista.
+- **«Escuchar solo esta»** en cada pista de sonido y en la fila «Vídeo»: calla las demás de un toque; otra vez, vuelve a sonar todo.
+- Al soltar ficheros en «Tu vídeo»: encima de las pistas de sonidos o efectos (o con la biblioteca abierta) van a las pistas, donde está la línea; en el resto, se añaden al final del vídeo como trozos.
+- Arreglado: con la ventana muy grande, los botones de la cabecera de una pista se salían de su fila.
+
 ## [0.3.0] - 2026-11-25
 
 - **Sonidos y efectos encima de tu vídeo.** Con «Añadir sonidos y efectos» se pone música, aplausos, una campanita, confeti, chispas, luces, nieve, un logo o un marco. Lo que pones va en unas pistas debajo de los trozos y se ve de un vistazo dónde suena o se ve cada cosa.

@@ -132,7 +132,7 @@ async function waitScreen(testid, timeoutMs = 20_000) {
 }
 
 async function openClip(index) {
-  await app.click(`[data-testid=clip-card-${index + 1}]`)
+  await app.click(`[data-testid=clip-block-${index + 1}]`)
   await app.click('[data-testid=fix-clip]')
   await waitScreen('clip-editor')
 }
@@ -184,11 +184,12 @@ try {
   {
     const list = await clips()
     check('El M4A entra como trozo de «Solo se oye»', list[2].path === media.voice && list[2].picture.kind === 'none', JSON.stringify(list[2]))
-    const kind = await app.evaluate('return document.querySelector("[data-testid=clip-card-3] .picture").dataset.picture')
-    check('Su tarjeta es distinta: onda y «Solo se oye»', kind === 'sound' && (await app.text('[data-testid=clip-card-3]')).includes('Solo se oye'), kind)
+    const kind = await app.evaluate('return document.querySelector("[data-testid=clip-block-3]").dataset.picture')
+    const label = await app.evaluate('return document.querySelector("[data-testid=clip-block-3]").getAttribute("aria-label")')
+    check('Su bloque en la fila «Vídeo» es distinto: onda y «Solo se oye»', kind === 'sound' && label.includes('solo se oye') && (await app.evaluate('return !!document.querySelector("[data-testid=clip-block-3] .b-sound")')), `${kind} · ${label}`)
     check('El vídeo dura 32 s (10 + 12 + 10)', (await app.text('[data-testid=duration-total]')) === 'El vídeo dura 32 s', await app.text('[data-testid=duration-total]'))
   }
-  await app.click('[data-testid=clip-card-3]')
+  await app.click('[data-testid=clip-block-3]')
   await sleep(1200)
   check('La vista previa del sonido enseña «Solo se oye»', (await playerData()).picture === 'none' && !!(await app.text('[data-testid=preview-sound-only]')))
   await shot('pic-01-tu-video-con-sonido.png')
@@ -240,7 +241,10 @@ try {
     await shot('pic-06-encuadrar-con-encima.png')
   }
   await closeClip()
-  check('Tarjeta del sonido con vídeo encima: miniatura e indicador', (await app.evaluate('return document.querySelector("[data-testid=clip-card-3] .picture").dataset.picture')) === 'cover' && (await app.text('[data-testid=clip-card-3]')).includes('Vídeo encima'))
+  check(
+    'Bloque del sonido con vídeo encima: miniatura e indicador',
+    (await app.waitFor('const b = document.querySelector("[data-testid=clip-block-3]"); return b.dataset.picture === "cover" && b.getAttribute("aria-label").includes("vídeo encima") && !!b.querySelector(".b-cover") && b.querySelector(".clip-thumb").style.backgroundImage.includes("url")', { timeoutMs: 10_000, what: "miniatura del vídeo de encima" }).catch(() => false)) === true,
+  )
 
   // --- El vídeo horizontal: quitarle la imagen, otro vídeo encima, esquina y tamaño, y partirlo
   await openClip(0)
@@ -286,14 +290,14 @@ try {
   await closeClip()
   await sleep(1200)
   {
-    const kinds = await app.evaluate('return [...document.querySelectorAll("[data-testid^=clip-card-] .picture")].map((e) => e.dataset.picture)')
-    check('Tarjetas: vídeo encima, vídeo encima, su vídeo, vídeo encima', JSON.stringify(kinds) === '["cover","cover","thumb","cover"]', kinds.join(','))
+    const kinds = await app.evaluate('return [...document.querySelectorAll("[data-testid^=clip-block-]")].map((e) => e.dataset.picture)')
+    check('Fila «Vídeo»: vídeo encima, vídeo encima, su vídeo, vídeo encima', JSON.stringify(kinds) === '["cover","cover","own","cover"]', kinds.join(','))
     await shot('pic-09-tira.png')
   }
 
   // --- Reproducir todo: el tiempo avanza y el vídeo de encima va sincronizado
   {
-    await app.click('[data-testid=clip-card-1]')
+    await app.click('[data-testid=clip-block-1]')
     await sleep(500)
     const total = (await playerData()).dur
     await app.click('[data-testid=play-toggle]')
@@ -426,9 +430,9 @@ try {
     await app.waitFor('return !!document.querySelector("[data-testid=resume-card]")', { timeoutMs: 10_000, what: 'vídeo sin terminar' })
     await app.click('[data-testid=resume]')
     await waitScreen('editor')
-    const lost = await app.waitFor('const c = document.querySelector("[data-testid=clip-card-4]"); return c && c.innerText.includes("No encuentro el vídeo de encima") ? c.innerText : null', { timeoutMs: 10_000, what: 'tarjeta sin vídeo de encima' })
-    check('La tarjeta dice «No encuentro el vídeo de encima»', !!lost)
-    await app.click('[data-testid=clip-card-4]')
+    const lost = await app.waitFor('const c = document.querySelector("[data-testid=clip-block-4]"); return c && c.dataset.picture === "cover-lost" && c.innerText.includes("No encuentro el vídeo de encima") ? c.getAttribute("aria-label") : null', { timeoutMs: 10_000, what: 'bloque sin vídeo de encima' })
+    check('El bloque del trozo dice «No encuentro el vídeo de encima»', !!lost, lost ?? '')
+    await app.click('[data-testid=clip-block-4]')
     check('El panel lo explica y ofrece quitarlo', !!(await app.text('[data-testid=cover-lost-panel]')) && !!(await app.text('[data-testid=remove-lost-cover]')))
     await shot('pic-15-encima-perdido.png')
     await app.click('[data-testid=save-video]')

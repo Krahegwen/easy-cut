@@ -10,7 +10,6 @@ import {
   anchorTimeMs,
   clipOutputMs,
   MAX_ITEM_VOLUME,
-  MAX_TRACKS,
   normalizeLook,
   type EffectLook,
   type ItemSource,
@@ -150,10 +149,6 @@ export function tracksOfKind(project: Project, kind: TrackKind): Track[] {
   return project.tracks.filter((t) => t.kind === kind)
 }
 
-export function canAddTrack(project: Project, kind: TrackKind): boolean {
-  return tracksOfKind(project, kind).length < MAX_TRACKS[kind]
-}
-
 /** «Sonidos», «Sonidos 2»…; «Efectos», «Efectos 2»… (el primero libre). */
 export function defaultTrackName(project: Project, kind: TrackKind): string {
   const base = kind === 'sound' ? 'Sonidos' : 'Efectos'
@@ -167,11 +162,11 @@ export function createTrack(kind: TrackKind, id: string, name: string): Track {
 }
 
 /**
- * Añade una pista (si cabe). Las de efectos van encima de las que ya hay (lo nuevo se ve por encima); las
- * de sonido, debajo de las de sonido.
+ * Añade una pista (no hay límite: la vista de pistas se desplaza). Las de efectos van encima de las que ya
+ * hay (lo nuevo se ve por encima); las de sonido, debajo de las de sonido.
  */
 export function addTrack(project: Project, track: Track): Project {
-  if (!canAddTrack(project, track.kind)) return project
+  if (project.tracks.some((t) => t.id === track.id)) return project
   const tracks = project.tracks.slice()
   if (track.kind === 'effect') {
     const first = tracks.findIndex((t) => t.kind === 'effect')
@@ -215,6 +210,36 @@ export function renameTrack(project: Project, trackId: string, name: string): Pr
 /** Silencia (o no) el sonido de todos los trozos de la fila principal. */
 export function setMainMuted(project: Project, mainMuted: boolean): Project {
   return project.mainMuted === mainMuted ? project : { ...project, mainMuted }
+}
+
+/** Lo que suena por su cuenta: la fila «Vídeo» (`'main'`) o una pista de sonido (su id). */
+export type SoundRow = 'main' | string
+
+function soundRowMuted(project: Project, row: SoundRow): boolean {
+  return row === 'main' ? project.mainMuted : project.tracks.find((t) => t.id === row)?.muted ?? true
+}
+
+/** ¿Solo se oye esta fila? (ella suena y las demás de sonido, que las hay, están silenciadas). */
+export function isSoloSound(project: Project, row: SoundRow): boolean {
+  const others: SoundRow[] = ['main', ...tracksOfKind(project, 'sound').map((t) => t.id)].filter((r) => r !== row)
+  return others.length > 0 && !soundRowMuted(project, row) && others.every((r) => soundRowMuted(project, r))
+}
+
+/**
+ * «Escuchar solo esta»: la fila suena y las demás de sonido (la fila «Vídeo» incluida) se silencian, en un
+ * solo cambio. Si ya era la única que sonaba, vuelven a sonar todas.
+ */
+export function toggleSoloSound(project: Project, row: SoundRow): Project {
+  if (row !== 'main' && !project.tracks.some((t) => t.id === row && t.kind === 'sound')) return project
+  const all = !isSoloSound(project, row)
+  const mainMuted = all ? row !== 'main' : false
+  const tracks = project.tracks.map((t) => {
+    if (t.kind !== 'sound') return t
+    const muted = all ? t.id !== row : false
+    return t.muted === muted ? t : { ...t, muted }
+  })
+  const changed = mainMuted !== project.mainMuted || tracks.some((t, i) => t !== project.tracks[i])
+  return changed ? { ...project, mainMuted, tracks } : project
 }
 
 // ---------------------------------------------------------------------------
@@ -374,9 +399,9 @@ export type InsertResult =
   | { ok: false; reason: 'no-room' | 'empty-video' }
 
 /**
- * «Poner aquí»: en `startMs`, en la primera pista del tipo con sitio; si no hay, en una pista nueva (si
- * caben más); si tampoco, en el primer hueco a continuación. `newTrack` da el id y el nombre de la pista
- * que se crearía. Un solo cambio del proyecto.
+ * «Poner aquí»: en `startMs`, en la primera pista del tipo con sitio; si no hay, en una pista nueva.
+ * Con `trackId` (solo esa pista), si no cabe ahí, en el primer hueco a continuación. `newTrack` da el id y
+ * el nombre de la pista que se crearía. Un solo cambio del proyecto.
  */
 export function insertItem(
   project: Project,
@@ -396,7 +421,7 @@ export function insertItem(
       return { ok: true, project: putItem(project, t.id, item, start, timing), trackId: t.id, startMs: start, newTrack: false, shifted: false }
     }
   }
-  if (!options.trackId && canAddTrack(project, kind)) {
+  if (!options.trackId) {
     const withTrack = addTrack(project, createTrack(kind, newTrack.id, newTrack.name ?? defaultTrackName(project, kind)))
     return { ok: true, project: putItem(withTrack, newTrack.id, item, start, timing), trackId: newTrack.id, startMs: start, newTrack: true, shifted: false }
   }
@@ -669,7 +694,7 @@ export function libraryAssetIds(project: Project): string[] {
   return [...new Set(allItems(project).flatMap((i) => (i.source.type === 'library' ? [i.source.assetId] : [])))]
 }
 
-/** Cuántos sonidos y efectos lleva pegados cada trozo (para la tira de tarjetas). */
+/** Cuántos sonidos y efectos lleva pegados cada trozo (se ve en su bloque de la fila «Vídeo»). */
 export function attachedCounts(project: Project): Map<string, { sounds: number; effects: number }> {
   const map = new Map<string, { sounds: number; effects: number }>()
   for (const t of project.tracks) {

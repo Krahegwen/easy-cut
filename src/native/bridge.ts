@@ -99,11 +99,17 @@ export interface RecordingWriter {
   discard(): Promise<void>
 }
 
+/** Punto de la ventana en píxeles CSS (los de getBoundingClientRect). */
+export interface DropPoint {
+  x: number
+  y: number
+}
+
 export interface FileDropHandlers {
-  /** Rutas soltadas en la ventana (ficheros de cualquier tipo: filtrar en la interfaz). */
-  onDrop(paths: string[]): void
-  /** true al entrar arrastrando ficheros sobre la ventana, false al salir o soltar. */
-  onHover?(hovering: boolean): void
+  /** Rutas soltadas en la ventana (ficheros de cualquier tipo: filtrar en la interfaz) y dónde. */
+  onDrop(paths: string[], at?: DropPoint): void
+  /** true al entrar arrastrando ficheros sobre la ventana (y al moverse, con el punto), false al salir o soltar. */
+  onHover?(hovering: boolean, at?: DropPoint): void
 }
 
 export interface NativeBridge {

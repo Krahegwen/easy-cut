@@ -677,7 +677,7 @@ try {
     const voiceClip = await app.evaluate(`const s = window.__easyCut.store; const c = s.selectedClip.value;
       return c ? { path: c.sourcePath, picture: c.picture.kind, hasVideo: c.sourceHasVideo, n: s.project.value.clips.length, offer: s.recordingOffer.value === c.id, index: s.selectedIndex.value } : null`)
     check('«Usar esta grabación» la mete como trozo de solo sonido', !!voiceClip && voiceClip.n === clipsBefore + 1 && voiceClip.picture === 'none' && voiceClip.hasVideo === false && voiceClip.path === usedPath, JSON.stringify(voiceClip))
-    check('La tarjeta del trozo dice «Solo se oye»', (await app.evaluate(`return document.querySelector('[data-testid=clip-card-${voiceClip.index + 1}] .picture').dataset.picture`)) === 'sound')
+    check('El bloque del trozo dice «Solo se oye»', (await app.evaluate(`return document.querySelector('[data-testid=clip-block-${voiceClip.index + 1}]').dataset.picture`)) === 'sound')
     check('Y ofrece quitarle las pausas', !!voiceClip.offer && !!(await app.text('[data-testid=recording-offer]')))
     await sleep(600)
     await shot('pic-tp-voz-en-el-montaje.png')

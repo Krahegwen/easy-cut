@@ -233,18 +233,58 @@ async function layoutIsClean(where) {
   const res = await app.evaluate(`const bad = [];
     const sel = '[data-testid=item-bar] .btn, [data-testid=fx-panel] .btn, [data-testid=fx-panel] .seg, [data-testid=tracks-view] .zbtn, [data-testid=track-header] .mini, [data-testid=main-header] .mini, [data-testid=library-panel] .btn, [data-testid=library-panel] .tab, [data-testid=clip-panel] .btn';
     // Lo que está fuera de la vista dentro de una lista que se desplaza no cuenta (no está cortado: se desplaza).
-    const clippedByScroll = (el, r) => { for (let p = el.parentElement; p; p = p.parentElement) { const o = getComputedStyle(p).overflowY; if (o === 'auto' || o === 'scroll') { const pr = p.getBoundingClientRect(); return r.top + r.height / 2 < pr.top || r.top + r.height / 2 > pr.bottom } } return false };
+    const clippedByScroll = (el, r) => { for (let p = el.parentElement; p; p = p.parentElement) { const o = getComputedStyle(p).overflowY; if (o === 'auto' || o === 'scroll') { const pr = p.getBoundingClientRect(); return r.top < pr.top - 0.5 || r.bottom > pr.bottom + 0.5 } } return false };
     for (const el of document.querySelectorAll(sel)) {
       const r = el.getBoundingClientRect(); if (r.width === 0 || clippedByScroll(el, r)) continue;
       if (el.scrollWidth > el.clientWidth + 1) bad.push('cortado: ' + el.innerText.trim());
       if (r.right > window.innerWidth + 0.5 || r.bottom > window.innerHeight + 0.5) bad.push('fuera de la ventana: ' + el.innerText.trim());
       const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-      if (hit && hit !== el && !el.contains(hit) && !hit.closest('.popover')) bad.push('tapado: ' + el.innerText.trim() + ' por ' + (hit.dataset?.testid ?? hit.className ?? hit.tagName));
+      const STICKY = '.video-row, [data-testid=main-header], [data-testid=add-track-row], [data-testid=tracks-view] .corner, [data-testid=tracks-ruler]';
+      const underSticky = hit && !el.closest(STICKY) && !!hit.closest(STICKY);
+      if (hit && hit !== el && !el.contains(hit) && !hit.closest('.popover') && !underSticky) bad.push('tapado: ' + el.innerText.trim() + ' por ' + (hit.dataset?.testid ?? hit.className ?? hit.tagName));
     }
     const player = document.querySelector('[data-testid=preview-frame]').getBoundingClientRect();
     return { bad, preview: Math.round(player.width) + 'x' + Math.round(player.height) }`)
   check(`Nada cortado ni tapado (${where})`, res.bad.length === 0, res.bad.length ? res.bad.join(' | ') : `vista previa ${res.preview}`)
   return res
+}
+
+/**
+ * Los botones de la cabecera de cada fila caben en su fila (no se salen por abajo ni pisan la siguiente): se
+ * mide con getBoundingClientRect de cada botón dentro de su cabecera, y la cabecera, del alto de su fila.
+ */
+async function headersFit(where) {
+  const res = await app.evaluate(`const bad = []; let n = 0;
+    for (const h of document.querySelectorAll('[data-testid=track-header], [data-testid=main-header]')) {
+      const hr = h.getBoundingClientRect(); if (hr.height === 0) continue; n++;
+      const row = h.dataset.trackId ? document.querySelector('[data-testid=track-row][data-track-id="' + h.dataset.trackId + '"]') : document.querySelector('[data-testid=video-row]');
+      const rr = row.getBoundingClientRect();
+      if (Math.abs(rr.top - hr.top) > 0.5 || Math.abs(rr.bottom - hr.bottom) > 0.5) bad.push((h.dataset.trackId ?? 'vídeo') + ': cabecera ' + Math.round(hr.height) + ' px, fila ' + Math.round(rr.height) + ' px');
+      for (const b of h.querySelectorAll('button, input, .name-line')) {
+        const r = b.getBoundingClientRect(); if (r.width === 0) continue;
+        if (r.top < hr.top - 0.5 || r.bottom > hr.bottom - 0.5 || r.left < hr.left - 0.5 || r.right > hr.right + 0.5) bad.push((h.dataset.trackId ?? 'vídeo') + ' ' + (b.dataset.testid ?? b.className) + ': ' + [r.top, r.bottom].map(Math.round).join('–') + ' fuera de ' + [hr.top, hr.bottom].map(Math.round).join('–'));
+      }
+    }
+    return { n, bad }`)
+  check(`Los botones de cada cabecera caben en su fila (${where})`, res.n > 0 && res.bad.length === 0, res.bad.length ? res.bad.slice(0, 6).join(' | ') : `${res.n} filas`)
+}
+
+/** headersFit a varios tamaños de ventana (vuelve a 1280×800). */
+async function headersFitAtSizes(where) {
+  for (const [w, h] of [[1280, 800], [1100, 700], [1920, 1080], [2000, 1100], [2400, 1300]]) {
+    await app.setViewport(w, h)
+    await sleep(250)
+    // Con muchas filas, recorrerlas todas (la fila «Vídeo» y el pie se quedan fijos).
+    const sc = await app.evaluate('const s = document.querySelector("[data-testid=tracks-scroller]"); return { h: s.scrollHeight, c: s.clientHeight }')
+    for (let y = 0; y <= Math.max(0, sc.h - sc.c); y += Math.max(40, sc.c - 60)) {
+      await app.evaluate('document.querySelector("[data-testid=tracks-scroller]").scrollTop = args.y; return true', { y })
+      await sleep(80)
+      await headersFit(`${where}, ${w}×${h}${sc.h > sc.c ? `, desplazado ${y} px` : ''}`)
+    }
+    await app.evaluate('document.querySelector("[data-testid=tracks-scroller]").scrollTop = 0; return true')
+  }
+  await app.setViewport(1280, 800)
+  await sleep(250)
 }
 
 // ================================================================== prueba
@@ -269,8 +309,13 @@ try {
   await app.click('[data-testid=pick-videos]')
   await waitScreen('editor', 30_000)
   await app.waitFor('return !document.querySelector("[data-testid=preparing]") && window.__easyCut.store.project.value.clips.length === 3', { timeoutMs: 30_000 })
-  check('Sin pistas, la parte de abajo es la de siempre (tarjetas)', !!(await app.text('[data-testid=clip-strip]')) && !(await app.evaluate('return !!document.querySelector("[data-testid=tracks-view]")')))
-  check('Debajo de la tira, «Añadir sonidos y efectos»', (await app.text('[data-testid=add-sounds-effects]')) === 'Añadir sonidos y efectos')
+  check(
+    'Sin pistas, «Tu vídeo» abre ya en la vista de pistas: solo la fila «Vídeo» con sus 3 trozos',
+    (await app.evaluate('return !!document.querySelector("[data-testid=tracks-view]") && !document.querySelector("[data-testid=clip-strip]") && document.querySelectorAll("[data-testid=track-row]").length === 0 && document.querySelectorAll("[data-testid^=clip-block-]").length === 3')) === true,
+  )
+  check('En la columna derecha, «Añadir sonidos y efectos»', (await app.text('[data-testid=add-sounds-effects]')) === 'Añadir sonidos y efectos')
+  check('Sin conmutador tarjetas / pistas ni atajo V', !(await app.evaluate('return !!document.querySelector("[data-testid=view-cards], [data-testid=view-tracks]") || window.__easyCut.shortcuts().some((s) => s.keys.includes("v"))')))
+  await shot('tracks-00-sin-pistas.png')
   await visibleKeyHintsAreShortcuts('«Tu vídeo» sin pistas')
 
   // --- Biblioteca: sonidos (escuchar y «Poner aquí»)
@@ -316,7 +361,7 @@ try {
     check('«Poner aquí»: en la línea, en una pista de sonido nueva', ding.kind === 'sound' && Math.abs(ding.start - 12_000) < 50 && ding.trackName === 'Sonidos', JSON.stringify({ start: ding.start, track: ding.trackName }))
     const c = await clipStarts()
     check('Y pegado al trozo de debajo (el 2, a 2 s de su principio)', ding.anchor.clipId === c[1].id && Math.abs(ding.anchor.offsetMs - 2000) < 50, JSON.stringify(ding.anchor))
-    check('Al poner lo primero, abajo pasa a la vista de pistas', !!(await app.evaluate('return !!document.querySelector("[data-testid=tracks-view]")')))
+    check('Al poner lo primero, aparece su pista debajo de la fila «Vídeo»', (await app.evaluate('const v = document.querySelector("[data-testid=video-row]").getBoundingClientRect(); const rows = [...document.querySelectorAll("[data-testid=track-row]")]; return rows.length === 1 && rows[0].getBoundingClientRect().top >= v.bottom - 1')) === true)
     check('Y queda elegido (su barra sale al cerrar la biblioteca)', (await S('return tracks.selectedItemId.value')) === ding.id && !(await app.text('[data-testid=item-bar]')))
   }
 
@@ -454,6 +499,74 @@ try {
     check('Deshacer la recupera con lo que tenía', (await items()).some((i) => i.id === musicId))
   }
 
+  // --- Cabeceras: los botones caben en su fila (con dos o tres filas y a varios tamaños, también ~2000 px)
+  await headersFitAtSizes(`${(await S('return store.project.value.tracks.length'))} pistas`)
+
+  // --- Escuchar solo una pista (y la fila «Vídeo») de un toque
+  {
+    const musicTrack = (await items()).find((i) => i.id === musicId).track
+    const sel = `[data-testid=track-header][data-track-id="${musicTrack}"] [data-testid=track-solo]`
+    await app.click(sel)
+    const state = () => S('const p = store.project.value; return { main: p.mainMuted, sounds: p.tracks.filter((t) => t.kind === "sound").map((t) => [t.id, t.muted]) }')
+    const solo = await state()
+    check('«Escuchar solo esta»: suena solo esa pista (la fila «Vídeo» y las demás, silenciadas)', solo.main && solo.sounds.every(([id, m]) => (id === musicTrack ? !m : m)), JSON.stringify(solo))
+    check('El botón se ve encendido y las demás filas, atenuadas', (await app.evaluate(`return document.querySelector(args.sel).getAttribute('aria-pressed') === 'true' && document.querySelector('[data-testid=video-row]').classList.contains('off')`, { sel })) === true)
+    await shot('tracks-05b-solo-una-pista.png')
+    await app.click(sel)
+    const all = await state()
+    check('Otra vez: vuelve a sonar todo', !all.main && all.sounds.every(([, m]) => !m), JSON.stringify(all))
+    await app.click('[data-testid=main-solo]')
+    const main = await state()
+    check('«Escuchar solo esta» en la fila «Vídeo»: calla las pistas de sonido', !main.main && main.sounds.every(([, m]) => m), JSON.stringify(main))
+    await app.key('z', { ctrl: true })
+  }
+
+  // --- Pistas nuevas a mano (sin límite) y pasar un sonido de una a otra
+  {
+    const n0 = await S('return store.project.value.tracks.length')
+    const sounds0 = await S('return store.project.value.tracks.filter((t) => t.kind === "sound").length')
+    await app.click('[data-testid=add-sound-track]')
+    const added = await S('const t = store.project.value.tracks.at(-1); return { kind: t.kind, name: t.name, items: t.items.length }')
+    check('«Pista de sonido» añade una pista vacía debajo de las de sonido', added.kind === 'sound' && added.items === 0 && added.name === `Sonidos ${sounds0 + 1}`, JSON.stringify(added))
+    await app.click('[data-testid=add-effect-track]')
+    const top = await S('const t = store.project.value.tracks[0]; return { kind: t.kind, items: t.items.length }')
+    check('«Pista de efectos» añade una pista de efectos encima de las demás', top.kind === 'effect' && top.items === 0, JSON.stringify(top))
+    check('El pie explica cómo pasar algo de una pista a otra', (await app.text('[data-testid=add-track-row]')).includes('arrástralo hasta ella'))
+    // Pasar el «ding» a la pista nueva arrastrándolo hacia abajo (con la vista previa pequeña, que se vean las dos).
+    await app.click('[data-testid=split-small]')
+    const newTrack = await S('return store.project.value.tracks.at(-1).id')
+    const row = await app.center(`[data-testid=track-row][data-track-id="${newTrack}"]`)
+    const d = await blockCenter(dingId)
+    check('La pista nueva y el «ding» se ven a la vez', Math.abs(row.y - (await app.center(`[data-testid=track-row][data-track-id="${newTrack}"]`)).y) < 1, `${row.y}`)
+    await app.drag({ x: d.x, y: d.y }, { x: d.x, y: row.y }, 12)
+    const moved = (await items()).find((i) => i.id === dingId)
+    check('Arrastrar un sonido hasta la pista nueva lo pasa a ella (en el mismo instante)', moved.track === newTrack, `${moved.track} (${moved.start} ms)`)
+    await app.key('z', { ctrl: true })
+    // Y muchas más: no hay tope (antes, 4 de sonido y 3 de efectos).
+    for (let i = 0; i < 5; i++) await app.click('[data-testid=add-sound-track]')
+    for (let i = 0; i < 3; i++) await app.click('[data-testid=add-effect-track]')
+    const n = await S('return store.project.value.tracks.length')
+    check('Sin límite de pistas: 12 o más', n === n0 + 10 && n >= 12, `${n0} → ${n}`)
+    const scroll = await app.evaluate('const s = document.querySelector("[data-testid=tracks-scroller]"); return { h: s.scrollHeight, c: s.clientHeight }')
+    check('Con muchas filas, la zona de pistas se desplaza hacia abajo', scroll.h > scroll.c + 100, JSON.stringify(scroll))
+    await app.evaluate('const s = document.querySelector("[data-testid=tracks-scroller]"); s.scrollTop = s.scrollHeight; return true')
+    await sleep(200)
+    const fixed = await app.evaluate(`const s = document.querySelector('[data-testid=tracks-scroller]').getBoundingClientRect();
+      const v = document.querySelector('[data-testid=video-row]').getBoundingClientRect(); const a = document.querySelector('[data-testid=add-track-row]').getBoundingClientRect();
+      return v.top >= s.top - 0.5 && v.bottom <= s.bottom + 0.5 && a.bottom <= s.bottom + 0.5 && a.top >= s.top`)
+    check('Desplazando, la fila «Vídeo» y el pie se quedan a la vista', fixed === true)
+    await shot('tracks-18-muchas-pistas.png')
+    await headersFitAtSizes(`${n} pistas`)
+    await app.setViewport(1100, 700)
+    await shot('tracks-19-muchas-pistas-1100.png')
+    await app.setViewport(2000, 1100)
+    await shot('tracks-20-muchas-pistas-2000.png')
+    await app.setViewport(1280, 800)
+    for (let i = 0; i < 10; i++) await app.key('z', { ctrl: true })
+    check('Deshacer quita las pistas añadidas', (await S('return store.project.value.tracks.length')) === n0)
+    await app.click('[data-testid=split-medium]')
+  }
+
   // --- Quitar pausas en un trozo anterior: lo de después conserva su sitio respecto a su trozo
   {
     const before = (await items()).find((i) => i.id === fxId)
@@ -554,21 +667,36 @@ try {
     await visibleKeyHintsAreShortcuts('barra de un efecto')
   }
 
-  // --- Tarjetas con indicadores
+  // --- Indicadores en la fila «Vídeo» (lo que decían las tarjetas)
   {
-    await app.click('[data-testid=view-cards]')
-    await waitScreen('clip-strip')
-    const badges = await app.evaluate('return [...document.querySelectorAll("[data-testid=clip-attached]")].map((b) => b.innerText.trim())')
-    check('«Ver tarjetas»: cada trozo dice cuántos sonidos/efectos lleva pegados', badges.length >= 2 && badges.every((b) => /sonido|efecto/.test(b)), badges.join(' | '))
-    await shot('tracks-07-tarjetas-indicadores.png')
-    await app.key('v')
-    check('V vuelve a las pistas', !!(await app.evaluate('return !!document.querySelector("[data-testid=tracks-view]")')))
+    const labels = await app.evaluate('return [...document.querySelectorAll("[data-testid^=clip-block-]")].filter((b) => b.dataset.badges.split(" ").includes("attached")).map((b) => b.getAttribute("aria-label"))')
+    check('Cada trozo de la fila «Vídeo» dice cuántos sonidos/efectos lleva pegados', labels.length >= 2 && labels.every((b) => /lleva pegado .*(sonido|efecto)/.test(b)), labels.join(' | '))
+    const pauses = await app.evaluate('return [...document.querySelectorAll("[data-testid^=clip-block-]")].some((b) => b.dataset.badges.split(" ").includes("pauses") && !!b.querySelector(".b-pauses"))')
+    check('Y el que tiene las pausas quitadas lo enseña', pauses)
+    await shot('tracks-07-fila-video-indicadores.png')
+  }
+
+  // --- Recortar el principio del trozo ancla desde la fila «Vídeo»: lo pegado sigue a su imagen
+  {
+    const ding0 = (await items()).find((i) => i.id === dingId)
+    const anchor = (await clipStarts()).findIndex((c) => c.id === ding0.anchor.clipId)
+    const c0 = (await clipStarts())[anchor]
+    const past0 = await S('return store.history.value.past.length')
+    const px = await pxPerSec()
+    const h = await app.center(`[data-testid=clip-block-${anchor + 1}] [data-testid=clip-handle-start]`)
+    await app.drag({ x: h.x, y: h.y }, { x: h.x + px * 1, y: h.y }, 10)
+    const ding1 = (await items()).find((i) => i.id === dingId)
+    const c1 = (await clipStarts())[anchor]
+    const cut = c0.start + (await S('return window.__easyCut.domain.clipOutputMs(store.project.value.clips[args.i])', { i: anchor })) // fin nuevo
+    check('Recortar 1 s por delante el trozo del «ding»: el «ding» se adelanta lo mismo (sigue sobre su imagen)', c1.start === c0.start && Math.abs(ding0.start - ding1.start - 1000) < (1000 * 10) / px + 60 && ding1.anchor.clipId === ding0.anchor.clipId, `${ding0.start} → ${ding1.start} (trozo hasta ${cut})`)
+    check('En un solo paso de deshacer', (await S('return store.history.value.past.length')) === past0 + 1)
+    await app.key('z', { ctrl: true })
+    check('Y al deshacer vuelve a su sitio', (await items()).find((i) => i.id === dingId).start === ding0.start)
   }
 
   // --- Reproducir: los sonidos y los efectos van sincronizados con el montaje
   {
     const ding = (await items()).find((i) => i.id === dingId)
-    await app.click('[data-testid=view-tracks]')
     await seekTo(Math.max(0, ding.start - 1200))
     await app.key(' ')
     await sleep(2000)
@@ -639,9 +767,10 @@ try {
     await shot('tracks-15-tamano-y-sitio-1100.png')
     await layoutIsClean('«Tamaño y sitio» a 1100×700')
     await app.click('[data-testid=box-done]')
-    await app.click('[data-testid=view-cards]')
-    await shot('tracks-16-tarjetas-1100.png')
-    await app.click('[data-testid=view-tracks]')
+    await app.key('Escape')
+    await shot('tracks-16-fila-video-1100.png')
+    await layoutIsClean('fila «Vídeo» con un trozo elegido a 1100×700')
+    await visibleKeyHintsAreShortcuts('fila «Vídeo» con un trozo elegido a 1100×700')
     await app.setViewport(1280, 800)
     await sleep(400)
   }
@@ -710,6 +839,37 @@ try {
     check('Lo CC0 no pide créditos en «¡Listo!»', !credits, credits ?? '')
     await app.click('[data-testid=back-to-editor]')
     await waitScreen('editor')
+  }
+
+  // --- Rendimiento: 5 minutos, 20 trozos, 12 pistas (8 de sonido y 4 de efectos) y 48 elementos
+  {
+    const res = await S(`
+      const d = domain; let p = d.createProject('16:9');
+      const m = store.media.value[args.h];
+      for (let i = 0; i < 20; i++) { const c = d.createClip(m, 'perf-c' + i); p = d.addClip(p, c); p = d.setInOut(p, 'perf-c' + i, { inMs: 0, outMs: 10000 }); }
+      p = { ...p, clips: p.clips.map((c, i) => i < 10 ? { ...c, segments: [{ startMs: 0, endMs: 10000 }], speed: 0.5 } : c) };
+      const music = store.media.value[args.music];
+      let n = 0;
+      const put = (kind, src, info, at, extra) => { const it = d.createItem({ id: 'perf-i' + (n++), kind, source: src, name: 'Prueba ' + n, sourceDurationMs: info.durationMs, still: info.isStill, hasAudio: info.hasAudio, defaults: extra }); const r = d.insertItem(p, it, kind, at, { id: 'perf-t' + n }); if (r.ok) p = r.project; };
+      // Ocho sonidos a la vez (cada uno pisa a los anteriores: 8 pistas) cada 50 s, y cuatro efectos a la vez.
+      for (let k = 0; k < 4; k++) for (let j = 0; j < 8; j++) put('sound', { type: 'file', path: args.music }, music, k * 50000 + j * 300, {});
+      for (let k = 0; k < 4; k++) for (let j = 0; j < 4; j++) put('effect', { type: 'library', assetId: 'chispas' }, { durationMs: 6000, hasAudio: false }, k * 50000 + 1000 + j * 300, { look: { mix: 'light', opacity: 0.6 } });
+      store.commit(p);
+      return { clips: p.clips.length, tracks: p.tracks.length, sounds: p.tracks.filter((t) => t.kind === 'sound').length, items: p.tracks.reduce((s, t) => s + t.items.length, 0), duration: d.projectDurationMs(p) }`, { h: media.horizontal, music })
+    await sleep(800)
+    check('Montaje con muchas pistas', res.clips === 20 && res.tracks === 12 && res.sounds === 8 && res.items === 48 && res.duration >= 300_000, JSON.stringify(res))
+    await headersFitAtSizes('12 pistas')
+    // La vista previa aguanta: reproducir donde suenan los 8 a la vez y se ven los 4 efectos.
+    await app.key('Home')
+    await seekTo(50_000)
+    await app.key(' ')
+    await sleep(3000)
+    const play = await app.evaluate(`const p = document.querySelector('[data-testid=player]').dataset; const sync = JSON.parse(document.querySelector('[data-testid=track-layers]').dataset.sync);
+      const sounds = [...document.querySelectorAll('[data-testid=track-sound]')].filter((a) => !a.paused).length; const fx = [...document.querySelectorAll('[data-testid=track-effect]')].filter((v) => !v.paused && v.readyState >= 2).length;
+      return { ms: Number(p.currentMs), playing: p.playing === '1', sounds, fx, sync: Object.keys(sync).length }`)
+    await app.key(' ')
+    check('Reproduciendo con 8 sonidos y 4 efectos a la vez: el reloj avanza, suenan y se ven', play.playing && play.ms > 51_500 && play.ms < 54_500 && play.sounds >= 8 && play.fx >= 4, JSON.stringify(play))
+    await shot('tracks-21-rendimiento-12-pistas.png')
   }
 
   // --- Rendimiento: 5 minutos, 20 trozos, 3 pistas y 30 elementos
