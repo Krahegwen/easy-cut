@@ -19,9 +19,23 @@ interface HistoryFile {
   future: string[]
 }
 
+/**
+ * Cada paso ya convertido, por objeto: los pasos del historial no cambian nunca (son inmutables), así que al
+ * guardar tras cada cambio solo se convierte el nuevo.
+ */
+const compactCache = new WeakMap<Project, string>()
+function compact(p: Project): string {
+  let s = compactCache.get(p)
+  if (s === undefined) {
+    s = JSON.stringify(JSON.parse(serializeProject(p)))
+    compactCache.set(p, s)
+  }
+  return s
+}
+
 /** El historial como JSON compacto (cada paso, como el fichero del proyecto). */
 export function serializeHistoryFile(history: History<Project>, steps = SAVED_HISTORY_STEPS): string {
-  const one = (p: Project) => JSON.stringify(JSON.parse(serializeProject(p)))
+  const one = compact
   const file: HistoryFile = {
     kind: HISTORY_FILE_KIND,
     version: PROJECT_VERSION,
@@ -47,7 +61,7 @@ export function parseHistoryFile(json: string | null, present: Project, limit?: 
   if (typeof data !== 'object' || data === null) return null
   const f = data as Partial<HistoryFile>
   if (f.kind !== HISTORY_FILE_KIND || typeof f.present !== 'string' || !Array.isArray(f.past) || !Array.isArray(f.future)) return null
-  if (f.present !== JSON.stringify(JSON.parse(serializeProject(present)))) return null
+  if (f.present !== compact(present)) return null
   const read = (s: unknown): Project | null => {
     if (typeof s !== 'string') return null
     try {
