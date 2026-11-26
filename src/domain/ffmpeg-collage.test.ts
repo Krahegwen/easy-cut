@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createCollage, setCell, setCellFit, setHeardCell, setCellStart } from './collage'
+import { createCollage, setCell, setCellFit, setCellMuted, setCellStart } from './collage'
 import { buildExportCommand, buildSoundExportCommand, planTrackItems } from './ffmpeg-args'
 import { addMark, setBoxAt } from './keyframes'
 import { addClip, createClip, createProject, type CollageCellSource, type MediaInfo, type Project } from './project'
@@ -42,8 +42,6 @@ describe('guardar un collage', () => {
     expect(cmd.args.slice(at - 6, at + 1)).toEqual(['-an', '-ss', '0', '-t', '9', '-i', red.path])
     // Solo el tramo del collage pasa a RGB: el resto del vídeo, tal cual.
     expect(f).toMatch(/trim=start_frame=60:end_frame=300/)
-    // Sin sonido de ningún hueco (no se ha elegido ninguno).
-    expect(f).not.toContain('amix')
   })
 
   it('recortado por delante, cada hueco sigue por donde iba; el que ya se acabó, desde su final', () => {
@@ -57,20 +55,32 @@ describe('guardar un collage', () => {
     expect(args[args.indexOf(tall.path) - 4]).toBe('1.75')
   })
 
-  it('el hueco que suena va como un sonido más (y en «Solo el sonido»); el collage en sí, no', () => {
-    const p = updateCollage(project(), 'col', (c) => setHeardCell(c, 1))
-    const planned = planTrackItems(p, media, projectTiming(p), () => null)
+  it('suena cada hueco no silenciado como un sonido más (y en «Solo el sonido»); el collage en sí, no', () => {
+    // El rojo y el alto tienen sonido; el azul, no.
+    let p = project()
+    let planned = planTrackItems(p, media, projectTiming(p), () => null)
     expect(planned.map((x) => [x.kind, x.path, x.startMs, x.lengthMs])).toEqual([
       ['effect', '', 2000, 8000],
+      ['sound', tall.path, 2000, 8000],
       ['sound', red.path, 2000, 8000],
     ])
+    // El alto dura 2 s: su sonido se lee solo hasta su final (apad pone el silencio).
     const cmd = buildExportCommand(p, media, 'youtube', 'libx264', 'o.mp4')
-    expect(cmd.filterComplex).toContain('[amain][t0]amix=inputs=2:normalize=0')
+    expect(cmd.filterComplex).toContain('[amain][t0][t1]amix=inputs=3:normalize=0')
     expect(cmd.filterComplex).toContain('adelay=delays=96000S:all=1[t0]')
+    expect(cmd.args.slice(cmd.args.lastIndexOf(tall.path) - 6, cmd.args.lastIndexOf(tall.path))).toEqual(['-vn', '-ss', '0', '-t', '2.1', '-i'])
+    // Silenciado, no suena.
+    p = updateCollage(p, 'col', (c) => setCellMuted(c, 0, true))
+    planned = planTrackItems(p, media, projectTiming(p), () => null)
+    expect(planned.map((x) => [x.kind, x.path])).toEqual([
+      ['effect', ''],
+      ['sound', red.path],
+    ])
     const sound = buildSoundExportCommand(p, media, 'o.m4a')
     expect(sound.filterComplex).toContain('amix=inputs=2')
-    // «Solo el sonido» no lee ningún vídeo de los huecos.
+    // «Solo el sonido» no lee ningún vídeo de los huecos que no suenan.
     expect(sound.args).not.toContain(blue.path)
+    expect(sound.args).not.toContain(tall.path)
     expect(sound.args.slice(sound.args.indexOf(red.path) - 6, sound.args.indexOf(red.path))).toEqual(['-vn', '-ss', '0', '-t', '8.1', '-i'])
   })
 

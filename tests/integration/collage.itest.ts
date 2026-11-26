@@ -2,7 +2,7 @@
 // Vídeos de color liso a 1080p; se MIDE en el fichero: el color en el centro de cada hueco en tres instantes, las
 // bandas de fondo de un vídeo «Entero», la separación oscura y la blanca, el vídeo corto que se queda en su última
 // imagen (azul el primer segundo y amarillo el segundo: después, amarillo), el vídeo de debajo intacto fuera del
-// collage, el tono del hueco que suena (dentro sí, fuera no) y la voz que no baja, «Solo el sonido» con ese tono, los
+// collage, los tonos de dos huecos que suenan a la vez (dentro sí, fuera no), uno silenciado que no suena y la voz que no baja, «Solo el sonido» con ese tono, los
 // fotogramas totales exactos, un collage reducido que viaja con marcas (su sitio en dos instantes) y lo que tarda en
 // guardarse un collage de 4 huecos 1080p frente al mismo vídeo sin él. Con libx264 y, si está, con NVENC. Todo en
 // test-output/collage/.
@@ -31,7 +31,7 @@ import {
   setCellFit,
   setCollageGap,
   setEffectLook,
-  setHeardCell,
+  setCellMuted,
   updateEffectLook,
   type Collage,
   type MediaInfo,
@@ -59,7 +59,7 @@ const WHITE = [255, 255, 255]
 const f = {
   base: join(OUT, 'src-gris-440hz-12s.mp4'),
   red: join(OUT, 'src-rojo-1khz-8s.mp4'),
-  green: join(OUT, 'src-verde-8s.mp4'),
+  green: join(OUT, 'src-verde-1700hz-8s.mp4'),
   /** Vertical, 2 s: azul el primero y amarillo el segundo (sin sonido). */
   tall: join(OUT, 'src-alto-azul-amarillo-2s.mp4'),
   q: [1, 2, 3, 4].map((n) => join(OUT, `src-prueba-${n}-10s.mp4`)),
@@ -82,7 +82,7 @@ beforeAll(async () => {
   const vf = 'scale=out_color_matrix=bt709:out_range=tv'
   await ffmpeg(['-f', 'lavfi', '-i', color(GREY, W, H, 12), '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=12', '-vf', vf, ...v, ...a, f.base])
   await ffmpeg(['-f', 'lavfi', '-i', color(RED, W, H, 8), '-f', 'lavfi', '-i', 'sine=frequency=1000:sample_rate=48000:duration=8', '-vf', vf, ...v, ...a, f.red])
-  await ffmpeg(['-f', 'lavfi', '-i', color(GREEN, W, H, 8), '-vf', vf, ...v, f.green])
+  await ffmpeg(['-f', 'lavfi', '-i', color(GREEN, W, H, 8), '-f', 'lavfi', '-i', 'sine=frequency=1700:sample_rate=48000:duration=8', '-vf', vf, ...v, ...a, f.green])
   await ffmpeg(['-f', 'lavfi', '-i', color(BLUE, 1080, 1920, 2), '-vf', `drawbox=x=0:y=0:w=iw:h=ih:color=${hex(YELLOW)}:t=fill:enable='gte(t\\,1)',${vf}`, ...v, f.tall])
   for (const q of f.q) await ffmpeg(['-f', 'lavfi', '-i', `testsrc2=size=${W}x${H}:rate=${F}:duration=10`, '-vf', vf, ...v, q])
   for (const p of [f.base, f.red, f.green, f.tall, ...f.q]) media.set(p, await probe(p))
@@ -163,20 +163,21 @@ function withCollage(collage: Collage, atMs = 2000): Project {
 }
 
 /**
- * «Uno grande a la izquierda y dos a la derecha»: en el grande, el rojo entero (con bandas arriba y abajo) y es el
- * que suena; arriba a la derecha, el vertical corto llenando su hueco; abajo, el verde.
+ * «Uno grande a la izquierda y dos a la derecha»: en el grande, el rojo entero (con bandas arriba y abajo, y su tono
+ * de 1 kHz); arriba a la derecha, el vertical corto (sin sonido) llenando su hueco; abajo, el verde (1,7 kHz). Suenan
+ * los dos que tienen sonido.
  */
 function bigLeft(): Collage {
   let c = createCollage('big-left')
   c = setCellFit(setCell(c, 0, cell(f.red)), 0, 'whole')
   c = setCell(c, 1, cell(f.tall))
-  c = setCell(c, 2, cell(f.green))
-  return setHeardCell(c, 0)
+  return setCell(c, 2, cell(f.green))
 }
 
 /** Dos pasos de banda: el otro tono (440 frente a 1000 Hz) se queda por debajo del 1 %. */
 const TONE_BAND = 'bandpass=f=1000:width_type=h:width=80,bandpass=f=1000:width_type=h:width=80'
 const VOICE_BAND = 'bandpass=f=440:width_type=h:width=60,bandpass=f=440:width_type=h:width=60'
+const GREEN_BAND = 'bandpass=f=1700:width_type=h:width=100,bandpass=f=1700:width_type=h:width=100'
 const near = (a: number[], b: number[], tol: number) => a.every((v, i) => Math.abs(v - b[i]!) <= tol)
 const report: Record<string, unknown>[] = []
 // Centros de los huecos a 1920×1080 con la raya de 8 px: el grande (0, 0, 956, 1080) y los de la derecha (964, 0 y
@@ -210,22 +211,41 @@ describe.sequential('collage (ffmpeg real)', () => {
       }
       // Fuera del collage, el gris de debajo, sin tocar.
       for (const k of [30, 59, 300, 340]) expect(near(await colorAtFrame(out, k, 960, 540), GREY, 4), `gris en ${k}`).toBe(true)
-      // El sonido: el tono del rojo solo durante el collage; la voz (440 Hz) igual dentro que fuera.
+      // El sonido: los tonos del rojo y del verde a la vez, solo durante el collage; la voz (440 Hz) igual dentro que fuera.
       const tone = await decode(out, TONE_BAND)
       const voice = await decode(out, VOICE_BAND)
       const srcTone = rms(await decode(f.red, TONE_BAND), 1000, 6000)
       const toneIn = rms(tone, 3000, 9000) / srcTone
       const toneOut = rms(tone, 200, 1800) / srcTone + rms(tone, 10_300, 11_800) / srcTone
       const voiceRatio = rms(voice, 3000, 9000) / rms(voice, 200, 1800)
+      const green = await decode(out, GREEN_BAND)
+      const srcGreen = rms(await decode(f.green, GREEN_BAND), 1000, 6000)
+      const greenIn = rms(green, 3000, 9000) / srcGreen
+      const greenOut = rms(green, 200, 1800) / srcGreen
+      expect(greenIn).toBeGreaterThan(0.85)
+      expect(greenIn).toBeLessThan(1.15)
+      expect(greenOut).toBeLessThan(0.05)
       // Dónde empieza el tono: donde empieza el collage (±40 ms; el filtro de banda tarda un poco en subir).
       const onset = onsetMs(tone, srcTone * 0.5 * Math.SQRT2)
-      report.push({ caso: 'grande a la izquierda', encoder, ms, frames: m.frames, rows, toneIn, toneOut, voiceRatio, onset })
+      report.push({ caso: 'grande a la izquierda', encoder, ms, frames: m.frames, rows, toneIn, toneOut, greenIn, greenOut, voiceRatio, onset })
       expect(Math.abs(onset - 2000)).toBeLessThanOrEqual(40)
       expect(toneIn).toBeGreaterThan(0.85)
       expect(toneIn).toBeLessThan(1.15)
       expect(toneOut).toBeLessThan(0.05)
       expect(Math.abs(voiceRatio - 1)).toBeLessThan(0.05)
     }
+  })
+
+  it('un hueco silenciado no suena; los demás, sí', async () => {
+    const p = withCollage(setCellMuted(bigLeft(), 0, true))
+    const { out } = await exportVideo('rojo-silenciado', p)
+    const srcTone = rms(await decode(f.red, TONE_BAND), 1000, 6000)
+    const srcGreen = rms(await decode(f.green, GREEN_BAND), 1000, 6000)
+    const toneIn = rms(await decode(out, TONE_BAND), 3000, 9000) / srcTone
+    const greenIn = rms(await decode(out, GREEN_BAND), 3000, 9000) / srcGreen
+    report.push({ caso: 'silenciado', toneIn, greenIn })
+    expect(toneIn).toBeLessThan(0.05)
+    expect(greenIn).toBeGreaterThan(0.85)
   })
 
   it('raya blanca y sin separación', async () => {
@@ -245,7 +265,7 @@ describe.sequential('collage (ffmpeg real)', () => {
     expect(near(edgeR, GREEN, 8)).toBe(true)
   })
 
-  it('«Solo el sonido» lleva el tono del hueco que suena, en muestras exactas', async () => {
+  it('«Solo el sonido» lleva el tono de los huecos que suenan', async () => {
     const p = withCollage(bigLeft())
     const out = join(OUT, 'solo-el-sonido.m4a')
     const cmd = buildSoundExportCommand(p, media, out)
@@ -255,7 +275,9 @@ describe.sequential('collage (ffmpeg real)', () => {
     const srcTone = rms(await decode(f.red, TONE_BAND), 1000, 6000)
     const toneIn = rms(tone, 3000, 9000) / srcTone
     const toneOut = rms(tone, 200, 1800) / srcTone
-    report.push({ caso: 'solo el sonido', toneIn, toneOut, ms: res.ms })
+    const greenIn = rms(await decode(out, GREEN_BAND), 3000, 9000) / rms(await decode(f.green, GREEN_BAND), 1000, 6000)
+    report.push({ caso: 'solo el sonido', toneIn, toneOut, greenIn, ms: res.ms })
+    expect(greenIn).toBeGreaterThan(0.85)
     expect(toneIn).toBeGreaterThan(0.85)
     expect(toneOut).toBeLessThan(0.05)
   })

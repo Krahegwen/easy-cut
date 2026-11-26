@@ -24,7 +24,7 @@ import {
   type Viewable,
 } from './project'
 import { audibleOrVisible, projectTiming, resolveTracks, type ProjectTiming, type ResolvedItem } from './tracks'
-import { cellContentLayout, cellRects, COLLAGE_BACKGROUND_HEX, COLLAGE_GAP_HEX, heardCell, layoutById } from './collage'
+import { cellContentLayout, cellRects, cellSounds, COLLAGE_BACKGROUND_HEX, COLLAGE_GAP_HEX, layoutById } from './collage'
 import { clipVideoJoinFades, dipFades, edgeFades, isDip, ZOOM_MAX_SCALE, type ResolvedJoin } from './transitions'
 
 export const AUDIO_SAMPLE_RATE = 48_000
@@ -480,8 +480,8 @@ const COLLAGE_MEDIA: MediaInfo = {
 }
 
 /**
- * Un collage al guardar: su imagen (un efecto más, sin sonido propio) y, si se eligió un hueco que suena, el sonido
- * de ese hueco como un sonido más: desde donde va el hueco, a velocidad normal, con el volumen del hueco y el
+ * Un collage al guardar: su imagen (un efecto más, sin sonido propio) y el sonido de cada hueco que suena (los no
+ * silenciados con sonido) como un sonido más: desde donde va el hueco, a velocidad normal, con su volumen y el
  * aparecer y desaparecer del collage, y en silencio cuando su vídeo se acaba (apad).
  */
 function planCollage(r: ResolvedItem, mediaByPath: MediaLookup): PlannedItem[] {
@@ -490,9 +490,8 @@ function planCollage(r: ResolvedItem, mediaByPath: MediaLookup): PlannedItem[] {
   const lengthMs = r.shownEndMs - r.startMs
   const cells: PlannedCell[] = collage.cells.map((cell) => ({ cell, media: cell.source ? tryLookup(mediaByPath, cell.source.path) : null }))
   const out: PlannedItem[] = [{ item: { ...item, volume: 0 }, kind: 'effect', path: '', media: COLLAGE_MEDIA, collage: cells, startMs: r.startMs, lengthMs }]
-  const h = heardCell(collage)
-  const heard = h === null ? null : cells[h]!
-  if (heard?.media?.hasAudio && heard.cell.source && !heard.cell.source.still) {
+  for (const heard of cells) {
+    if (!cellSounds(heard.cell) || !heard.media?.hasAudio || !heard.cell.source) continue
     const dur = heard.media.durationMs
     const inMs = heard.cell.startMs + item.phaseMs
     if (inMs < dur - MIN_SEGMENT_MS) {

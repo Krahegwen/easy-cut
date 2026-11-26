@@ -187,7 +187,9 @@ export interface CollageCell {
   zoom: number
   offsetX: number
   offsetY: number
-  /** 0 = no suena (de serie). Como mucho un hueco suena. */
+  /** Silenciado (de serie suena, si su vídeo tiene sonido). */
+  muted: boolean
+  /** 0 a 1,5 (1 = como viene), como un sonido de las pistas. */
   volume: number
 }
 

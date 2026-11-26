@@ -12,7 +12,6 @@ import {
   createCollage,
   emptyCells,
   gapPixels,
-  heardCell,
   LAST_FRAME_MS,
   layoutById,
   layoutHasChoice,
@@ -23,7 +22,9 @@ import {
   setCellFit,
   setCellFraming,
   setCellStart,
-  setHeardCell,
+  setCellMuted,
+  setCellVolume,
+  soundingCells,
   suggestLayout,
   swapCells,
   type CellRect,
@@ -172,18 +173,22 @@ describe('operaciones con los huecos', () => {
     expect(setCellStart(c, 2, 9999).cells[2]!.startMs).toBe(3000 - LAST_FRAME_MS)
   })
 
-  it('suena como mucho un hueco, y solo uno con sonido', () => {
+  it('suenan todos los huecos con sonido; cada uno se silencia y tiene su volumen', () => {
     let c = createCollage('side-by-side')
     c = setCell(c, 0, src('a.mp4', 5000))
     c = setCell(c, 1, src('b.mp4', 5000, 1920, 1080, false))
-    expect(heardCell(c)).toBeNull()
-    c = setHeardCell(c, 0)
-    expect(heardCell(c)).toBe(0)
-    expect(c.cells.map((x) => x.volume)).toEqual([1, 0])
-    expect(setHeardCell(c, 1)).toBe(c)
-    expect(heardCell(setHeardCell(c, null))).toBeNull()
-    // Intercambiar se lleva el sonido con su vídeo.
-    expect(heardCell(swapCells(c, 0, 1))).toBe(1)
+    expect(soundingCells(c)).toEqual([0])
+    const both = setCell(c, 1, src('c.mp4', 5000))
+    expect(soundingCells(both)).toEqual([0, 1])
+    const muted = setCellMuted(both, 0, true)
+    expect(soundingCells(muted)).toEqual([1])
+    expect(setCellMuted(muted, 0, true)).toBe(muted)
+    // Poner otro vídeo en el hueco se queda con lo de silenciado y el volumen.
+    expect(setCell(muted, 0, src('d.mp4', 1000)).cells[0]).toMatchObject({ muted: true, volume: 1 })
+    expect(setCellVolume(both, 1, 2).cells[1]!.volume).toBe(1.5)
+    expect(soundingCells(setCellVolume(both, 1, 0))).toEqual([0])
+    // Intercambiar se lleva el silenciado con su vídeo.
+    expect(swapCells(muted, 0, 1).cells[1]!.muted).toBe(true)
   })
 
   it('otra distribución del mismo número: los vídeos se quedan en su orden (o el de la sugerencia)', () => {
@@ -230,10 +235,9 @@ describe('leer un collage guardado', () => {
     expect(normalizeCollage(null)).toBeNull()
     expect(normalizeCollage({ layoutId: 'nada', cells: [] })).toBeNull()
     expect(normalizeCollage({ layoutId: 'side-by-side', cells: [{}] })).toBeNull()
-    const c = normalizeCollage({ layoutId: 'side-by-side', gap: 'raro', cells: [{ source: { path: 'a.mp4', durationMs: 1000, hasAudio: true }, volume: 1 }, { source: { path: 'b.mp4', durationMs: 1000, hasAudio: true }, volume: 1, fit: 'whole' }] })!
+    const c = normalizeCollage({ layoutId: 'side-by-side', gap: 'raro', cells: [{ source: { path: 'a.mp4', durationMs: 1000, hasAudio: true }, muted: true }, { source: { path: 'b.mp4', durationMs: 1000, hasAudio: true }, volume: 9, fit: 'whole' }] })!
     expect(c.gap).toBe('dark')
-    // Dos que suenan: solo el primero.
-    expect(c.cells.map((x) => x.volume)).toEqual([1, 0])
+    expect(c.cells.map((x) => [x.muted, x.volume])).toEqual([[true, 1], [false, 1.5]])
     expect(c.cells[1]!.fit).toBe('whole')
   })
 })
@@ -316,7 +320,7 @@ describe('el collage en las pistas', () => {
 describe('guardar y leer (versión 7)', () => {
   it('ida y vuelta de un collage', () => {
     let p = withCollage()
-    p = updateCollage(p, 'col', (c) => setHeardCell(setCellFraming(c, 1, { offsetY: 0.5 }), 0))
+    p = updateCollage(p, 'col', (c) => setCellMuted(setCellFraming(c, 1, { offsetY: 0.5 }), 0, true))
     const q = parseProject(serializeProject(p))
     expect(q.version).toBe(7)
     expect(findItem(q, 'col')!.item).toEqual(findItem(p, 'col')!.item)

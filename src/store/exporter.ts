@@ -6,6 +6,7 @@
 import {
   availableEncoderList,
   baseName,
+  cellSounds,
   buildExportCommand,
   buildOutputFileName,
   buildSoundExportCommand,
@@ -126,7 +127,7 @@ export function startExport(bridge: NativeBridge, request: ExportRequest): Expor
     const shownItems = project.tracks.filter((t) => !(t.kind === 'sound' ? t.muted : t.hidden)).flatMap((t) => t.items)
     // Un collage tampoco: lo que cuenta son los ficheros de sus huecos (en «Solo el sonido», solo el que suena).
     const cellPaths = shownItems.flatMap((i) =>
-      i.collage ? i.collage.cells.filter((c) => c.source && (preset !== 'sound' || (c.volume > 0 && c.source.hasAudio))).map((c) => c.source!.path) : [],
+      i.collage ? i.collage.cells.filter((c) => c.source && (preset !== 'sound' || cellSounds(c))).map((c) => c.source!.path) : [],
     )
     const trackPaths = shownItems
       .filter((i) => i.source.type !== 'clip' && i.source.type !== 'collage')

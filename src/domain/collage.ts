@@ -4,8 +4,8 @@
 // mismos en la vista previa y al guardar), la distribución que mejor encaja con la forma de los vídeos, el tiempo
 // de cada hueco y las operaciones sobre los huecos. Puro e inmutable; tiempos en milisegundos enteros.
 //
-// Decisiones del dueño (Paquete 7): del collage no suena nada salvo el hueco que se elija (uno como mucho); un vídeo
-// más corto que el collage se queda quieto en su última imagen; el collage dura, de serie, lo que el vídeo más largo
+// Decisiones del dueño (Paquete 7): suenan todos los huecos (cada uno se puede silenciar por separado y tiene su
+// volumen); un vídeo más corto que el collage se queda quieto en su última imagen (y deja de sonar); el collage dura, de serie, lo que el vídeo más largo
 // de sus huecos; plantillas de 2 a 4 huecos; separación oscura (de serie, fina), blanca o ninguna.
 
 import type { Collage, CollageCell, CollageCellSource, CollageGap, CellFit, MediaInfo, TrackItem } from './project'
@@ -268,7 +268,7 @@ export function suggestLayout(count: number, shapes: readonly (Shape | null)[], 
 // Crear y cambiar
 
 export function emptyCell(): CollageCell {
-  return { source: null, startMs: 0, fit: 'fill', zoom: 1, offsetX: 0, offsetY: 0, volume: 0 }
+  return { source: null, startMs: 0, fit: 'fill', zoom: 1, offsetX: 0, offsetY: 0, muted: false, volume: 1 }
 }
 
 /** Un collage vacío con esa plantilla. */
@@ -307,14 +307,15 @@ function withCells(collage: Collage, cells: CollageCell[]): Collage {
   return { ...collage, cells }
 }
 
-/** Pone un fichero en el hueco `i` (vuelve a empezar por su principio y a llenar el hueco; si sonaba otro, sigue sonando). */
+/**
+ * Pone un fichero en el hueco `i`: vuelve a empezar por su principio y a su encuadre de serie; se queda con lo que
+ * tenía el hueco de «Llenar» / «Entero», silenciado y volumen.
+ */
 export function setCell(collage: Collage, i: number, source: CollageCellSource): Collage {
   if (i < 0 || i >= collage.cells.length) return collage
   const cells = collage.cells.slice()
   const prev = cells[i]!
-  // Un hueco que sonaba y pasa a algo sin sonido deja de sonar.
-  const volume = prev.volume > 0 && source.hasAudio ? prev.volume : 0
-  cells[i] = { ...emptyCell(), fit: prev.source ? prev.fit : 'fill', volume, source }
+  cells[i] = { ...emptyCell(), fit: prev.source ? prev.fit : 'fill', muted: prev.muted, volume: prev.volume, source }
   return withCells(collage, cells)
 }
 
@@ -373,24 +374,38 @@ export function setCellStart(collage: Collage, i: number, startMs: number): Coll
   return withCells(collage, cells)
 }
 
-/** El hueco que suena (null si no suena ninguno). */
-export function heardCell(collage: Collage): number | null {
-  const i = collage.cells.findIndex((c) => c.volume > 0 && !!c.source?.hasAudio)
-  return i >= 0 ? i : null
+/** ¿Suena este hueco? (tiene un vídeo con sonido, no está silenciado y su volumen no es 0). */
+export function cellSounds(cell: CollageCell): boolean {
+  return !!cell.source && !cell.source.still && cell.source.hasAudio && !cell.muted && cell.volume > 0
 }
 
-/** «Qué se oye»: el hueco `i` (los demás, callados) o ninguno. Solo un hueco con sonido puede sonar. */
-export function setHeardCell(collage: Collage, i: number | null): Collage {
-  if (i !== null && !collage.cells[i]?.source?.hasAudio) return collage
-  if (heardCell(collage) === i) return collage
-  return withCells(
-    collage,
-    collage.cells.map((c, k) => {
-      const volume = k === i ? 1 : 0
-      return c.volume === volume ? c : { ...c, volume }
-    }),
-  )
+/** Los huecos que suenan (índices). */
+export function soundingCells(collage: Collage): number[] {
+  return collage.cells.flatMap((c, i) => (cellSounds(c) ? [i] : []))
 }
+
+/** «Silenciar» / «Con sonido» un hueco. */
+export function setCellMuted(collage: Collage, i: number, muted: boolean): Collage {
+  const cell = collage.cells[i]
+  if (!cell || cell.muted === muted) return collage
+  const cells = collage.cells.slice()
+  cells[i] = { ...cell, muted }
+  return withCells(collage, cells)
+}
+
+/** Volumen de un hueco (0 a 1,5, como un sonido de las pistas). */
+export function setCellVolume(collage: Collage, i: number, volume: number): Collage {
+  const cell = collage.cells[i]
+  if (!cell) return collage
+  const v = Number.isFinite(volume) ? Math.min(MAX_CELL_VOLUME, Math.max(0, Math.round(volume * 100) / 100)) : 1
+  if (v === cell.volume) return collage
+  const cells = collage.cells.slice()
+  cells[i] = { ...cell, volume: v }
+  return withCells(collage, cells)
+}
+
+/** Como MAX_ITEM_VOLUME de las pistas. */
+export const MAX_CELL_VOLUME = 1.5
 
 /**
  * Otra plantilla del mismo número de huecos: los vídeos se quedan en su orden (el vídeo 1 sigue siendo el 1). Con
@@ -424,6 +439,15 @@ export function cellTimeAt(cell: CollageCell, collageMs: number): { ms: number; 
   return t >= last ? { ms: last, frozen: true } : { ms: Math.round(t), frozen: false }
 }
 
+/**
+ * ¿Conviene ver el vídeo de un hueco en la vista previa con su copia pequeña (540p)? Un hueco nunca pasa de medio
+ * marco, y hasta cuatro vídeos grandes a la vez cuestan: más de 1080p, HEVC o más de 30 fps.
+ */
+export function needsCellProxy(media: Pick<MediaInfo, 'width' | 'height' | 'videoCodec' | 'fps' | 'isStill' | 'hasVideo'>): boolean {
+  if (media.isStill || !media.hasVideo) return false
+  return media.width * media.height > 1920 * 1080 || media.videoCodec === 'hevc' || media.fps > 31
+}
+
 /** Ficheros que usa el collage (sin repetir). */
 export function collagePaths(collage: Collage): string[] {
   return [...new Set(collage.cells.flatMap((c) => (c.source ? [c.source.path] : [])))]
@@ -454,7 +478,7 @@ export function relinkCollage(collage: Collage, oldPath: string, info: Pick<Medi
       const still = info.isStill === true
       const durationMs = still ? 0 : Math.max(1, Math.round(info.durationMs))
       const source: CollageCellSource = { path: info.path, durationMs, still, hasAudio: !still && info.hasAudio, width: info.width || c.source.width, height: info.height || c.source.height }
-      return { ...c, source, startMs: Math.min(c.startMs, Math.max(0, durationMs - LAST_FRAME_MS)), volume: source.hasAudio ? c.volume : 0 }
+      return { ...c, source, startMs: Math.min(c.startMs, Math.max(0, durationMs - LAST_FRAME_MS)) }
     }),
   )
 }
@@ -487,24 +511,21 @@ function parseCellSource(raw: unknown): CollageCellSource | null {
 
 /**
  * Un collage guardado, en valores válidos; null si no se entiende (plantilla desconocida o un número de huecos que no
- * es el suyo): entonces se descarta el elemento, nunca el proyecto. Como mucho un hueco suena.
+ * es el suyo): entonces se descarta el elemento, nunca el proyecto.
  */
 export function normalizeCollage(raw: unknown): Collage | null {
   if (!isObject(raw) || typeof raw.layoutId !== 'string') return null
   const layout = layoutById(raw.layoutId)
   if (!layout || !Array.isArray(raw.cells) || raw.cells.length !== layout.count) return null
   const gap: CollageGap = raw.gap === 'white' || raw.gap === 'none' ? raw.gap : 'dark'
-  let heard = false
   const cells = raw.cells.map((c): CollageCell => {
     const r = isObject(c) ? c : {}
     const source = parseCellSource(r.source)
     const fit: CellFit = r.fit === 'whole' ? 'whole' : 'fill'
     const clamp = (v: unknown) => Math.min(1, Math.max(-1, finite(v, 0)))
-    let volume = Math.min(1.5, Math.max(0, finite(r.volume, 0)))
-    if (!source?.hasAudio || heard) volume = 0
-    if (volume > 0) heard = true
+    const volume = Math.min(MAX_CELL_VOLUME, Math.max(0, finite(r.volume, 1)))
     const startMs = source && !source.still ? Math.round(Math.min(Math.max(0, finite(r.startMs, 0)), Math.max(0, source.durationMs - LAST_FRAME_MS))) : 0
-    return { source, startMs, fit, zoom: Math.min(4, Math.max(1, finite(r.zoom, 1))), offsetX: clamp(r.offsetX), offsetY: clamp(r.offsetY), volume }
+    return { source, startMs, fit, zoom: Math.min(4, Math.max(1, finite(r.zoom, 1))), offsetX: clamp(r.offsetX), offsetY: clamp(r.offsetY), muted: r.muted === true, volume }
   })
   return { layoutId: layout.id, gap, cells }
 }
