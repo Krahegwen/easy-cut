@@ -349,6 +349,40 @@ try {
   await press('PageUp')
   check('AvPág / RePág: trozo siguiente / anterior', down === 1 && down2 === 2 && (await selectedIndex()) === 1, `${down}, ${down2}, ${await selectedIndex()}`)
 
+  // E / T / P sobre el trozo elegido (sin sonido ni efecto elegido), en la línea; V ya no es nada
+  {
+    const lengths = () => store('s.project.value.clips.map((c) => window.__easyCut.domain.clipOutputMs(c))')
+    const inOf = () => store('window.__easyCut.domain.clipInOut(s.project.value.clips[0]).startMs')
+    await store('s.select(s.project.value.clips[0].id)')
+    await blur()
+    await press('Home')
+    await press('ArrowRight')
+    await press('ArrowRight')
+    const before = await lengths()
+    await press('p', { repeat: true })
+    check('P dejado pulsado no parte el trozo', (await lengths()).length === before.length)
+    await press('p')
+    const split = await lengths()
+    check('P: parte el trozo elegido en la línea (2 s)', split.length === before.length + 1 && Math.abs(split[0] - 2000) <= 60 && ((await toast()) ?? '').includes('partido'), `${split.join(', ')} · ${await toast()}`)
+    await checkHints('Tu vídeo tras partir un trozo')
+    await press('z', { ctrl: true })
+    await press('t')
+    check('T: el trozo elegido termina en la línea', Math.abs((await lengths())[0] - 2000) <= 60, String((await lengths())[0]))
+    await press('z', { ctrl: true })
+    await press('e')
+    check('E: el trozo elegido empieza en la línea', Math.abs((await inOf()) - 2000) <= 60, String(await inOf()))
+    await press('z', { ctrl: true })
+    check('Y Ctrl+Z lo deja como estaba', JSON.stringify(await lengths()) === JSON.stringify(before))
+    await press('End')
+    check('Con la línea fuera del trozo, E / T / P no hacen nada', (await store('window.__easyCut.shortcuts().filter((x) => ["clip-trim-start", "clip-trim-end", "clip-split"].includes(x.id)).every((x) => !x.enabled)')) === true)
+    const n = (await lengths()).length
+    await press('v')
+    check('V ya no cambia nada (no hay tarjetas)', (await lengths()).length === n && !(await store('window.__easyCut.shortcuts().some((x) => x.keys.includes("v"))')))
+    await press('Home')
+    // Como lo dejó AvPág / RePág: elegido el trozo 2.
+    await store('s.select(s.project.value.clips[1].id)')
+  }
+
   // Supr + deshacer; Supr dejado pulsado no quita más
   {
     const before = await clips()
