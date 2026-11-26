@@ -293,7 +293,7 @@ function poolThumb(m: MediaEntry): string | null {
           Elegir del ordenador
         </button>
         <p class="muted small-text">
-          Sonidos, vídeos o imágenes (un logo, una pegatina…). También puedes soltarlos aquí o pegarlos con <KeyHint k="Ctrl V" />.
+          Sonidos, vídeos o imágenes (un logo, una pegatina…). También puedes soltarlos aquí o pegarlos con <KeyHint k="Ctrl V" />
         </p>
       </div>
       <h3 v-if="pool.length" class="pool-title">Ya traídos a este vídeo</h3>

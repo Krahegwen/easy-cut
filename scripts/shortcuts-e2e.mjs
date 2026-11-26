@@ -220,7 +220,7 @@ try {
   app = await connectToApp(port, { timeoutMs: 300_000 })
   await app.waitFor('return !!window.__easyCut?.store', { timeoutMs: 60_000, what: 'store de la app (modo desarrollo)' })
   // Punto de partida limpio: sin autoguardado ni texto del teleprompter.
-  await app.evaluate('await window.__easyCut.bridge.clearAutosave(); localStorage.removeItem("easy-cut:teleprompter"); location.reload(); return true')
+  await app.evaluate('await window.__easyCut.resetProjects(); localStorage.removeItem("easy-cut:teleprompter"); location.reload(); return true')
   await sleep(1500)
   app.close()
   app = await connectToApp(port)
@@ -462,26 +462,34 @@ try {
   await press('Escape')
   check('Esc cierra «Duración máxima» y se queda en «Tu vídeo»', !(await app.evaluate('return !!document.querySelector(".popover")')) && (await screen()) === 'editor')
 
-  // Esc sin nada abierto: a Inicio, que ofrece seguir; empezar otro pregunta y Esc / Intro no lo descartan
+  // Esc sin nada abierto: a Inicio, con el vídeo en la lista; borrarlo pregunta y Esc / Intro no lo borran
   {
     const n = (await clips()).length
+    const id = await store('s.projectId.value')
     await blur()
     await press('Escape')
     await waitScreen('home')
-    check('Esc en «Tu vídeo»: a Inicio, que ofrece «Seguir con este vídeo»', !!(await app.text('[data-testid=resume-card]')))
-    await press('Enter')
-    await app.waitFor('return !!document.querySelector("[data-testid=confirm-dialog]")', { what: 'pregunta de empezar otro' })
+    const cardSel = `[data-testid=project-card][data-project-id="${id}"]`
+    await app.waitFor('return !!document.querySelector(args.s)', { args: { s: cardSel }, what: 'el vídeo en la lista de Inicio' })
+    check('Esc en «Tu vídeo»: a Inicio, con el vídeo en la lista', !!(await app.text(cardSel)))
+    await app.click(`${cardSel} [data-testid=project-delete]`)
+    await app.waitFor('return !!document.querySelector("[data-testid=confirm-dialog]")', { what: 'pregunta de borrar el vídeo' })
     await checkHints('Pregunta (destructiva)')
     await shot('keys-06-pregunta.png')
     await press('Escape')
-    check('Esc en la pregunta: la cierra sin descartar el vídeo', !(await dialogOpen()) && (await clips()).length === n)
-    await press('Enter')
+    check('Esc en la pregunta: la cierra sin borrar el vídeo', !(await dialogOpen()) && !!(await app.text(cardSel)) && (await clips()).length === n)
+    await app.click(`${cardSel} [data-testid=project-delete]`)
     await app.waitFor('return !!document.querySelector("[data-testid=confirm-dialog]")')
     await press('Enter')
-    check('Intro en una pregunta destructiva es «No, volver» (no descarta)', !(await dialogOpen()) && (await clips()).length === n && (await screen()) === 'home')
-    await app.click('[data-testid=resume]')
+    check('Intro en una pregunta destructiva es «No, volver» (no borra)', !(await dialogOpen()) && !!(await app.text(cardSel)) && (await screen()) === 'home')
+    await press('Enter')
+    await waitScreen('pick')
+    check('Intro en Inicio: «Hacer un vídeo nuevo», sin preguntar', !(await dialogOpen()))
+    await press('Escape')
+    await waitScreen('home')
+    await app.click(`${cardSel} [data-testid=project-open]`)
     await waitScreen('editor')
-    check('«Seguir con este vídeo» vuelve con todo', (await clips()).length === n)
+    check('Abrirlo desde la lista vuelve con todo', (await clips()).length === n)
   }
 
   // --- «Arreglar este trozo»
@@ -740,7 +748,7 @@ try {
   }
 } finally {
   try {
-    if (app) await app.evaluate('await window.__easyCut.bridge.clearAutosave(); return true')
+    if (app) await app.evaluate('await window.__easyCut.resetProjects(); return true')
   } catch {
     // La app ya no responde.
   }

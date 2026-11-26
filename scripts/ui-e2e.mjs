@@ -183,8 +183,8 @@ try {
   app = await connectToApp(port, { timeoutMs: 240_000 })
   console.log(`Conectado a ${app.url}`)
   await app.waitFor('return !!window.__easyCut?.store', { timeoutMs: 60_000, what: 'store de la app (modo desarrollo)' })
-  // Punto de partida limpio: sin autoguardado.
-  await app.evaluate('await window.__easyCut.bridge.clearAutosave(); location.reload(); return true')
+  // Punto de partida limpio: sin vídeos en marcha ni autoguardado de antes.
+  await app.evaluate('await window.__easyCut.resetProjects(); location.reload(); return true')
   await sleep(1500)
   app.close()
   app = await connectToApp(port)
@@ -193,7 +193,7 @@ try {
 
   // --- Inicio
   await waitScreen('new-video')
-  check('Inicio sin vídeo a medias no ofrece seguir', !(await app.text('[data-testid=resume-card]')))
+  check('Inicio con la lista vacía es como siempre (sin lista de vídeos)', !(await app.text('[data-testid=project-list]')) && !!(await app.text('[data-testid=new-video]')))
   await shot('01-inicio.png')
 
   // --- Teleprompter (su prueba completa es scripts/teleprompter-e2e.mjs)
@@ -627,8 +627,9 @@ try {
     await app.waitFor('return window.__easyCut.store.project.value.clips.length === args.n', { args: { n: nBefore + 1 }, timeoutMs: 20_000, what: 'trozo que se borrará' })
     const ids = await clipIds()
     const total = await durationMs()
+    const projectId = await S('return store.projectId.value')
     // Que el autoguardado esté al día antes de cerrar.
-    await app.waitFor('const b = window.__easyCut.bridge; const d = window.__easyCut.domain; return (await b.loadAutosave()) === d.serializeProject(window.__easyCut.store.project.value)', { timeoutMs: 5000, what: 'autoguardado al día' })
+    await app.waitFor('const b = window.__easyCut.bridge; const d = window.__easyCut.domain; const s = window.__easyCut.store; return !!s.projectId.value && (await b.readProject(s.projectId.value)) === d.serializeProject(s.project.value, { name: s.projectName.value })', { timeoutMs: 5000, what: 'vídeo guardado y al día' })
     if (launch) {
       app.close()
       await stopApp()
@@ -646,17 +647,19 @@ try {
       await app.waitFor('return !!window.__easyCut?.store')
     }
     await app.setViewport(1280, 800)
-    await app.waitFor('return !!document.querySelector("[data-testid=resume-card]")', { timeoutMs: 10_000, what: 'tarjeta de vídeo sin terminar' })
-    const card = await app.text('[data-testid=resume-card]')
+    const cardSel = `[data-testid=project-card][data-project-id="${projectId}"]`
+    await app.waitFor('return !!document.querySelector(args.s)', { args: { s: cardSel }, timeoutMs: 10_000, what: 'el vídeo en la lista de Inicio' })
+    const card = await app.text(cardSel)
     const n = ids.length
-    check(`Al volver a abrir ofrece seguir («${n} trozos»)`, card.includes(`${n} trozos`) && card.includes('Seguir con este vídeo'), card)
-    await shot('21-inicio-seguir.png')
+    check(`Al volver a abrir, el vídeo está en la lista («${n} trozos»)`, card.includes(`${n} trozos`) && card.includes('Vídeo del '), card)
+    await shot('21-inicio-lista.png')
     await app.click('[data-testid=new-video]')
-    await app.waitFor('return !!document.querySelector("[data-testid=confirm-dialog]")')
-    check('Empezar otro con uno a medias pide confirmación', (await app.text('[data-testid=confirm-dialog]')).includes('Tus vídeos originales no se tocan'))
-    await shot('22-confirmar-nuevo.png')
+    await waitScreen('pick-videos')
+    check('«Hacer un vídeo nuevo» ya no pregunta (el de antes no se pierde)', !(await app.text('[data-testid=confirm-dialog]')))
     await app.key('Escape')
-    await app.click('[data-testid=resume]')
+    await waitScreen('home-view')
+    check('Y el de antes sigue en la lista', !!(await app.text(cardSel)))
+    await app.click(`${cardSel} [data-testid=project-open]`)
     await waitScreen('editor')
     check('Seguir con el vídeo recupera los trozos y la duración', JSON.stringify(await clipIds()) === JSON.stringify(ids) && (await durationMs()) === total)
     await sleep(1500)
@@ -666,8 +669,9 @@ try {
     check('El bloque del original borrado dice «No encuentro este vídeo»', !!lost, lost ?? '')
     await app.click(`[data-testid=clip-block-${ids.length}]`)
     await shot('23-no-encuentro.png')
+    check('El trozo perdido ofrece «Buscarlo» además de quitarlo', !!(await app.text('[data-testid=relink-clip]')) && !!(await app.text('[data-testid=remove-clip]')))
     await app.click('[data-testid=save-video]')
-    check('Con un original perdido no deja guardar y lo explica', (await app.text('[data-testid=toast]'))?.startsWith('Antes de guardar, quita') && !!(await app.text('[data-testid=editor]')))
+    check('Con un original perdido no deja guardar y lo explica', (await app.text('[data-testid=toast]'))?.startsWith('Antes de guardar, busca') && !!(await app.text('[data-testid=editor]')))
     await app.click('[data-testid=remove-clip]')
     check('«Quitarlo del vídeo»', (await clipIds()).length === ids.length - 1)
   }

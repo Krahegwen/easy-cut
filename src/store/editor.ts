@@ -437,7 +437,14 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
    * perderlo: primero se guarda en la lista, se comprueba que se ha guardado y solo entonces se borra el
    * viejo. Si no se puede leer, se deja como está.
    */
-  async function loadProjects() {
+  let loadingProjects: Promise<void> | null = null
+  function loadProjects(): Promise<void> {
+    // Si ya se está leyendo (al arrancar), se espera a esa misma lectura.
+    loadingProjects ??= readProjectList().finally(() => (loadingProjects = null))
+    return loadingProjects
+  }
+
+  async function readProjectList() {
     let stored: Awaited<ReturnType<NativeBridge['listProjects']>> = []
     try {
       stored = await bridge.listProjects()
@@ -594,6 +601,8 @@ export function createEditorStore(bridge: NativeBridge, options: EditorStoreOpti
     if (id === projectId.value) {
       hideToast()
       screen.value = 'editor'
+      // Mientras se estaba en Inicio se puede haber movido algún fichero: se vuelve a mirar.
+      await refreshOriginals()
       return true
     }
     await flushAutosave()

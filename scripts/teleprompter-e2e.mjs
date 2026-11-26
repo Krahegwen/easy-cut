@@ -189,7 +189,7 @@ try {
   console.log(`Conectado a ${app.url} (${fake ? 'cámara falsa' : 'cámara de verdad'})`)
   await app.waitFor('return !!window.__easyCut?.store', { timeoutMs: 60_000, what: 'store de la app (modo desarrollo)' })
   // Punto de partida limpio: sin autoguardado ni texto recordado.
-  await app.evaluate('await window.__easyCut.bridge.clearAutosave(); localStorage.removeItem("easy-cut:teleprompter"); location.reload(); return true')
+  await app.evaluate('await window.__easyCut.resetProjects(); localStorage.removeItem("easy-cut:teleprompter"); location.reload(); return true')
   await sleep(1500)
   app.close()
   app = await connectToApp(port)

@@ -91,7 +91,13 @@ Y en otra, con los clips de `test-output/`:
 node scripts/webview-smoke.mjs
 ```
 
-**La app de desarrollo (`pnpm tauri dev`, compilación debug) no toca los datos de la instalada**: guarda en `Vídeos\Mis montajes (pruebas)` (y sus grabaciones en `…\Grabaciones`) y usa la subcarpeta `pruebas` dentro de la carpeta de datos (autoguardado) y de la caché (miniaturas, proxies, formas de onda). Lo decide `cfg!(debug_assertions)` en `commands.rs`; en release, todo como siempre. El `localStorage` (texto del teleprompter) ya va aparte porque el origen es otro (`localhost:4850` frente a `tauri.localhost`). Las pruebas e2e miran y limpian esa carpeta de pruebas.
+**La app de desarrollo (`pnpm tauri dev`, compilación debug) no toca los datos de la instalada**: guarda en `Vídeos\Mis montajes (pruebas)` (y sus grabaciones en `…\Grabaciones`) y usa la subcarpeta `pruebas` dentro de la carpeta de datos (vídeos en marcha) y de la caché (miniaturas, proxies, formas de onda, biblioteca). Lo decide `cfg!(debug_assertions)` en `commands.rs`; en release, todo como siempre. El `localStorage` (texto del teleprompter) ya va aparte porque el origen es otro (`localhost:4850` frente a `tauri.localhost`). Las pruebas e2e empiezan y acaban con `window.__easyCut.resetProjects()`, que vacía la lista de vídeos de esa carpeta de pruebas.
+
+Prueba de extremo a extremo de los ficheros y los proyectos (el autoguardado de antes pasa a la lista; Inicio con dos vídeos: abrir, cambiar el nombre, Esc que cancela, duplicar, borrar con su pregunta y «Deshacer», reiniciar la app y que sigan, deshacer tras reiniciar; «De mi ordenador» con usos, miniaturas y las tres acciones, y una imagen que no puede ser trozo; volver a enlazar originales movidos a otra carpeta: el aviso de uno que no cuadra, los de la misma carpeta de una vez, también un sonido de una pista, y deshacer; capturas `proj-*.png` a 1280×800 y 1100×700). Trabaja con copias en una carpeta temporal. Necesita los ficheros de `pnpm test:ffmpeg` y la biblioteca generada:
+
+```powershell
+node scripts/projects-e2e.mjs
+```
 
 Prueba de extremo a extremo de la interfaz (arranca y cierra ella misma la app, pulsa los botones reales sobre la fila «Vídeo» —reordenar, recortar por las asas con el texto en vivo, E / T / P en la línea—, el divisor de la vista previa (tamaños fijos, arrastre, mínimos y que se recuerda), que las pistas van a todo el ancho y nada se sale a 1100–2000 px, el vídeo vacío, guarda y comprueba con ffprobe, cancela, reinicia la app y deja capturas en `test-output/screenshots/`; borra lo que guarda en «Mis montajes (pruebas)»). Con la app cerrada y `cargo` en el PATH:
 
@@ -127,7 +133,7 @@ node scripts/tracks-e2e.mjs
 
 **Las pruebas no roban el foco**: los scripts arrancan la app con `EASY_CUT_TEST=1` (`appTestEnv` de `scripts/cdp.mjs`), que solo en la compilación de desarrollo crea la ventana oculta y la enseña detrás de las demás sin activarla (`src-tauri/src/test_window.rs`; por eso la ventana va con `"create": false` en `tauri.conf.json` y se crea en `lib.rs`). Visible y sin minimizar, a propósito: minimizada, Chromium para `requestAnimationFrame` y los temporizadores. WebView2 lleva además `--disable-renderer-backgrounding --disable-backgrounding-occluded-windows --disable-features=CalculateNativeWinOcclusion` para que tapada no se frene, y CDP activa `Emulation.setFocusEmulationEnabled` (la página se comporta como enfocada). Teclas y ratón van por `Input.dispatch*`, que no necesita el foco. Con `--foreground` se abre delante, como siempre. Ojo: `window.show()` de tao sí activa la ventana; hay que enseñarla con `SetWindowPos(…SWP_SHOWWINDOW | SWP_NOACTIVATE)`.
 
-En desarrollo, `window.__easyCut` expone `bridge`, `domain`, `store`, `tracks`, `library`, `shortcuts()` (atajos que valen ahora), `liveTracks()` (pistas de cámara o micrófono encendidas) y `queuePickedVideos(rutas)` (sustituye a la siguiente apertura del diálogo de elegir vídeos, también el de «Elegir el vídeo» de encima); la pantalla de diagnóstico se abre con `?diagnostics`. En producción no existe ninguna de las dos cosas.
+En desarrollo, `window.__easyCut` expone `bridge`, `domain`, `store`, `tracks`, `library`, `cacheCleaner`, `resetProjects()` (sin vídeos en marcha ni autoguardado de antes, en Inicio), `shortcuts()` (atajos que valen ahora), `liveTracks()` (pistas de cámara o micrófono encendidas) y `queuePickedVideos(rutas)` (sustituye a la siguiente apertura del diálogo de elegir vídeos, también el de «Elegir el vídeo» de encima); la pantalla de diagnóstico se abre con `?diagnostics`. En producción no existe ninguna de las dos cosas.
 
 ## Atajos de teclado
 
@@ -141,7 +147,9 @@ De **una sola tecla**, salvo las cuatro combinaciones de siempre (Ctrl+Z, Ctrl+Y
 
 | Pantalla | Teclas |
 | --- | --- |
-| Inicio | Intro «Hacer un vídeo nuevo» (pregunta si hay uno a medias) |
+| Inicio | Intro «Hacer un vídeo nuevo» (ya no pregunta: el abierto queda en la lista) · Tab + Intro abre un vídeo de la lista o pulsa sus botones · el nombre: Intro guarda, Esc lo deja como estaba |
+| Menú «Más cosas» de un vídeo (Inicio) | Esc cerrar |
+| «Buscarlo» (el fichero no cuadra o hay más en la carpeta) | Intro «Usarlo igualmente» / «Usar los N» · Esc «Cancelar» |
 | Elige tus vídeos | Intro elegir · Ctrl+V pegar vídeos copiados en el Explorador · Esc Inicio |
 | Tu vídeo | Espacio · Esc (parar y al 0 / Inicio) · Inicio / Fin · ← → 1 s · RePág / AvPág trozo anterior / siguiente · A arreglar · Supr quitar (con «Deshacer») · Ctrl+C / Ctrl+V · G guardar · B «Añadir sonidos y efectos» · + / - acercar / alejar (pistas) · Ctrl+Z / Ctrl+Y |
 | Tu vídeo, con un trozo elegido y ningún sonido o efecto elegido | E / T que el trozo empiece / termine en la línea · P partirlo en la línea (solo con la línea dentro del trozo; la barra de abajo dice cuál) |
@@ -165,7 +173,7 @@ Copiar y pegar: Ctrl+C copia el trozo en la app (no toca el portapapeles de Wind
 
 ## Pistas de sonidos y efectos
 
-- **Modelo** (`src/domain/project.ts`, versión 3 del proyecto; la 1 y la 2 se migran sin pistas): `Project.mainMuted` (silencia el sonido de todos los trozos) y `Project.tracks`: `{ id, kind: 'sound' | 'effect', name, muted, hidden, items }`. Hasta 4 pistas de sonido y 3 de efectos; el orden de las de efectos es el de apilado (la primera, encima; una nueva va encima). Cada `TrackItem`: `source` (`file` con ruta o `library` con `assetId`), `anchor`, `inMs`/`outMs` (trozo del original), `phaseMs` (por dónde va la vuelta si repite), `repeat`, `durationMs` (si repite o es una imagen fija; `null` = hasta el final del vídeo), `volume` 0–1,5, `fadeInMs`/`fadeOutMs`, y en los efectos `look`: `mix` (`normal` | `light` = «Como luz», screen), `opacity`, `box` `{ x, y, scale }` (centro relativo al marco y tamaño; 1 = `fit` en el marco) y `fit` (`cover` | `contain`).
+- **Modelo** (`src/domain/project.ts`, versión 4 del proyecto, ver «Vídeos en marcha y ficheros del proyecto»; la 1 y la 2 se migran sin pistas): `Project.mainMuted` (silencia el sonido de todos los trozos) y `Project.tracks`: `{ id, kind: 'sound' | 'effect', name, muted, hidden, items }`. Hasta 4 pistas de sonido y 3 de efectos; el orden de las de efectos es el de apilado (la primera, encima; una nueva va encima). Cada `TrackItem`: `source` (`file` con ruta o `library` con `assetId`), `anchor`, `inMs`/`outMs` (trozo del original), `phaseMs` (por dónde va la vuelta si repite), `repeat`, `durationMs` (si repite o es una imagen fija; `null` = hasta el final del vídeo), `volume` 0–1,5, `fadeInMs`/`fadeOutMs`, y en los efectos `look`: `mix` (`normal` | `light` = «Como luz», screen), `opacity`, `box` `{ x, y, scale }` (centro relativo al marco y tamaño; 1 = `fit` en el marco) y `fit` (`cover` | `contain`).
 - **Anclaje al trozo, no al tiempo**: `anchor = { clipId, offsetMs }` (tiempo de salida de ese trozo) o `{ clipId: null, offsetMs }` (desde el principio). El tiempo absoluto se resuelve con la fila de trozos (`resolveTracks`, `src/domain/tracks.ts`). Reglas: reordenar un trozo se lleva lo suyo; quitar pausas de otro no lo descoloca; si el trozo ancla se acorta, se sujeta a su final (el offset se guarda: al alargarlo vuelve); si se recorta (o alarga) su principio, lo pegado sigue a su imagen y se corre lo mismo, y si su momento queda fuera se sujeta al principio (offset negativo guardado: al alargarlo vuelve); al partir el trozo, cada elemento se queda con la parte donde cae su inicio (`splitClip`); al quitarlo, lo pegado se queda en el mismo sitio del vídeo pegado al trozo que haya ahí (`removeClip`) y se avisa («2 sonidos estaban pegados a este trozo…»), en un solo paso de deshacer. Copiar y pegar un trozo **no** duplica lo que lleva pegado. La música «de fondo» (repite hasta el final y empieza en el 0) se pega al principio del vídeo (`clipId: null`). Lo que pasa del final del vídeo se ve atenuado y se corta al guardar.
 - **Edición** (puro, en `tracks.ts`): `insertItem` («Poner aquí»: primera pista del tipo con sitio, si no una nueva, si no a continuación), `moveItem` (reancla al trozo de debajo; si pisa a otro, a continuación; si no cabe, no se mueve), `trimItemStart` / `trimItemEnd` (sin repetir, hasta el original; repitiendo, libre), `splitItem`, `duplicateItem`, `setItemRepeat` (un efecto repite su fichero entero), imanes (`snapPoints`: trozos, cabezal, otros elementos; `snapMove`, `snapTime`). Sin solapes dentro de una pista al soltar.
 - **Guardar** (`ffmpeg-args.ts`): los tiempos se resuelven con los fotogramas enteros de cada trozo (`projectTiming(…, exportedClipDurationMs)`), así cada sonido cae donde su trozo en el fichero. Sonido: `atrim`/`-stream_loop -1` (fichero entero) o `aloop` (un trozo), `volume`, `afade` en muestras, `adelay` en muestras; mezcla `amix … normalize=0:duration=first` + `alimiter=limit=0.97:level=0:latency=1` + `apad/atrim` a las muestras exactas. Efectos: el vídeo montado se parte en tramos; solo los tramos con efectos pasan a RGB (`gbrp`, con matriz BT.709) y vuelven a `yuv420p`; dentro, por orden de pista: «Normal» con `overlay=…:format=gbrp:eof_action=pass` (alfa del fichero, `colorchannelmixer=aa` para la transparencia, `fade …:alpha=1`), «Como luz» con `blend=all_mode=screen:all_opacity=…:eof_action=pass` (recortado y sobre negro a pantalla completa, `fade` a negro). Cada efecto entra con `setpts=…+offset/TB` en su instante y solo se lee durante su tramo. WebM con alfa: `-c:v libvpx-vp9` (o `libvpx`) delante de `-i`. Imagen fija: `-loop 1 -framerate F -t …`. «Solo el sonido» lleva también las pistas.
@@ -183,6 +191,17 @@ Copiar y pegar: Ctrl+C copia el trozo en la app (no toca el portapapeles de Wind
 - **Buscador y categorías** (`searchLibrary`, `countByCategory`): sin tildes ni mayúsculas, en nombre, descripción, categoría y etiquetas; cada categoría lleva su contador (con lo que se busca) y, buscando, solo salen las que tienen algo.
 - **Errores de descarga**: `library_fetch` empieza el mensaje con `offline:`, `missing:` (4xx, sobre todo 404) o `mismatch:` (tamaño o SHA-256); `libraryFetchMessage` / `librarySaveMessage` dan un mensaje llano distinto para cada uno.
 - **Créditos** (`projectCredits`, `libraryCredits`, `libraryThanks`, `creditsText`): «¡Listo!» los enseña con «Copiar los créditos» si el vídeo usa algo que pida atribución (lo CC0 no); «Créditos de la biblioteca» (en el pie de la biblioteca) enseña eso y, aparte, los agradecimientos de todo lo de terceros.
+
+## Vídeos en marcha y ficheros del proyecto
+
+- **Modelo v4** (`src/domain/project.ts`): `Project.media: MediaEntry[]`, la lista de los ficheros del ordenador traídos al proyecto, en el orden en que se trajeron: `path`, `kind` (`video` | `sound` | `image`), `durationMs` (0 en una imagen), `hasVideo`, `hasAudio`, `width`/`height` (visibles), `fps`, `sizeBytes`, `hasAlpha` y `probed` (false si viene de migrar: solo se sabía la duración y si tenía imagen; se completa con ffprobe al abrir). **No se deshace**: `commit` la pone al día (`syncMediaPool` con lo medido) y deshacer/rehacer la une con la de antes (`mergeMediaPool`), así lo traído sigue en «De mi ordenador» aunque se deshaga o se quite el trozo que lo usaba; `setMedia` actualiza la entrada sin paso de deshacer (`upsertMediaEntry` + `replaceState`). Migración 1/2/3 → 4 en `parseProject`: la lista sale de lo que usa el proyecto (`usedMediaPaths`: trozos, vídeos de encima y elementos `file` de las pistas; lo de la biblioteca no). El **nombre** del vídeo va en el sobre del fichero (`serializeProject(p, { name })`, `parseProjectFile`), fuera del proyecto: cambiarlo no se deshace.
+- **Dónde se guardan** (`src-tauri/src/projects.rs`): `projects\<id>.json` en la carpeta de datos (la subcarpeta `pruebas` en desarrollo), por identificador (`[A-Za-z0-9_-]{1,64}`, nunca una ruta), con `<id>.prev.json` (copia anterior: al guardar, si la copia tiene más de 10 minutos, el de antes pasa a ser la copia) y `<id>.history.json` (deshacer guardado, `src/domain/history-file.ts`: los 30 pasos más cercanos de deshacer y de rehacer; solo vale si su `present` coincide con el proyecto guardado, si no se descarta). Comandos `list_projects`, `read_project`, `write_project`, `delete_project` (borra los tres ficheros de ese id y nada más), `restore_project_backup` (intercambia copia y proyecto y descarta el historial), `read_project_history`, `write_project_history`. El `.easycut` (`save_project` / `load_project`, con diálogo) es el mismo JSON: «Guardar en un fichero» y «Abrir un vídeo guardado en un fichero».
+- **Store** (`src/store/editor.ts`): `projectId` (null mientras el vídeo nuevo está vacío: uno vacío no se guarda), `projectName`, `projects` (resúmenes de la lista: `summarizeProject`, lo más reciente primero). Cada cambio se guarda solo (600 ms; `flushAutosave` toma una foto en el momento y las escrituras van en cola) con el historial. `startNewProject` deja guardado el abierto y empieza uno vacío; `openProject` (el mismo que está abierto: vuelve tal cual, con su deshacer, y mira otra vez los originales), `renameProject`, `duplicateProject` («X (copia)»), `deleteProject` (con «Deshacer» en el aviso: se guarda en memoria lo borrado), `restoreProjectBackup`, `exportProject`, `importProjectFile`. Nombre por defecto `defaultProjectName`: «Vídeo del 26 de noviembre», con «(2)» si ya hay uno así (`src/domain/projects.ts`).
+- **El autoguardado de antes** (`autosave.json`, un solo vídeo a medias) se pasa a la lista al arrancar (`loadProjects` → `migrateLegacyAutosave`): se escribe como vídeo nuevo, se vuelve a leer para comprobarlo y solo entonces se borra el viejo; si no se puede leer o escribir, se deja como está. `loadProjects` comparte la lectura en marcha (las pruebas esperan a ella antes de limpiar).
+- **Inicio** (`views/HomeView.vue`): con la lista vacía, como siempre; con vídeos, lo de arriba más apretado y debajo «Tus vídeos en marcha»: tarjetas con miniatura (primer trozo con imagen, o el vídeo de encima), nombre, trozos y duración y «cuándo se tocó» (`describeTouched`: «Hace 5 minutos», «Hoy a las 10:30», «Ayer…», «El 3 de noviembre»), y «Cambiar el nombre» (en la tarjeta; Intro guarda, Esc no), «Duplicar», «Borrar» (pregunta destructiva, Intro = «No, volver»), y en «Más cosas» «Guardar en un fichero» y «Volver a como estaba hace un rato» (si hay copia). Debajo, «Abrir un vídeo guardado en un fichero». El teleprompter, desde Inicio, pregunta si la grabación va al vídeo más reciente o a uno nuevo.
+- **«De mi ordenador»** (`LibraryPanel.vue`): «Elegir del ordenador» y la lista de lo ya traído (`poolForDisplay`, lo último primero) con miniatura, tipo y duración (`describeMediaEntry`) y usos (`mediaUsage`, `describeUsage`), y por fichero «Trozo» (al final, `tracks.addPoolClip`), «Encima» (efecto en la línea) y «Sonido» (`tracks.addPoolItem`), según `poolActions`: una imagen solo «Encima»; algo sin sonido, sin «Sonido». Lo que no se encuentra: «Buscarlo».
+- **Volver a enlazar** (`store.relink(ruta)`, botón «Buscarlo» en la barra del trozo, en la del vídeo de encima, en «Arreglar este trozo», en la barra de un sonido o efecto perdido (`ItemBar`) y en «De mi ordenador»): diálogo de un fichero con título «¿Dónde está ahora «x»?» en su carpeta de antes; `relinkProblem` rechaza lo que no vale para algún uso (una imagen como trozo, un sonido como vídeo de encima…); `compareMedia` dice en llano qué no cuadra (tipo, duración con margen `durationToleranceMs`, tamaño de imagen y sonido, estos dos solo si se midió); `siblingCandidates` busca en la carpeta nueva, por nombre, los demás que faltaban de la misma carpeta (se comprueban con `exists` y ffprobe). Si todo cuadra y no hay más, se cambia ya; si no, `RelinkDialog.vue` (marcados de serie los que cuadran). `relinkMedia` lo cambia en todos los sitios (trozos, vídeos de encima, pistas y la entrada de la lista) conservándolo todo; si el nuevo dura menos, se recorta a lo que hay (o se usa entero). Un paso de deshacer.
+- **Limpieza de la caché** (`src-tauri/src/cache_cleanup.rs`, `src/store/cache.ts`): 30 s después de arrancar, como mucho una vez al día (`ultima-limpieza` en la caché). Nunca se borra lo que usa un vídeo de la lista o el abierto (`cacheProtection`: sus ficheros, también los de «De mi ordenador», y `libraryCacheNames` de lo que usa de la biblioteca), ni las vistas previas de la biblioteca ni las grabaciones en curso; si algún vídeo de la lista no se puede leer, no se limpia nada. Lo demás, por tiempo sin usarse (cada uso renueva la fecha del fichero: `touch` en miniaturas, formas de onda y proxies): temporales 2 días, proxies 30, miniaturas y formas de onda 60, biblioteca 90; y si aún pasa de 3 GB, lo más viejo hasta 2 GB. Las miniaturas y formas de onda llevan delante la etiqueta de su original (`source_tag`) para saber de quién son; los proxies se reconocen por su clave exacta.
 
 ## Registro de guardados
 
@@ -214,8 +233,14 @@ Viven en el vault: `proyectos/easy-cut/Pendientes.md`. No crear `TODO.md` en el 
 src/
   domain/            lógica pura (sin DOM ni Node)
     project.ts       modelo (MediaInfo con hasVideo, Clip con picture own/none/cover+inset, pistas y elementos con su
-                     anclaje), operaciones (también recortar un trozo por un extremo, trimClip), conversión de
-                     tiempos, JSON (versión 3; la 1 y la 2 se migran al leerlas)
+                     anclaje, lista de ficheros `media`), operaciones (también recortar un trozo por un extremo,
+                     trimClip), conversión de tiempos, JSON (versión 4, con el nombre en el sobre; la 1, la 2 y la 3
+                     se migran al leerlas)
+    media-pool.ts    lista de ficheros del proyecto: usos, acciones de «De mi ordenador», comparar al volver a
+                     enlazar, cambiar un fichero en todos los sitios y buscar los de la misma carpeta
+    projects.ts      vídeos en marcha: nombres por defecto y sin repetir, resumen de cada uno, «cuándo se tocó»
+    history-file.ts  deshacer guardado aparte (los pasos más cercanos; solo si es del proyecto de ahora)
+    cache-protection.ts  qué no puede borrar la limpieza de la caché
     tracks.ts        pistas (sin límite): resolver anclajes, poner, mover, recortar, partir, duplicar, sin solapes,
                      imanes, suaves, «escuchar solo esta»
     library.ts       catálogo de la biblioteca: validación, búsqueda, valores de serie, URL permitidas y créditos
@@ -246,8 +271,11 @@ src/
     paste.ts         qué pega Ctrl+V: ficheros del Explorador más nuevos que el trozo copiado (por la secuencia
                      del portapapeles) o el trozo
   store/
-    editor.ts        estado: proyecto + historial, originales (y vídeos de encima), pantalla, avisos, autoguardado,
-                     proxies, miniaturas, formas de onda, «Elegir el vídeo» de encima, copiar y pegar trozos
+    editor.ts        estado: proyecto + historial, originales (y vídeos de encima), pantalla, avisos, vídeos en
+                     marcha (lista, guardar solo, abrir, nombre, duplicar, borrar, copia anterior, .easycut, pasar
+                     el autoguardado de antes), volver a enlazar, proxies, miniaturas, formas de onda, «Elegir el
+                     vídeo» de encima, copiar y pegar trozos
+    cache.ts         limpieza de la caché un rato después de arrancar (lo que usan los vídeos de la lista)
     exporter.ts      guardar (vídeo o «Solo el sonido»): comprobación de originales, filtro en fichero, reintento con
                      libx264, borrar a medias
     save-flow.ts     pantallas Guardar / Guardando / ¡Listo! (antes, trae lo de la biblioteca que falte)
@@ -267,13 +295,13 @@ src/
   components/        PreviewPlayer, Filmstrip, DurationBar, TargetPicker, AppIcon (iconos SVG propios),
                      KeyHint (la tecla dibujada; el texto va en ::before), KeysButton y KeysPanel («Teclas», F1),
                      UpdateNotice, UpdateDialog y AppVersion (actualizaciones), TrackLayers (sonidos y efectos en la
-                     vista previa y «Tamaño y sitio»)…
+                     vista previa y «Tamaño y sitio»), RelinkDialog («Buscarlo» cuando no cuadra)…
     teleprompter/    PrompterRun (pantalla de ensayar/grabar: texto con translateY desde rAF), CameraSetup
     tracks/          TracksView (la vista de pistas, única de «Tu vídeo»: fila «Vídeo» con indicadores, asas para
                      recortar, «Añadir vídeos o sonidos» y «Grabarme»; pie con pistas nuevas), TrackHeader (con
                      «Escuchar solo esta»), ItemBar (barra del elemento elegido), LibraryPanel (biblioteca y «De mi
                      ordenador»), CreditsDialog
-  views/             Home, Pick, Editor («Tu vídeo»), ClipEditor («Arreglar este trozo», con la pestaña «Imagen»),
+  views/             Home (con la lista de vídeos en marcha), Pick, Editor («Tu vídeo»), ClipEditor («Arreglar este trozo», con la pestaña «Imagen»),
                      Save (tres tarjetas y «Solo el sonido»), Saving, Done,
                      Teleprompter (texto → cámara → grabar → revisar → trozo), Diagnostics (solo desarrollo)
   native/
@@ -289,7 +317,9 @@ src-tauri/           shell Tauri 2 (Rust)
   src/job_object.rs  Job Object: si la app muere, mueren sus ffmpeg
   src/commands.rs    comandos invoke (miniaturas, formas de onda, caché, diálogos, autoguardado, grabaciones…);
                      carpetas aparte en desarrollo
-  src/files.rs       nombres sin sobrescribir, clave de caché, tamaño de JPEG
+  src/files.rs       nombres sin sobrescribir, clave de caché (y etiqueta del original), tamaño de JPEG
+  src/projects.rs    vídeos en marcha: un JSON por id en la carpeta de datos, copia anterior e historial
+  src/cache_cleanup.rs  limpieza de la caché (por antigüedad de uso y tamaño; nunca lo de la lista)
   src/clipboard.rs   ficheros copiados en el Explorador (CF_HDROP) y secuencia del portapapeles, con Win32
   src/media_permissions.rs  cámara y micrófono concedidos sin diálogo (WebView2)
   src/test_window.rs  modo de pruebas (EASY_CUT_TEST=1, solo desarrollo): ventana detrás y sin quitar el foco
@@ -310,6 +340,7 @@ scripts/
   picture-e2e.mjs    prueba de extremo a extremo de «Imagen» y «Solo el sonido»
   shortcuts-e2e.mjs  prueba de extremo a extremo de los atajos de teclado y de copiar y pegar
   tracks-e2e.mjs     prueba de extremo a extremo de las pistas, la biblioteca y los créditos (capturas tracks-*.png)
+  projects-e2e.mjs   prueba de extremo a extremo de los vídeos en marcha, «De mi ordenador» y volver a enlazar
   build-library.mjs  genera la biblioteca (tanda propia y de terceros) en library/dist, el catálogo y CREDITS.md
   library-import.mjs  tanda de terceros (library/third-party.json → M4A nivelados) y el nivelado común
   library-particles.mjs  sprites del Particle Pack de Kenney para los efectos

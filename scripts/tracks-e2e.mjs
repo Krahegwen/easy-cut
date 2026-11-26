@@ -294,7 +294,7 @@ try {
   app = await connectToApp(port, { timeoutMs: 240_000 })
   console.log(`Conectado a ${app.url}`)
   await app.waitFor('return !!window.__easyCut?.store', { timeoutMs: 60_000, what: 'store de la app (modo desarrollo)' })
-  await app.evaluate('await window.__easyCut.bridge.clearAutosave(); location.reload(); return true')
+  await app.evaluate('await window.__easyCut.resetProjects(); location.reload(); return true')
   await sleep(1500)
   app.close()
   app = await connectToApp(port)

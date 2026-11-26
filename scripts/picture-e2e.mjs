@@ -158,7 +158,7 @@ try {
   app = await connectToApp(port, { timeoutMs: 240_000 })
   console.log(`Conectado a ${app.url}`)
   await app.waitFor('return !!window.__easyCut?.store', { timeoutMs: 60_000, what: 'store de la app (modo desarrollo)' })
-  await app.evaluate('await window.__easyCut.bridge.clearAutosave(); location.reload(); return true')
+  await app.evaluate('await window.__easyCut.resetProjects(); location.reload(); return true')
   await sleep(1500)
   app.close()
   app = await connectToApp(port)
@@ -418,7 +418,8 @@ try {
 
   // --- El vídeo de encima desaparece: aviso y «Quitar el vídeo de encima» sin perder el trozo
   {
-    await app.waitFor('const b = window.__easyCut.bridge; const d = window.__easyCut.domain; return (await b.loadAutosave()) === d.serializeProject(window.__easyCut.store.project.value)', { timeoutMs: 5000, what: 'autoguardado al día' })
+    await app.waitFor('const b = window.__easyCut.bridge; const d = window.__easyCut.domain; const s = window.__easyCut.store; return !!s.projectId.value && (await b.readProject(s.projectId.value)) === d.serializeProject(s.project.value, { name: s.projectName.value })', { timeoutMs: 5000, what: 'vídeo guardado y al día' })
+    const projectId = await app.evaluate('return window.__easyCut.store.projectId.value')
     await app.evaluate('location.reload(); return true')
     await sleep(400)
     unlinkSync(doomedCover)
@@ -427,16 +428,17 @@ try {
     app = await connectToApp(port)
     await app.waitFor('return !!window.__easyCut?.store')
     await app.setViewport(1280, 800)
-    await app.waitFor('return !!document.querySelector("[data-testid=resume-card]")', { timeoutMs: 10_000, what: 'vídeo sin terminar' })
-    await app.click('[data-testid=resume]')
+    const cardSel = `[data-testid=project-card][data-project-id="${projectId}"]`
+    await app.waitFor('return !!document.querySelector(args.s)', { args: { s: cardSel }, timeoutMs: 10_000, what: 'el vídeo en la lista de Inicio' })
+    await app.click(`${cardSel} [data-testid=project-open]`)
     await waitScreen('editor')
     const lost = await app.waitFor('const c = document.querySelector("[data-testid=clip-block-4]"); return c && c.dataset.picture === "cover-lost" && c.innerText.includes("No encuentro el vídeo de encima") ? c.getAttribute("aria-label") : null', { timeoutMs: 10_000, what: 'bloque sin vídeo de encima' })
     check('El bloque del trozo dice «No encuentro el vídeo de encima»', !!lost, lost ?? '')
     await app.click('[data-testid=clip-block-4]')
-    check('El panel lo explica y ofrece quitarlo', !!(await app.text('[data-testid=cover-lost-panel]')) && !!(await app.text('[data-testid=remove-lost-cover]')))
+    check('El panel lo explica y ofrece buscarlo o quitarlo', !!(await app.text('[data-testid=cover-lost-panel]')) && !!(await app.text('[data-testid=remove-lost-cover]')) && !!(await app.text('[data-testid=relink-cover]')))
     await shot('pic-15-encima-perdido.png')
     await app.click('[data-testid=save-video]')
-    check('No deja guardar mientras falte', (await app.text('[data-testid=toast]'))?.startsWith('Antes de guardar, quita') && !!(await app.text('[data-testid=editor]')))
+    check('No deja guardar mientras falte', (await app.text('[data-testid=toast]'))?.startsWith('Antes de guardar, busca') && !!(await app.text('[data-testid=editor]')))
     await app.click('[data-testid=remove-lost-cover]')
     const c4 = (await clips())[3]
     check('«Quitar el vídeo de encima» deja el trozo (otra vez «Solo se oye»)', (await clips()).length === 4 && c4.picture.kind === 'none' && c4.path === media.voice)
